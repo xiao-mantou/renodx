@@ -262,22 +262,40 @@ void OnPresetOff() {
   });
 }
 
-// TEST K (DL1-style): DL2's D3D12 swapchain rejects any format change
-// (R16G16B16A16_FLOAT and R10G10B10A2_UNORM both cause create/destroy loops).
-// DL1 only has D3D11 and works by upgrading swapchain to R16G16B16A16_FLOAT
-// with default compatibility_mode=true (no SetUseHDR10, no r10g10b10a2).
+// TEST L (DL1-style without SetUseHDR10):
+// test-J 日志分析显示：
+//   1. SetUseHDR10(true) 把 swapchain 格式改成 R10G10B10A2 (HDR10 PQ)
+//   2. 但 upgrade_targets 是 R8G8B8A8 -> R16G16B16A16_FLOAT，不匹配 R10G10B10A2
+//   3. back buffer 的 has_upgrade_target: false，只有 clone_target
+//   4. 游戏把 SDR 内容 [0,1] 渲染到 R10G10B10A2 (HDR10 PQ) back buffer
+//   5. SDR 数值被错误解释为 PQ 编码 → 颜色炸裂
+//   6. 进入游戏后某些渲染路径导致完全黑屏
 //
-// New approach: skip D3D12 swapchain entirely (ignored_device_apis) and only
-// modify D3D11 swapchain (UI/present path). D3D12 still gets upgrade_targets
-// for its render targets, but its swapchain stays in the game's native format.
+// 正确做法（参考 DL1）：
+//   - 不用 SetUseHDR10，target_format 保持默认 R16G16B16A16_FLOAT (scRGB)
+//   - swapchain 升级为 R16G16B16A16_FLOAT，游戏渲染 [0,1] SDR 内容到 float16
+//   - swapchain proxy shader 把 R16G16B16A16_FLOAT 转换为 HDR 输出
+//   - 用 OnInitDevice 动态切换 DX11/DX12 shader（保留 test-J 的做法）
+//   - 不用 swapchain_proxy_compatibility_mode=false（用默认 true）
+//   - upgrade_targets 去掉 copy_dest（参考 DL1）
 //
-// Key differences from test-J:
-//   - NO SetUseHDR10 (target_format stays R16G16B16A16_FLOAT default)
-//   - NO swapchain_proxy_compatibility_mode=false (use default true)
-//   - NO OnInitDevice dynamic shader switch (not needed, only D3D11 swapchain)
-//   - ignored_device_apis.insert(d3d12) to skip D3D12 swapchain modification
-//   - swapchain proxy uses DX11 shader with space=0 (D3D11 cbuffer register)
-//   - upgrade targets exclude copy_dest flag (per project convention)
+// test-J 日志证明 D3D12 swapchain 可以被修改（没有循环创建/销毁），
+// 之前的"循环"结论是基于 shared state bug 修复前的测试，不可靠。
+void OnInitDevice(reshade::api::device* device) {
+  if (device->get_api() == reshade::api::device_api::d3d11) {
+    renodx::mods::shader::expected_constant_buffer_space = 0;
+    renodx::mods::swapchain::expected_constant_buffer_space = 0;
+    reshade::log::message(reshade::log::level::info, "Activating DX11 swap chain proxy...");
+    renodx::mods::swapchain::swap_chain_proxy_vertex_shader = __swap_chain_proxy_vertex_shader_dx11;
+    renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx11;
+  } else if (device->get_api() == reshade::api::device_api::d3d12) {
+    reshade::log::message(reshade::log::level::info, "Activating DX12 swap chain proxy...");
+    renodx::mods::shader::expected_constant_buffer_space = 50;
+    renodx::mods::swapchain::expected_constant_buffer_space = 50;
+    renodx::mods::swapchain::swap_chain_proxy_vertex_shader = __swap_chain_proxy_vertex_shader_dx12;
+    renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx12;
+  }
+}
 
 }  // namespace
 
@@ -299,22 +317,19 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::shader::allow_multiple_push_constants = true;
       renodx::mods::shader::force_pipeline_cloning = true;
 
-      // TEST K (DL1-style): skip D3D12 swapchain entirely.
-      // DL2's D3D12 swapchain rejects any format change (create/destroy loop).
-      // Only modify D3D11 swapchain (UI/present path), like DL1.
-      renodx::mods::swapchain::ignored_device_apis.insert(reshade::api::device_api::d3d12);
-
-      // Mirror DL1 config: no SetUseHDR10, default compatibility_mode=true,
-      // target_format stays R16G16B16A16_FLOAT (default).
+      // TEST L (DL1-style without SetUseHDR10):
+      // 不调用 SetUseHDR10 → target_format 保持默认 R16G16B16A16_FLOAT (scRGB)
+      // 不设置 compatibility_mode = false → 用默认 true
+      // 不用 ignored_device_apis → D3D12 swapchain 也被修改为 R16G16B16A16_FLOAT
+      // OnInitDevice 动态切换 DX11/DX12 shader 和 cbuffer space
       renodx::mods::swapchain::force_borderless = false;
       renodx::mods::swapchain::use_resource_cloning = true;
 
-      // Swapchain proxy uses DX11 shader (only D3D11 swapchain is modified).
-      // D3D11 cbuffer is register(b13) with default space=0.
+      // 初始用 DX11 shader，OnInitDevice 会根据 device API 动态切换
       renodx::mods::swapchain::swap_chain_proxy_vertex_shader = __swap_chain_proxy_vertex_shader_dx11;
       renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx11;
       renodx::mods::swapchain::expected_constant_buffer_index = 13;
-      renodx::mods::swapchain::expected_constant_buffer_space = 0;
+      renodx::mods::swapchain::expected_constant_buffer_space = 50;
 
       // Upgrade targets: R8G8B8A8 -> R16G16B16A16_FLOAT (exclude copy_dest
       // per project convention to avoid matching D3D12 frame generation textures)
@@ -336,8 +351,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .usage_include = reshade::api::resource_usage::render_target,
       });
 
+      reshade::register_event<reshade::addon_event::init_device>(OnInitDevice);
+
       break;
     case DLL_PROCESS_DETACH:
+      reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
       reshade::unregister_addon(h_module);
       break;
   }
