@@ -890,6 +890,20 @@ static void OnInitSwapchain(reshade::api::swapchain* swapchain, bool resize) {
       reshade::register_event<reshade::addon_event::present>(OnPresentForResizeBuffer);
     } else if (!use_resize_buffer_on_set_full_screen) {
       renodx::utils::swapchain::ResizeBuffer(swapchain, target_format, target_color_space);
+      // ResizeBuffer destroys and recreates back buffer ResourceInfo, so clone_target
+      // set above is lost. Re-apply clone_target on the new back buffers here.
+      const auto new_back_buffer_count = swapchain->get_back_buffer_count();
+      for (uint32_t index = 0; index < new_back_buffer_count; ++index) {
+        const auto buffer = swapchain->get_back_buffer(index);
+        renodx::utils::resource::UpdateResourceInfo(buffer, [&](utils::resource::ResourceInfo* info) {
+          if (!info->is_swap_chain) return;
+          if (use_resource_cloning && !data->swap_chain_proxy_pixel_shader.empty()) {
+            info->clone_target = &data->swap_chain_clone_info;
+            info->clone_enabled = utils::device_proxy::UseProxyRequested() || !UsingSwapchainCompatibilityMode();
+            info->clone_can_deactivate = false;
+          }
+        });
+      }
     }
     return;
   }
