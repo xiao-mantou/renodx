@@ -131,7 +131,7 @@ static bool bypass_dummy_windows = true;
 [[deprecated("Use use_auto_cloning instead")]]
 static bool& use_auto_upgrade = utils::resource::upgrade::use_auto_cloning;
 static std::unordered_set<std::string> ignored_window_class_names = {};
-static std::unordered_set<reshade::api::device_api> ignored_device_apis = {};
+inline std::unordered_set<reshade::api::device_api> ignored_device_apis = {};
 static reshade::api::format swap_chain_proxy_format = reshade::api::format::r16g16b16a16_float;
 static std::span<const std::uint8_t> swap_chain_proxy_vertex_shader = {};
 static std::span<const std::uint8_t> swap_chain_proxy_pixel_shader = {};

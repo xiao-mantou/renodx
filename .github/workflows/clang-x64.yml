@@ -3,7 +3,7 @@ name: Clang x64
 on:
   workflow_dispatch:
   push:
-    branches: [main, dyinglight2-fix]
+    branches: [main, dyinglight2-fix, "test-*"]
     paths-ignore:
       - "**/*.md"
       - "docs/**"
