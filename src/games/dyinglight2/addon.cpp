@@ -274,16 +274,9 @@ void OnInitDevice(reshade::api::device* device) {
   }
 }
 
-// TEST F: device_proxy present hook (required when use_device_proxy=true)
-// The actual HDR swapchain is owned by the proxy device; nothing extra needed
-// here for D3D11/D3D12 (only OpenGL needs custom_flip_uv_y).
-void OnPresent(reshade::api::command_queue* queue,
-               reshade::api::swapchain* swapchain,
-               const reshade::api::rect* source_rect,
-               const reshade::api::rect* dest_rect,
-               uint32_t dirty_rect_count,
-               const reshade::api::rect* dirty_rects) {
-}
+// TEST G: no OnPresent needed (no device_proxy). Swapchain proxy shader runs
+// in the game's present call and converts the upgraded R16G16B16A16_FLOAT
+// back buffer to HDR10 PQ on the R10G10B10A2 swapchain.
 
 }  // namespace
 
@@ -341,14 +334,14 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         };
         renodx::utils::settings::LoadSetting(renodx::utils::settings::global_name, setting);
         bool is_hdr10 = setting->GetValue() == 4;
-        // TEST F: Force use_device_proxy=true so the swapchain mod does NOT modify
-        // the game's swapchain back_buffer format. DL2's D3D12 swapchain rejects
-        // format changes (R8G8B8A8 -> R16G16B16A16_FLOAT) and enters a
-        // create/destroy loop, which causes the main-menu black screen.
-        // With use_device_proxy=true, an independent proxy device owns the HDR
-        // swapchain and the game swapchain keeps its original format.
-        renodx::mods::swapchain::use_device_proxy = true;
-        renodx::mods::swapchain::set_color_space = false;
+        // TEST G: Use SetUseHDR10(true) -> target_format = R10G10B10A2_UNORM (HDR10).
+        // Hypothesis: DL2's D3D12 swapchain rejects R16G16B16A16_FLOAT (scRGB)
+        // but accepts R10G10B10A2_UNORM (HDR10) because the game natively supports
+        // HDR10. test-E used the default R16G16B16A16_FLOAT and caused a
+        // create/destroy loop. test-F used use_device_proxy which avoided the
+        // loop but proxy swapchain creation failed (E_ACCESSDENIED, one HWND
+        // cannot have two flip swapchains) so no HDR output.
+        renodx::mods::swapchain::SetUseHDR10(is_hdr10);
         shader_injection.swap_chain_encoding_color_space = is_hdr10 ? 1.f : 0.f;
         settings.push_back(setting);
       }
@@ -367,12 +360,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       });
 
       reshade::register_event<reshade::addon_event::init_device>(OnInitDevice);
-      reshade::register_event<reshade::addon_event::present>(OnPresent);
 
       break;
     case DLL_PROCESS_DETACH:
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
-      reshade::unregister_event<reshade::addon_event::present>(OnPresent);
       reshade::unregister_addon(h_module);
       break;
   }
