@@ -99,8 +99,8 @@ struct __declspec(uuid("d8712fa7-66e5-45e2-9e07-80fe6354f507")) DeviceData {
 
 // Variables
 
-static bool attached = false;
-static std::vector<utils::resource::ResourceUpgradeInfo> resource_upgrade_infos = {};
+inline bool attached = false;
+inline std::vector<utils::resource::ResourceUpgradeInfo> resource_upgrade_infos = {};
 
 // Legacy name
 [[deprecated("Use resource_upgrade_infos instead")]]
@@ -108,42 +108,42 @@ static std::vector<utils::resource::ResourceUpgradeInfo>& swap_chain_upgrade_tar
 inline reshade::api::format target_format = reshade::api::format::r16g16b16a16_float;
 inline reshade::api::color_space target_color_space = reshade::api::color_space::extended_srgb_linear;
 inline bool set_color_space = true;
-static bool use_shared_device = false;
+inline bool use_shared_device = false;
 static bool& use_resource_cloning = utils::resource::upgrade::use_resource_cloning;
 static bool& use_resource_cloning_dx12_only = utils::resource::upgrade::use_resource_cloning_dx12_only;
-static bool use_resize_buffer = false;
-static bool use_resize_buffer_on_set_full_screen = false;
-static bool use_resize_buffer_on_demand = false;
-static bool use_resize_buffer_on_present = false;
+inline bool use_resize_buffer = false;
+inline bool use_resize_buffer_on_set_full_screen = false;
+inline bool use_resize_buffer_on_demand = false;
+inline bool use_resize_buffer_on_present = false;
 static bool& device_proxy_wait_idle_source = utils::device_proxy::device_proxy_wait_idle_source;
 static bool& device_proxy_wait_idle_destination = utils::device_proxy::device_proxy_wait_idle_destination;
-static bool upgrade_resource_views = true;
-static bool prevent_full_screen = true;
-static bool force_borderless = true;
-static bool force_screen_tearing = true;
-static bool swapchain_proxy_compatibility_mode = true;
-static bool swapchain_proxy_revert_state = false;
+inline bool upgrade_resource_views = true;
+inline bool prevent_full_screen = true;
+inline bool force_borderless = true;
+inline bool force_screen_tearing = true;
+inline bool swapchain_proxy_compatibility_mode = true;
+inline bool swapchain_proxy_revert_state = false;
 static bool& use_device_proxy = utils::device_proxy::use_device_proxy;
 static bool& use_auto_cloning = utils::resource::upgrade::use_auto_cloning;
-static bool prevent_multiple_flip_swapchains_per_window = true;
+inline bool prevent_multiple_flip_swapchains_per_window = true;
 
 inline bool bypass_dummy_windows = true;
 [[deprecated("Use use_auto_cloning instead")]]
 static bool& use_auto_upgrade = utils::resource::upgrade::use_auto_cloning;
-static std::unordered_set<std::string> ignored_window_class_names = {};
+inline std::unordered_set<std::string> ignored_window_class_names = {};
 inline std::unordered_set<reshade::api::device_api> ignored_device_apis = {};
-static reshade::api::format swap_chain_proxy_format = reshade::api::format::r16g16b16a16_float;
-static std::span<const std::uint8_t> swap_chain_proxy_vertex_shader = {};
-static std::span<const std::uint8_t> swap_chain_proxy_pixel_shader = {};
-static int32_t expected_constant_buffer_index = -1;
-static uint32_t expected_constant_buffer_space = 0;
-static float* shader_injection = nullptr;
-static size_t shader_injection_size = 0;
+inline reshade::api::format swap_chain_proxy_format = reshade::api::format::r16g16b16a16_float;
+inline std::span<const std::uint8_t> swap_chain_proxy_vertex_shader = {};
+inline std::span<const std::uint8_t> swap_chain_proxy_pixel_shader = {};
+inline int32_t expected_constant_buffer_index = -1;
+inline uint32_t expected_constant_buffer_space = 0;
+inline float* shader_injection = nullptr;
+inline size_t shader_injection_size = 0;
 struct SwapChainProxyShaders {
   std::span<const std::uint8_t> vertex_shader;
   std::span<const std::uint8_t> pixel_shader;
 };
-static std::unordered_map<reshade::api::device_api, SwapChainProxyShaders> swap_chain_proxy_shaders = {};
+inline std::unordered_map<reshade::api::device_api, SwapChainProxyShaders> swap_chain_proxy_shaders = {};
 static thread_local std::optional<reshade::api::swapchain_desc> original_swapchain_desc;
 static thread_local std::optional<reshade::api::swapchain_desc> upgraded_swapchain_desc;
 static thread_local std::optional<reshade::api::resource> local_original_resource;
