@@ -3,17 +3,15 @@ name: Clang x64
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, dyinglight2-fix]
     paths-ignore:
       - "**/*.md"
       - "docs/**"
-      - ".github/workflows/**"
   pull_request:
     branches: [main]
     paths-ignore:
       - "**/*.md"
       - "docs/**"
-      - ".github/workflows/**"
 
 jobs:
   build:
@@ -56,4 +54,16 @@ jobs:
       - name: Show sccache stats
         if: always()
         run: sccache --show-stats
+
+      - name: Create output directory
+        run: md build_output
+
+      - name: Copy addon binaries
+        run: copy build\release\*.addon64 build_output\
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: renodx-dyinglight2
+          path: build_output/
 
