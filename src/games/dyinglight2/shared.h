@@ -28,6 +28,8 @@ struct ShaderInjectData {
   float custom_auto_exposure;
   float custom_lens_flare;
   float custom_lut_scaling;
+  float swap_chain_encoding;
+  float swap_chain_encoding_color_space;
 };
 
 #ifndef __cplusplus
@@ -55,8 +57,8 @@ cbuffer shader_injection : register(b13) {
 #define RENODX_TONE_MAP_BLOWOUT                shader_injection.tone_map_blowout
 #define RENODX_TONE_MAP_FLARE                  shader_injection.tone_map_flare
 #define RENODX_COLOR_GRADE_STRENGTH            shader_injection.color_grade_strength
-#define RENODX_SWAP_CHAIN_ENCODING             ENCODING_PQ
-#define RENODX_SWAP_CHAIN_ENCODING_COLOR_SPACE color::convert::COLOR_SPACE_BT2020
+#define RENODX_SWAP_CHAIN_ENCODING             shader_injection.swap_chain_encoding
+#define RENODX_SWAP_CHAIN_ENCODING_COLOR_SPACE shader_injection.swap_chain_encoding_color_space
 #define RENODX_RENO_DRT_TONE_MAP_METHOD        renodx::tonemap::renodrt::config::tone_map_method::REINHARD
 #define CUSTOM_AUTO_EXPOSURE                   shader_injection.custom_auto_exposure
 #define CUSTOM_LENS_FLARE                      shader_injection.custom_lens_flare

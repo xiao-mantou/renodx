@@ -210,7 +210,7 @@ renodx::utils::settings::Settings settings = {
         .parse = [](float value) { return value * 0.01f; },
     },
     new renodx::utils::settings::Setting{
-        .key = "ColorGradeStrength",
+        .key = "ColorGradeLUTScaling",
         .binding = &shader_injection.custom_lut_scaling,
         .default_value = 100.f,
         .label = "LUT Scaling",
@@ -245,13 +245,8 @@ void OnPresetOff() {
       {"ToneMapGameNits", 203.f},
       {"ToneMapUINits", 203.f},
       {"GammaCorrection", 0.f},
-      {"ToneMapScaling", 0.f},
-      {"ToneMapWorkingColorSpace", 0.f},
       {"ToneMapHueProcessor", 0.f},
       {"ToneMapHueCorrection", 0.f},
-      {"ToneMapHueShift", 0.f},
-      {"ToneMapClampColorSpace", 0.f},
-      {"ToneMapClampPeak", 0.f},
       {"ColorGradeExposure", 1.f},
       {"ColorGradeHighlights", 50.f},
       {"ColorGradeShadows", 50.f},
@@ -260,8 +255,10 @@ void OnPresetOff() {
       {"ColorGradeHighlightSaturation", 50.f},
       {"ColorGradeBlowout", 0.f},
       {"ColorGradeStrength", 100.f},
+      {"ColorGradeLUTScaling", 100.f},
       {"FxAutoExposure", 100.f},
       {"FxLensFlare", 100.f},
+      {"SwapChainEncoding", 4.f},
   });
 }
 
@@ -269,22 +266,11 @@ void OnInitDevice(reshade::api::device* device) {
   if (device->get_api() == reshade::api::device_api::d3d11) {
     renodx::mods::shader::expected_constant_buffer_space = 0;
     renodx::mods::swapchain::expected_constant_buffer_space = 0;
-
     reshade::log::message(reshade::log::level::info, "Activating DX11 swap chain proxy...");
-    renodx::mods::swapchain::swap_chain_proxy_vertex_shader = __swap_chain_proxy_vertex_shader_dx11;
-    renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx11;
-
-    return;
-  }
-
-  if (device->get_api() == reshade::api::device_api::d3d12) {
+  } else if (device->get_api() == reshade::api::device_api::d3d12) {
     reshade::log::message(reshade::log::level::info, "Activating DX12 swap chain proxy...");
-    // Switch over to DX12
     renodx::mods::shader::expected_constant_buffer_space = 50;
     renodx::mods::swapchain::expected_constant_buffer_space = 50;
-
-    renodx::mods::swapchain::swap_chain_proxy_vertex_shader = __swap_chain_proxy_vertex_shader_dx12;
-    renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx12;
   }
 }
 
@@ -303,15 +289,52 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::shader::allow_multiple_push_constants = true;
       renodx::mods::shader::force_pipeline_cloning = true;
 
-      renodx::mods::swapchain::SetUseHDR10(true);
       renodx::mods::swapchain::prevent_full_screen = false;
       renodx::mods::swapchain::force_borderless = false;
-      renodx::mods::swapchain::swapchain_proxy_compatibility_mode = false;
       renodx::mods::swapchain::expected_constant_buffer_index = 13;
       renodx::mods::swapchain::expected_constant_buffer_space = 50;
       renodx::mods::swapchain::use_resource_cloning = true;
-      renodx::mods::swapchain::swap_chain_proxy_vertex_shader = __swap_chain_proxy_vertex_shader_dx11;
-      renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx11;
+      renodx::mods::swapchain::swap_chain_proxy_shaders = {
+          {
+              reshade::api::device_api::d3d11,
+              {
+                  .vertex_shader = __swap_chain_proxy_vertex_shader_dx11,
+                  .pixel_shader = __swap_chain_proxy_pixel_shader_dx11,
+              },
+          },
+          {
+              reshade::api::device_api::d3d12,
+              {
+                  .vertex_shader = __swap_chain_proxy_vertex_shader_dx12,
+                  .pixel_shader = __swap_chain_proxy_pixel_shader_dx12,
+              },
+          },
+      };
+
+      {
+        auto* setting = new renodx::utils::settings::Setting{
+            .key = "SwapChainEncoding",
+            .binding = &shader_injection.swap_chain_encoding,
+            .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+            .default_value = 4.f,
+            .label = "Encoding",
+            .section = "Display Output",
+            .labels = {"None", "SRGB", "2.2", "2.4", "HDR10", "scRGB"},
+            .is_enabled = []() { return shader_injection.tone_map_type >= 1; },
+            .on_change_value = [](float previous, float current) {
+              bool is_hdr10 = current == 4;
+              shader_injection.swap_chain_encoding_color_space = (is_hdr10 ? 1.f : 0.f);
+            },
+            .is_global = true,
+            .is_visible = []() { return current_settings_mode >= 2; },
+        };
+        renodx::utils::settings::LoadSetting(renodx::utils::settings::global_name, setting);
+        bool is_hdr10 = setting->GetValue() == 4;
+        renodx::mods::swapchain::SetUseHDR10(is_hdr10);
+        renodx::mods::swapchain::use_resize_buffer = setting->GetValue() < 4;
+        shader_injection.swap_chain_encoding_color_space = is_hdr10 ? 1.f : 0.f;
+        settings.push_back(setting);
+      }
 
       renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
           .old_format = reshade::api::format::r8g8b8a8_typeless,
