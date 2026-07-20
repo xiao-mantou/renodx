@@ -314,16 +314,13 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
               },
           },
       };
-      // TEST H: Ignore D3D12 swapchain modifications. DL2's D3D12 swapchain rejects
-      // any format change (R8G8B8A8 -> R16G16B16A16_FLOAT or R10G10B10A2_UNORM)
-      // and enters a create/destroy loop, causing main-menu black screen.
-      // D3D11 swapchain works fine with format changes. DL2's UI renders on D3D11,
-      // game content renders on D3D12. The D3D11 swapchain will handle HDR output,
-      // and the proxy shader will convert both D3D11 and D3D12 rendered content.
-      renodx::mods::swapchain::ignored_device_apis.insert(reshade::api::device_api::d3d12);
-      // TEST H: DL2's D3D11 swapchain uses window class "EOSOVHDummyWindowClass"
-      // (Epic Online Services Overlay). bypass_dummy_windows skips any window
-      // whose class name contains "dummy", which prevents the HDR format change.
+      // TEST I: Use use_resize_buffer to avoid DL2's D3D12 swapchain creation loop.
+      // When use_resize_buffer=true, the swapchain format is NOT modified at creation
+      // time (which would cause DL2's D3D12 swapchain to reject and re-create),
+      // but instead dynamically resized later via ResizeBuffer().
+      // Also, DL2's D3D11 swapchain uses window class "EOSOVHDummyWindowClass"
+      // (Epic Online Services Overlay), which would be skipped by bypass_dummy_windows.
+      renodx::mods::swapchain::use_resize_buffer = true;
       renodx::mods::swapchain::bypass_dummy_windows = false;
 
       {
