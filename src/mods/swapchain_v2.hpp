@@ -105,9 +105,9 @@ static std::vector<utils::resource::ResourceUpgradeInfo> resource_upgrade_infos 
 // Legacy name
 [[deprecated("Use resource_upgrade_infos instead")]]
 static std::vector<utils::resource::ResourceUpgradeInfo>& swap_chain_upgrade_targets = resource_upgrade_infos;
-static reshade::api::format target_format = reshade::api::format::r16g16b16a16_float;
-static reshade::api::color_space target_color_space = reshade::api::color_space::extended_srgb_linear;
-static bool set_color_space = true;
+inline reshade::api::format target_format = reshade::api::format::r16g16b16a16_float;
+inline reshade::api::color_space target_color_space = reshade::api::color_space::extended_srgb_linear;
+inline bool set_color_space = true;
 static bool use_shared_device = false;
 static bool& use_resource_cloning = utils::resource::upgrade::use_resource_cloning;
 static bool& use_resource_cloning_dx12_only = utils::resource::upgrade::use_resource_cloning_dx12_only;
