@@ -317,11 +317,14 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::shader::allow_multiple_push_constants = true;
       renodx::mods::shader::force_pipeline_cloning = true;
 
-      // TEST L (DL1-style without SetUseHDR10):
+      // TEST M (test-L + compatibility_mode=false):
+      // test-L 出现白色亮块+残影症状（打开 ReShade 面板关闭后留下白色方块，
+      // 鼠标留下残影），像是 compatibility mode 下 D3D12 swapchain 渲染异常。
+      // 原代码设置了 compatibility_mode=false，这里加上试试。
       // 不调用 SetUseHDR10 → target_format 保持默认 R16G16B16A16_FLOAT (scRGB)
-      // 不设置 compatibility_mode = false → 用默认 true
       // 不用 ignored_device_apis → D3D12 swapchain 也被修改为 R16G16B16A16_FLOAT
       // OnInitDevice 动态切换 DX11/DX12 shader 和 cbuffer space
+      renodx::mods::swapchain::swapchain_proxy_compatibility_mode = false;
       renodx::mods::swapchain::force_borderless = false;
       renodx::mods::swapchain::use_resource_cloning = true;
 
