@@ -267,10 +267,14 @@ void OnInitDevice(reshade::api::device* device) {
     renodx::mods::shader::expected_constant_buffer_space = 0;
     renodx::mods::swapchain::expected_constant_buffer_space = 0;
     reshade::log::message(reshade::log::level::info, "Activating DX11 swap chain proxy...");
+    renodx::mods::swapchain::swap_chain_proxy_vertex_shader = __swap_chain_proxy_vertex_shader_dx11;
+    renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx11;
   } else if (device->get_api() == reshade::api::device_api::d3d12) {
     reshade::log::message(reshade::log::level::info, "Activating DX12 swap chain proxy...");
     renodx::mods::shader::expected_constant_buffer_space = 50;
     renodx::mods::swapchain::expected_constant_buffer_space = 50;
+    renodx::mods::swapchain::swap_chain_proxy_vertex_shader = __swap_chain_proxy_vertex_shader_dx12;
+    renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx12;
   }
 }
 
@@ -293,76 +297,39 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::shader::allow_multiple_push_constants = true;
       renodx::mods::shader::force_pipeline_cloning = true;
 
+      // TEST J: Mirror original code's configuration (v1 single-variable style).
+      // Previous tests used v2 map (swap_chain_proxy_shaders) and use_resize_buffer,
+      // but original code used v1 single-variable (swap_chain_proxy_pixel_shader)
+      // with OnInitDevice dynamic switching + swapchain_proxy_compatibility_mode=false.
+      // The shared state bug (static->inline) is already fixed in swapchain_v2.hpp.
+      renodx::mods::swapchain::SetUseHDR10(true);
       renodx::mods::swapchain::prevent_full_screen = false;
       renodx::mods::swapchain::force_borderless = false;
+      renodx::mods::swapchain::swapchain_proxy_compatibility_mode = false;
       renodx::mods::swapchain::expected_constant_buffer_index = 13;
       renodx::mods::swapchain::expected_constant_buffer_space = 50;
       renodx::mods::swapchain::use_resource_cloning = true;
-      renodx::mods::swapchain::swap_chain_proxy_shaders = {
-          {
-              reshade::api::device_api::d3d11,
-              {
-                  .vertex_shader = __swap_chain_proxy_vertex_shader_dx11,
-                  .pixel_shader = __swap_chain_proxy_pixel_shader_dx11,
-              },
-          },
-          {
-              reshade::api::device_api::d3d12,
-              {
-                  .vertex_shader = __swap_chain_proxy_vertex_shader_dx12,
-                  .pixel_shader = __swap_chain_proxy_pixel_shader_dx12,
-              },
-          },
-      };
-      // TEST I: Use use_resize_buffer to avoid DL2's D3D12 swapchain creation loop.
-      // When use_resize_buffer=true, the swapchain format is NOT modified at creation
-      // time (which would cause DL2's D3D12 swapchain to reject and re-create),
-      // but instead dynamically resized later via ResizeBuffer().
-      // Also, DL2's D3D11 swapchain uses window class "EOSOVHDummyWindowClass"
-      // (Epic Online Services Overlay), which would be skipped by bypass_dummy_windows.
-      renodx::mods::swapchain::use_resize_buffer = true;
-      renodx::mods::swapchain::bypass_dummy_windows = false;
+      // Use v1 single-variable style (like original code); OnInitDevice will
+      // dynamically switch to DX12 shaders when D3D12 device initializes.
+      renodx::mods::swapchain::swap_chain_proxy_vertex_shader = __swap_chain_proxy_vertex_shader_dx11;
+      renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx11;
 
-      {
-        auto* setting = new renodx::utils::settings::Setting{
-            .key = "SwapChainEncoding",
-            .binding = &shader_injection.swap_chain_encoding,
-            .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-            .default_value = 4.f,
-            .label = "Encoding",
-            .section = "Display Output",
-            .labels = {"None", "SRGB", "2.2", "2.4", "HDR10", "scRGB"},
-            .is_enabled = []() { return shader_injection.tone_map_type >= 1; },
-            .on_change_value = [](float previous, float current) {
-              bool is_hdr10 = current == 4;
-              shader_injection.swap_chain_encoding_color_space = (is_hdr10 ? 1.f : 0.f);
-            },
-            .is_global = true,
-            .is_visible = []() { return current_settings_mode >= 2; },
-        };
-        renodx::utils::settings::LoadSetting(renodx::utils::settings::global_name, setting);
-        bool is_hdr10 = setting->GetValue() == 4;
-        // TEST G: Use SetUseHDR10(true) -> target_format = R10G10B10A2_UNORM (HDR10).
-        // Hypothesis: DL2's D3D12 swapchain rejects R16G16B16A16_FLOAT (scRGB)
-        // but accepts R10G10B10A2_UNORM (HDR10) because the game natively supports
-        // HDR10. test-E used the default R16G16B16A16_FLOAT and caused a
-        // create/destroy loop. test-F used use_device_proxy which avoided the
-        // loop but proxy swapchain creation failed (E_ACCESSDENIED, one HWND
-        // cannot have two flip swapchains) so no HDR output.
-        renodx::mods::swapchain::SetUseHDR10(is_hdr10);
-        shader_injection.swap_chain_encoding_color_space = is_hdr10 ? 1.f : 0.f;
-        settings.push_back(setting);
-      }
-
-      // TEST F: Only upgrade the back-buffer render target (R8G8B8A8_TYPELESS ->
-      // R16G16B16A16_FLOAT). Removed the broad R8G8B8A8_UNORM + ANY target that
-      // was also matching D3D12 frame-generation intermediate textures.
       renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
           .old_format = reshade::api::format::r8g8b8a8_typeless,
           .new_format = reshade::api::format::r16g16b16a16_float,
           .ignore_size = false,
           .use_resource_view_cloning = true,
           .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::BACK_BUFFER,
+          .usage_include = reshade::api::resource_usage::render_target
+                           | reshade::api::resource_usage::copy_dest,
+      });
+
+      renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
+          .old_format = reshade::api::format::r8g8b8a8_unorm,
+          .new_format = reshade::api::format::r16g16b16a16_float,
+          .ignore_size = false,
+          .use_resource_view_cloning = true,
+          .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
           .usage_include = reshade::api::resource_usage::render_target
                            | reshade::api::resource_usage::copy_dest,
       });
