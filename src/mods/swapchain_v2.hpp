@@ -127,7 +127,7 @@ static bool& use_device_proxy = utils::device_proxy::use_device_proxy;
 static bool& use_auto_cloning = utils::resource::upgrade::use_auto_cloning;
 static bool prevent_multiple_flip_swapchains_per_window = true;
 
-static bool bypass_dummy_windows = true;
+inline bool bypass_dummy_windows = true;
 [[deprecated("Use use_auto_cloning instead")]]
 static bool& use_auto_upgrade = utils::resource::upgrade::use_auto_cloning;
 static std::unordered_set<std::string> ignored_window_class_names = {};

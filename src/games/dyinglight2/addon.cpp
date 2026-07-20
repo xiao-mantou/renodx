@@ -321,6 +321,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // game content renders on D3D12. The D3D11 swapchain will handle HDR output,
       // and the proxy shader will convert both D3D11 and D3D12 rendered content.
       renodx::mods::swapchain::ignored_device_apis.insert(reshade::api::device_api::d3d12);
+      // TEST H: DL2's D3D11 swapchain uses window class "EOSOVHDummyWindowClass"
+      // (Epic Online Services Overlay). bypass_dummy_windows skips any window
+      // whose class name contains "dummy", which prevents the HDR format change.
+      renodx::mods::swapchain::bypass_dummy_windows = false;
 
       {
         auto* setting = new renodx::utils::settings::Setting{
