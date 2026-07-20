@@ -329,32 +329,26 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             .is_visible = []() { return current_settings_mode >= 2; },
         };
         renodx::utils::settings::LoadSetting(renodx::utils::settings::global_name, setting);
+        // TEST E: REMOVED SetUseHDR10 - this causes swapchain format conflict with DL2's D3D12
+        // TEST E: REMOVED use_resize_buffer - let swapchain mod use default behavior
         bool is_hdr10 = setting->GetValue() == 4;
-        renodx::mods::swapchain::SetUseHDR10(is_hdr10);
-        renodx::mods::swapchain::use_resize_buffer = setting->GetValue() < 4;
         shader_injection.swap_chain_encoding_color_space = is_hdr10 ? 1.f : 0.f;
         settings.push_back(setting);
       }
 
+      // TEST E: precise upgrade targets (reference: dyinglight1)
+      // Only upgrade back buffer with r8g8b8a8_typeless format
       renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
           .old_format = reshade::api::format::r8g8b8a8_typeless,
           .new_format = reshade::api::format::r16g16b16a16_float,
           .ignore_size = false,
           .use_resource_view_cloning = true,
           .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::BACK_BUFFER,
-          .usage_include = reshade::api::resource_usage::render_target
-                           | reshade::api::resource_usage::copy_dest,
+          .usage_include = reshade::api::resource_usage::render_target,
       });
 
-      renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
-          .old_format = reshade::api::format::r8g8b8a8_unorm,
-          .new_format = reshade::api::format::r16g16b16a16_float,
-          .ignore_size = false,
-          .use_resource_view_cloning = true,
-          .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
-          .usage_include = reshade::api::resource_usage::render_target
-                           | reshade::api::resource_usage::copy_dest,
-      });
+      // REMOVED: second upgrade target (r8g8b8a8_unorm + ANY) was too broad
+      // It matched D3D12 frame generation intermediate textures
 
       //   renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
       //       .old_format = reshade::api::format::r10g10b10a2_unorm,
