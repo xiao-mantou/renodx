@@ -274,6 +274,17 @@ void OnInitDevice(reshade::api::device* device) {
   }
 }
 
+// TEST F: device_proxy present hook (required when use_device_proxy=true)
+// The actual HDR swapchain is owned by the proxy device; nothing extra needed
+// here for D3D11/D3D12 (only OpenGL needs custom_flip_uv_y).
+void OnPresent(reshade::api::command_queue* queue,
+               reshade::api::swapchain* swapchain,
+               const reshade::api::rect* source_rect,
+               const reshade::api::rect* dest_rect,
+               uint32_t dirty_rect_count,
+               const reshade::api::rect* dirty_rects) {
+}
+
 }  // namespace
 
 extern "C" __declspec(dllexport) constexpr const char* NAME = "RenoDX";
@@ -330,12 +341,21 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         };
         renodx::utils::settings::LoadSetting(renodx::utils::settings::global_name, setting);
         bool is_hdr10 = setting->GetValue() == 4;
-        renodx::mods::swapchain::SetUseHDR10(is_hdr10);
-        renodx::mods::swapchain::use_resize_buffer = setting->GetValue() < 4;
+        // TEST F: Force use_device_proxy=true so the swapchain mod does NOT modify
+        // the game's swapchain back_buffer format. DL2's D3D12 swapchain rejects
+        // format changes (R8G8B8A8 -> R16G16B16A16_FLOAT) and enters a
+        // create/destroy loop, which causes the main-menu black screen.
+        // With use_device_proxy=true, an independent proxy device owns the HDR
+        // swapchain and the game swapchain keeps its original format.
+        renodx::mods::swapchain::use_device_proxy = true;
+        renodx::mods::swapchain::set_color_space = false;
         shader_injection.swap_chain_encoding_color_space = is_hdr10 ? 1.f : 0.f;
         settings.push_back(setting);
       }
 
+      // TEST F: Only upgrade the back-buffer render target (R8G8B8A8_TYPELESS ->
+      // R16G16B16A16_FLOAT). Removed the broad R8G8B8A8_UNORM + ANY target that
+      // was also matching D3D12 frame-generation intermediate textures.
       renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
           .old_format = reshade::api::format::r8g8b8a8_typeless,
           .new_format = reshade::api::format::r16g16b16a16_float,
@@ -346,29 +366,13 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
                            | reshade::api::resource_usage::copy_dest,
       });
 
-      renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
-          .old_format = reshade::api::format::r8g8b8a8_unorm,
-          .new_format = reshade::api::format::r16g16b16a16_float,
-          .ignore_size = false,
-          .use_resource_view_cloning = true,
-          .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
-          .usage_include = reshade::api::resource_usage::render_target
-                           | reshade::api::resource_usage::copy_dest,
-      });
-
-      //   renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
-      //       .old_format = reshade::api::format::r10g10b10a2_unorm,
-      //       .new_format = reshade::api::format::r16g16b16a16_float,
-      //       .use_resource_view_cloning = true,
-      //       .usage_include = reshade::api::resource_usage::render_target
-      //                        | reshade::api::resource_usage::copy_dest,
-      //   });
-
       reshade::register_event<reshade::addon_event::init_device>(OnInitDevice);
+      reshade::register_event<reshade::addon_event::present>(OnPresent);
 
       break;
     case DLL_PROCESS_DETACH:
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
+      reshade::unregister_event<reshade::addon_event::present>(OnPresent);
       reshade::unregister_addon(h_module);
       break;
   }
