@@ -123,7 +123,6 @@ std::atomic_uint32_t snapshot_capture_frame_count = 2u;
 std::atomic_uint32_t snapshot_captured_frame_count = 0u;
 std::atomic_uint32_t snapshot_max_draw_count = 256u;
 std::atomic_uint32_t snapshot_captured_draw_count = 0u;
-std::atomic_bool snapshot_auto_dump_suppressed = false;
 std::atomic_bool snapshot_pane_show_vertex_shaders = false;
 std::atomic_bool snapshot_pane_show_pixel_shaders = true;
 std::atomic_bool snapshot_pane_show_compute_shaders = true;
@@ -143,9 +142,6 @@ uint32_t skip_draw_count = 0;
 }
 
 void QueueSnapshotCapture(reshade::api::device* device) {
-  // A full pending-shader flush can race the capture and overwhelm DL2's D3D12 path.
-  // Keep automatic dumping disabled for the rest of this DevKit session after any snapshot.
-  snapshot_auto_dump_suppressed = true;
   snapshot_queued_device = device;
   // Draw callbacks are only active while the trace utility tracks this device.
   // Snapshot capture keeps that trace bounded by its frame and draw limits.
@@ -9050,12 +9046,9 @@ void OnPresent(
     }
   }
 
-  if (setting_auto_dump
-      && !snapshot_auto_dump_suppressed
-      && snapshot_device == nullptr
-      && snapshot_queued_device == nullptr) {
-    renodx::utils::shader::dump::DumpAllPending();
-  }
+  // Automatic bulk shader dumping is unsafe for DL2's D3D12 process. Keep this
+  // path disabled; MCP can still explicitly export an individual shader on demand.
+  setting_auto_dump = false;
 
   reshade::api::device* active_snapshot_device = snapshot_device;
   if (active_snapshot_device == nullptr) {
