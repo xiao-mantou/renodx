@@ -1,17 +1,15 @@
-name: Clang x64
+name: DevKit x64
 
 on:
   workflow_dispatch:
   push:
     branches: [main, dyinglight2-fix, "test-*", "codex/**"]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-  pull_request:
-    branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
+    paths:
+      - "src/addons/devkit/**"
+      - "src/utils/**"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - ".github/workflows/devkit-x64.yml"
 
 jobs:
   build:
@@ -48,22 +46,15 @@ jobs:
       - name: Configure CMake (x64)
         run: cmake --preset clang-x64 -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
-      - name: Build (x64)
-        run: cmake --build --preset clang-x64-release --target dyinglight2 --verbose
+      - name: Build DevKit (x64)
+        run: cmake --build --preset clang-x64-release --target devkit --verbose
 
       - name: Show sccache stats
         if: always()
         run: sccache --show-stats
 
-      - name: Create output directory
-        run: md build_output
-
-      - name: Copy addon binaries
-        run: copy build\release\*.addon64 build_output\
-
-      - name: Upload artifacts
+      - name: Upload DevKit artifact
         uses: actions/upload-artifact@v4
         with:
-          name: renodx-dyinglight2
-          path: build_output/
-
+          name: renodx-devkit
+          path: build/release/renodx-devkit.addon64

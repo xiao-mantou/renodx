@@ -119,6 +119,8 @@ auto devkit_mcp_session = devkit_mcp_server_session::Create(DEVKIT_MCP_PIPE_PREF
 std::atomic<uint32_t> devkit_primary_device_api = 0u;
 
 std::atomic_bool snapshot_trace_with_snapshot = false;
+std::atomic_uint32_t snapshot_capture_frame_count = 2u;
+std::atomic_uint32_t snapshot_captured_frame_count = 0u;
 std::atomic_uint32_t snapshot_max_draw_count = 256u;
 std::atomic_uint32_t snapshot_captured_draw_count = 0u;
 std::atomic_bool snapshot_pane_show_vertex_shaders = false;
@@ -141,9 +143,6 @@ uint32_t skip_draw_count = 0;
 
 void QueueSnapshotCapture(reshade::api::device* device) {
   snapshot_queued_device = device;
-  if (snapshot_trace_with_snapshot.load()) {
-    renodx::utils::trace::trace_scheduled_device = device;
-  }
 }
 
 [[nodiscard]] bool ReserveSnapshotDraw() {
@@ -3962,14 +3961,12 @@ void ProcessPendingLiveShaderRequests(
 
         QueueSnapshotCapture(device);
         return ToolResult{
-            .text = snapshot_trace_with_snapshot.load()
-                        ? std::format("Queued a snapshot capture and trace for device #{}.", device_index)
-                        : std::format("Queued a snapshot capture for device #{}.", device_index),
+            .text = std::format("Queued a quiet multi-frame snapshot capture for device #{}.", device_index),
             .structured_content = json{
                 {"deviceIndex", device_index},
                 {"queued", true},
                 {"active", false},
-                {"traceQueued", snapshot_trace_with_snapshot.load()},
+                {"traceQueued", false},
             },
         }; },
   };
@@ -7591,6 +7588,7 @@ struct SettingsDeviceOption {
   DeviceData* pending_selected_device_data = nullptr;
   if (BeginSettingsSection("Snapshot")) {
     DrawSettingBoolCheckbox("Trace With Snapshot", "SnapshotTraceWithSnapshot", &snapshot_trace_with_snapshot);
+    DrawSettingUint32Textbox("Snapshot Capture Frames", "SnapshotCaptureFrames", &snapshot_capture_frame_count);
     DrawSettingUint32Textbox("Snapshot Max Draws (0 = unlimited)", "SnapshotMaxDraws", &snapshot_max_draw_count);
     DrawSettingBoolCheckbox("Show Vertex Shaders", "SnapshotPaneShowVertexShaders", &snapshot_pane_show_vertex_shaders);
     DrawSettingBoolCheckbox("Show Pixel Shaders", "SnapshotPaneShowPixelShaders", &snapshot_pane_show_pixel_shaders);
@@ -8685,6 +8683,7 @@ void InitializeUserSettings() {
   }
   for (const auto& [key, value] : std::vector<std::pair<const char*, std::atomic_uint32_t*>>({
            {"SnapshotMaxDraws", &snapshot_max_draw_count},
+           {"SnapshotCaptureFrames", &snapshot_capture_frame_count},
            {"TraceInitialFrameCount", &renodx::utils::trace::trace_initial_frame_count},
        })) {
     uint32_t temp = *value;
@@ -9044,7 +9043,7 @@ void OnPresent(
     }
   }
 
-  if (setting_auto_dump) {
+  if (setting_auto_dump && snapshot_device == nullptr && snapshot_queued_device == nullptr) {
     renodx::utils::shader::dump::DumpAllPending();
   }
 
@@ -9061,11 +9060,15 @@ void OnPresent(
       ++device_data->snapshot_rows_generation;
       device_data->snapshot_rows_valid = false;
       snapshot_submission_counter.store(0u, std::memory_order_relaxed);
+      snapshot_captured_frame_count.store(0u, std::memory_order_relaxed);
       snapshot_captured_draw_count.store(0u, std::memory_order_relaxed);
       snapshot_device = device;
       snapshot_queued_device = nullptr;
     }
   } else if (device == active_snapshot_device) {
+    const auto captured_frame_count = snapshot_captured_frame_count.fetch_add(1u, std::memory_order_relaxed) + 1u;
+    const auto required_frame_count = std::max(1u, snapshot_capture_frame_count.load(std::memory_order_relaxed));
+    if (captured_frame_count < required_frame_count) return;
     snapshot_device = nullptr;
     auto* device_data = get_data();
     std::unique_lock lock(device_data->mutex);
