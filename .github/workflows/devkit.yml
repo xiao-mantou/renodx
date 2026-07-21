@@ -2,11 +2,6 @@ name: DevKit MCP
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main, dyinglight2-fix, "test-*"]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
 
 jobs:
   build:
