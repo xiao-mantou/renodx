@@ -20,10 +20,14 @@
 namespace {
 
 renodx::mods::shader::CustomShaders custom_shaders = {
-    CustomDirectXShaders(0x4d2b3f4d),
-    CustomDirectXShaders(0x8a1c8855),
-    CustomDirectXShaders(0x79b3c079),
-    CustomDirectXShaders(0xa766966e),
+    // Disabled: guessed hashes caused crashes because the copied tonemapper
+    // template shader has mismatched inputs/outputs. Need to dump the actual
+    // shader bytecode via devkit and decompile with cmd_Decompiler before
+    // re-enabling custom_shaders.
+    // CustomDirectXShaders(0x4d2b3f4d),
+    // CustomDirectXShaders(0x8a1c8855),
+    // CustomDirectXShaders(0x79b3c079),
+    // CustomDirectXShaders(0xa766966e),
 };
 
 ShaderInjectData shader_injection;
