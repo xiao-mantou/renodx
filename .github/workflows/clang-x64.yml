@@ -4,9 +4,16 @@ on:
   workflow_dispatch:
   push:
     branches: [main, dyinglight2-fix, "test-*", "codex/**"]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
+    paths:
+      - "src/games/dyinglight2/**"
+      - "src/mods/**"
+      - "src/shaders/**"
+      - "src/utils/settings.hpp"
+      - "src/utils/swapchain.hpp"
+      - "src/utils/swapchain_v2.hpp"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - ".github/workflows/clang-x64.yml"
   pull_request:
     branches: [main]
     paths-ignore:
