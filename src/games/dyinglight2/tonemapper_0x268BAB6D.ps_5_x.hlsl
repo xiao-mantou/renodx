@@ -11,14 +11,10 @@ cbuffer cb0 : register(b0) {
   float4 cb0[2];
 }
 
-cbuffer cb6 : register(b6) {
-  ShaderInjectData injectedData : packoffset(c0);
-}
-
 // 3Dmigoto declarations
 #define cmp -
 
-void main(float4 v0: SV_POSITION0, float4 v1: TEXCOORD0, float4 v2: TEXCOORD1, out float4 o0: SV_TARGET0) {
+void main(float4 v1: TEXCOORD0, out float4 o0: SV_TARGET0) {
   float4 r0, r1, r2, r3;
 
   r0.x = -1000 + cb0[1].y;
@@ -35,35 +31,25 @@ void main(float4 v0: SV_POSITION0, float4 v1: TEXCOORD0, float4 v2: TEXCOORD1, o
   r0.yzw = saturate(r1.xyz + r0.yzw);
   r1.xyz = float3(1, 1, 1) + -r0.yzw;
   r0.xyz = r0.xxx * r1.xyz + r0.yzw;
-  r1.xy = -abs(v2.zw) * abs(v2.zw) + float2(1, 1);
-  r0.w = saturate(-r1.x * r1.y + 1);
-  r0.w = r0.w * 1.5 + -0.5;
-  r0.w = max(0, r0.w);
-  r1.xyzw = -v2.xyxy + v1.xyzw;
-  r1.xyzw = r0.wwww * r1.xyzw + v2.xyxy;
-  r2.x = t0.SampleLevel(s0_s, r1.xy, 0).x;
-  r2.z = t0.SampleLevel(s0_s, r1.zw, 0).z;
-  r1.xy = (uint2)v0.xy;
-  r1.zw = float2(0, 0);
-  r2.y = t0.Load(r1.xyz).y;
+  r1 = t0.SampleLevel(s0_s, v1.xy, 0);
 
-  const float3 untonemapped = r2.xyz;
-  float3 neutral_sdr = renodx::tonemap::renodrt::NeutralSDR(r2.xyz);
+  const float3 untonemapped = r1.xyz;
+  float3 neutral_sdr = renodx::tonemap::renodrt::NeutralSDR(r1.xyz);
 
   if (CUSTOM_AUTO_EXPOSURE != 1.f) {
-    r2.xyz = neutral_sdr;
+    r1.xyz = neutral_sdr;
   }
   float3 signs = 1.f;
 
   // Lut sample
   if (RENODX_TONE_MAP_TYPE == 0.f) {
-    r1.xyz = log2(abs(r2.xyz));
-    r1.xyz = float3(0.416666657, 0.416666657, 0.416666657) * r1.xyz;
-    r1.xyz = exp2(r1.xyz);
-    r1.xyz = r1.xyz * float3(1.05499995, 1.05499995, 1.05499995) + float3(-0.0549999997, -0.0549999997, -0.0549999997);
-    r3.xyz = float3(12.9200001, 12.9200001, 12.9200001) * r2.xyz;
-    r2.xyz = cmp(float3(0.00313080009, 0.00313080009, 0.00313080009) >= r2.xyz);
-    r1.xyz = r2.xyz ? r3.xyz : r1.xyz;
+    r2.xyz = log2(abs(r1.xyz));
+    r2.xyz = float3(0.416666657, 0.416666657, 0.416666657) * r2.xyz;
+    r2.xyz = exp2(r2.xyz);
+    r2.xyz = r2.xyz * float3(1.05499995, 1.05499995, 1.05499995) + float3(-0.0549999997, -0.0549999997, -0.0549999997);
+    r3.xyz = float3(12.9200001, 12.9200001, 12.9200001) * r1.xyz;
+    r1.xyz = cmp(float3(0.00313080009, 0.00313080009, 0.00313080009) >= r1.xyz);
+    r1.xyz = r1.xyz ? r3.xyz : r2.xyz;
     r1.xyz = r1.xyz * float3(0.96875, 0.96875, 0.96875) + float3(0.015625, 0.015625, 0.015625);
     r1.xyz = lutTexture.SampleLevel(s1_s, r1.xyz, 0).xyz;
     r2.xyz = r1.xyz * float3(0.947867274, 0.947867274, 0.947867274) + float3(0.0521326996, 0.0521326996, 0.0521326996);
@@ -80,7 +66,7 @@ void main(float4 v0: SV_POSITION0, float4 v1: TEXCOORD0, float4 v2: TEXCOORD1, o
     lut_config.type_output = renodx::lut::config::type::SRGB;
     lut_config.scaling = CUSTOM_LUT_SCALING;
     lut_config.lut_sampler = s1_s;
-    r1.xyz = renodx::lut::Sample(lutTexture, lut_config, r2.xyz);
+    r1.xyz = renodx::lut::Sample(lutTexture, lut_config, r1.xyz);
     signs = renodx::math::Sign(r1.xyz);
     r1.xyz = abs(r1.xyz);
   }
@@ -100,7 +86,7 @@ void main(float4 v0: SV_POSITION0, float4 v1: TEXCOORD0, float4 v2: TEXCOORD1, o
   r0.w = saturate(dot(float3(0.212500006, 0.715399981, 0.0720999986), r0.xyz));
   r0.xyz = r0.xyz + -r0.www;
   r0.xyz = cb0[1].xxx * r0.xyz + r0.www;
-  r1.xy = cmp(cb0[0].yx < abs(v2.wz));
+  r1.xy = cmp(cb0[0].yx < abs(v1.wz));
   r0.w = (int)r1.y | (int)r1.x;
   r1.xyz = r0.www ? float3(0, 0, 0) : r0.xyz;
   r0.w = cmp(0 < cb0[0].z);
