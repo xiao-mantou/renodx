@@ -119,6 +119,8 @@ auto devkit_mcp_session = devkit_mcp_server_session::Create(DEVKIT_MCP_PIPE_PREF
 std::atomic<uint32_t> devkit_primary_device_api = 0u;
 
 std::atomic_bool snapshot_trace_with_snapshot = false;
+std::atomic_uint32_t snapshot_max_draw_count = 256u;
+std::atomic_uint32_t snapshot_captured_draw_count = 0u;
 std::atomic_bool snapshot_pane_show_vertex_shaders = false;
 std::atomic_bool snapshot_pane_show_pixel_shaders = true;
 std::atomic_bool snapshot_pane_show_compute_shaders = true;
@@ -142,6 +144,12 @@ void QueueSnapshotCapture(reshade::api::device* device) {
   if (snapshot_trace_with_snapshot.load()) {
     renodx::utils::trace::trace_scheduled_device = device;
   }
+}
+
+[[nodiscard]] bool ReserveSnapshotDraw() {
+  const auto max_draw_count = snapshot_max_draw_count.load(std::memory_order_relaxed);
+  if (max_draw_count == 0u) return true;
+  return snapshot_captured_draw_count.fetch_add(1u, std::memory_order_relaxed) < max_draw_count;
 }
 std::atomic_uint32_t device_data_index = 0;
 
@@ -4449,6 +4457,7 @@ bool OnCopyResource(
   auto* device = cmd_list->get_device();
 
   if (device == active_snapshot_device) {
+    if (!ReserveSnapshotDraw()) return false;
     DrawDetails draw_details = {
         .draw_method = DrawDetails::DrawMethods::COPY,
         .timestamp = std::chrono::system_clock::now(),
@@ -4464,9 +4473,6 @@ bool OnCopyResource(
     auto* device_data = renodx::utils::data::Get<DeviceData>(device);
     if (device_data == nullptr) return false;
     std::unique_lock lock(device_data->mutex);
-    if (snapshot_trace_with_snapshot) {
-      reshade::log::message(reshade::log::level::debug, std::format("Snapshot #{}", device_data->draw_details_list.size()).c_str());
-    }
     const auto draw_index = device_data->draw_details_list.size();
     device_data->draw_details_list.push_back(std::move(draw_details));
     if (SupportsSnapshotSubmissionOrder(device->get_api()) && device_data->draw_details_list.back().cmd_list_handle != 0u) {
@@ -4495,6 +4501,7 @@ bool OnCopyTextureRegion(
   auto* device = cmd_list->get_device();
 
   if (device == active_snapshot_device) {
+    if (!ReserveSnapshotDraw()) return false;
     DrawDetails draw_details = {
         .draw_method = DrawDetails::DrawMethods::COPY,
         .timestamp = std::chrono::system_clock::now(),
@@ -4510,9 +4517,6 @@ bool OnCopyTextureRegion(
     auto* device_data = renodx::utils::data::Get<DeviceData>(device);
     if (device_data == nullptr) return false;
     std::unique_lock lock(device_data->mutex);
-    if (snapshot_trace_with_snapshot) {
-      reshade::log::message(reshade::log::level::debug, std::format("Snapshot #{}", device_data->draw_details_list.size()).c_str());
-    }
     const auto draw_index = device_data->draw_details_list.size();
     device_data->draw_details_list.push_back(std::move(draw_details));
     if (SupportsSnapshotSubmissionOrder(device->get_api()) && device_data->draw_details_list.back().cmd_list_handle != 0u) {
@@ -4754,6 +4758,7 @@ bool OnDraw(reshade::api::command_list* cmd_list, DrawDetails::DrawMethods draw_
   if (device_data == nullptr) return false;
 
   if (device == snapshot_device) {
+    if (!ReserveSnapshotDraw()) return false;
     auto* state = renodx::utils::shader::GetCurrentState(cmd_list);
 
     auto* command_list_data = renodx::utils::data::Get<CommandListData>(cmd_list);
@@ -5081,9 +5086,6 @@ bool OnDraw(reshade::api::command_list* cmd_list, DrawDetails::DrawMethods draw_
     }
 
     // device_data->command_list_data.push_back(*command_list_data);
-    if (snapshot_trace_with_snapshot) {
-      reshade::log::message(reshade::log::level::debug, std::format("Snapshot #{}", device_data->draw_details_list.size()).c_str());
-    }
     const auto draw_index = device_data->draw_details_list.size();
     const auto cmd_list_handle = draw_details.cmd_list_handle;
     device_data->draw_details_list.push_back(std::move(draw_details));
@@ -7589,6 +7591,7 @@ struct SettingsDeviceOption {
   DeviceData* pending_selected_device_data = nullptr;
   if (BeginSettingsSection("Snapshot")) {
     DrawSettingBoolCheckbox("Trace With Snapshot", "SnapshotTraceWithSnapshot", &snapshot_trace_with_snapshot);
+    DrawSettingUint32Textbox("Snapshot Max Draws (0 = unlimited)", "SnapshotMaxDraws", &snapshot_max_draw_count);
     DrawSettingBoolCheckbox("Show Vertex Shaders", "SnapshotPaneShowVertexShaders", &snapshot_pane_show_vertex_shaders);
     DrawSettingBoolCheckbox("Show Pixel Shaders", "SnapshotPaneShowPixelShaders", &snapshot_pane_show_pixel_shaders);
     DrawSettingBoolCheckbox("Show Compute Shaders", "SnapshotPaneShowComputeShaders", &snapshot_pane_show_compute_shaders);
@@ -8679,6 +8682,7 @@ void InitializeUserSettings() {
     }
   }
   for (const auto& [key, value] : std::vector<std::pair<const char*, std::atomic_uint32_t*>>({
+           {"SnapshotMaxDraws", &snapshot_max_draw_count},
            {"TraceInitialFrameCount", &renodx::utils::trace::trace_initial_frame_count},
        })) {
     uint32_t temp = *value;
@@ -9055,6 +9059,7 @@ void OnPresent(
       ++device_data->snapshot_rows_generation;
       device_data->snapshot_rows_valid = false;
       snapshot_submission_counter.store(0u, std::memory_order_relaxed);
+      snapshot_captured_draw_count.store(0u, std::memory_order_relaxed);
       snapshot_device = device;
       snapshot_queued_device = nullptr;
     }
