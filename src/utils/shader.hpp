@@ -274,6 +274,15 @@ struct PipelineShaderDetails {
       });
       this->compatible_shader_infos[shader_type_index] = this->subobject_shaders.back();
 
+      // TEMP DEBUG: log all pixel shaders encountered (only for DL2 debug build)
+#ifdef DEBUG_LEVEL_0
+      if (subobject.type == 8 /* pixel shader */) {
+        std::stringstream ss;
+        ss << "utils::shader::TempDebug(PS hash: " << PRINT_CRC32(shader_hash) << ")";
+        reshade::log::message(reshade::log::level::debug, ss.str().c_str());
+      }
+#endif
+
       if (replacement_subobjects != nullptr) {
 #ifdef DEBUG_LEVEL_0
         std::stringstream s;
