@@ -276,7 +276,7 @@ struct PipelineShaderDetails {
 
       // TEMP DEBUG: log all pixel shaders encountered (only for DL2 debug build)
 #ifdef DEBUG_LEVEL_0
-      if (subobject.type == 8 /* pixel shader */) {
+      if (subobject.type == reshade::api::pipeline_subobject_type::pixel_shader) {
         std::stringstream ss;
         ss << "utils::shader::TempDebug(PS hash: " << PRINT_CRC32(shader_hash) << ")";
         reshade::log::message(reshade::log::level::debug, ss.str().c_str());

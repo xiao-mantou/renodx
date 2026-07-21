@@ -55,13 +55,13 @@ jobs:
 
       - name: Copy devkit binaries
         run: |
-          copy build\Debug\renodx-devkit.addon64 build_output\ 2>nul
-          copy build\Debug\renodx-mcp-bridge.exe build_output\ 2>nul
-          if exist bin\cmd_Decompiler.exe copy bin\cmd_Decompiler.exe build_output\
-          if exist bin\slangc.exe copy bin\slangc.exe build_output\
-          if exist bin\dxc.exe copy bin\dxc.exe build_output\
-          if exist bin\dxcompiler.dll copy bin\dxcompiler.dll build_output\
-          if exist bin\fxc.exe copy bin\fxc.exe build_output\
+          copy build\Debug\renodx-devkit.addon64 build_output\
+          copy build\Debug\renodx-mcp-bridge.exe build_output\
+          if (Test-Path bin\cmd_Decompiler.exe) { copy bin\cmd_Decompiler.exe build_output\ }
+          if (Test-Path bin\slangc.exe) { copy bin\slangc.exe build_output\ }
+          if (Test-Path bin\dxc.exe) { copy bin\dxc.exe build_output\ }
+          if (Test-Path bin\dxcompiler.dll) { copy bin\dxcompiler.dll build_output\ }
+          if (Test-Path bin\fxc.exe) { copy bin\fxc.exe build_output\ }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
