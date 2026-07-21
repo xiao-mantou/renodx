@@ -20,9 +20,10 @@
 namespace {
 
 renodx::mods::shader::CustomShaders custom_shaders = {
-    CustomDirectXShaders(0x2378686B),
-    CustomDirectXShaders(0x43BA757D),
-    CustomDirectXShaders(0xA7F77A42),
+    CustomDirectXShaders(0x4d2b3f4d),
+    CustomDirectXShaders(0x8a1c8855),
+    CustomDirectXShaders(0x79b3c079),
+    CustomDirectXShaders(0xa766966e),
 };
 
 ShaderInjectData shader_injection;
