@@ -336,7 +336,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
       // Upgrade targets: R8G8B8A8 -> R16G16B16A16_FLOAT (exclude copy_dest
       // per project convention to avoid matching D3D12 frame generation textures)
-      renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
+      renodx::mods::swapchain::resource_upgrade_infos.push_back({
           .old_format = reshade::api::format::r8g8b8a8_typeless,
           .new_format = reshade::api::format::r16g16b16a16_float,
           .ignore_size = false,
@@ -345,7 +345,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .usage_include = reshade::api::resource_usage::render_target,
       });
 
-      renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
+      renodx::mods::swapchain::resource_upgrade_infos.push_back({
           .old_format = reshade::api::format::r8g8b8a8_unorm,
           .new_format = reshade::api::format::r16g16b16a16_float,
           .ignore_size = false,
