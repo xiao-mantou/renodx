@@ -7682,6 +7682,7 @@ struct SettingsDeviceOption {
 
   if (BeginSettingsSection("Trace")) {
     DrawSettingBoolCheckbox("Trace All", "TraceAll", &renodx::utils::trace::trace_all);
+    DrawSettingBoolCheckbox("Trace Event Logging", "TraceEventLogging", &renodx::utils::trace::trace_event_logging);
     DrawSettingBoolCheckbox("Trace Pipeline Creation", "TracePipelineCreation", &renodx::utils::trace::trace_pipeline_creation);
     DrawSettingBoolCheckbox("Trace Descriptor Tables", "TraceDescriptorTables", &renodx::utils::descriptor::trace_descriptor_tables);
     DrawSettingBoolCheckbox("Trace Constant Buffers", "TraceConstantBuffers", &renodx::utils::constants::capture_constant_buffers);
@@ -8645,6 +8646,7 @@ void InitializeUserSettings() {
 
   for (const auto& [key, value] : std::vector<std::pair<const char*, std::atomic_bool*>>({
            {"TraceAll", &renodx::utils::trace::trace_all},
+           {"TraceEventLogging", &renodx::utils::trace::trace_event_logging},
            {"TracePipelineCreation", &renodx::utils::trace::trace_pipeline_creation},
            {"TraceDescriptorTables", &renodx::utils::descriptor::trace_descriptor_tables},
            {"TraceConstantBuffers", &renodx::utils::constants::capture_constant_buffers},
