@@ -104,7 +104,43 @@ Added pre/post `create_pipeline` logging in both code paths (constructor Path A 
 
 ### Verification status
 - [x] Code changes applied to `src/utils/shader.hpp`
+- [x] Commit and push (commit a112dd9 — DestroyPipelineSubobjects typo fix)
+- [x] GitHub Actions clang build
+- [x] Deploy and test — game no longer crashes, shader replacement works
+- [x] `create_pipeline` succeeds — replacement pipeline created
+
+## 2026-07-23: slider behavior fix (swap_chain_scaling_nits double-scaling)
+
+### Problem
+After `0x268BAB6D` replacement started working, slider behavior was incorrect:
+1. **Peak Brightness** acted as a ceiling (normal), but setting it below Game Brightness made the image gray.
+2. **Game Brightness** controlled *overall* brightness (both game and UI), as if it were the global scaling factor.
+3. **UI Brightness** was *inverted* — turning it up made the scene darker, turning it down made the scene brighter.
+
+### Root cause analysis
+The DL2 path has two scaling stages for game content:
+1. **Tonemapper replacement**: `RenderIntermediatePass()` applies `intermediate_scaling = DIFFUSE_WHITE / GRAPHICS_WHITE` to game pixels before encoding to intermediate format.
+2. **Swapchain proxy**: `SwapChainPass()` applies `swap_chain_scaling_nits` to all pixels (both game and UI) after decoding.
+
+`swap_chain_proxy_pixel_shader.ps_5_x.hlsl` line 10 was set to `RENODX_DIFFUSE_WHITE_NITS`.
+This caused:
+- **UI pixels**: SDR 1.0 → `* DIFFUSE_WHITE` → UI brightness tied to Game Brightness slider.
+- **Game pixels**: SDR 1.0 → `* (DIFFUSE_WHITE / GRAPHICS_WHITE)` (intermediate) → `* DIFFUSE_WHITE` (swapchain) → net `DIFFUSE_WHITE² / GRAPHICS_WHITE`.
+  - When `GRAPHICS_WHITE` (UI Brightness) increases, the denominator grows → game gets darker (inverted UI slider).
+  - When `DIFFUSE_WHITE` (Game Brightness) increases, both factors grow → everything gets brighter (Game controls global).
+
+### Fix
+Changed `config.swap_chain_scaling_nits` from `RENODX_DIFFUSE_WHITE_NITS` to `RENODX_GRAPHICS_WHITE_NITS` in `swap_chain_proxy_pixel_shader.ps_5_x.hlsl`.
+
+After the fix:
+- **UI pixels**: SDR 1.0 → `* GRAPHICS_WHITE` → UI brightness correctly controlled by UI Brightness slider.
+- **Game pixels**: SDR 1.0 → `* (DIFFUSE_WHITE / GRAPHICS_WHITE)` (intermediate) → `* GRAPHICS_WHITE` (swapchain) → net `DIFFUSE_WHITE` → game brightness correctly controlled by Game Brightness slider.
+
+### Files changed
+- `src/games/dyinglight2/swap_chain_proxy_pixel_shader.ps_5_x.hlsl` — line 10: `DIFFUSE_WHITE_NITS` → `GRAPHICS_WHITE_NITS`
+
+### Verification status
+- [x] Code change applied
 - [ ] Commit and push
 - [ ] GitHub Actions clang build
-- [ ] Deploy and test
-- [ ] Check if `create_pipeline` returns false or hangs
+- [ ] Deploy and test sliders
