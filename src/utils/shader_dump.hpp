@@ -421,15 +421,10 @@ static void Use(DWORD fdw_reason) {
   switch (fdw_reason) {
     case DLL_PROCESS_ATTACH:
       if (internal::shared.RegisterModule()) {
-        reshade::log::message(reshade::log::level::info, "ShaderDump attached.");
+        reshade::log::message(reshade::log::level::info, "ShaderDump disabled (on-demand export only).");
       }
-      internal::shared.RegisterEvent<reshade::addon_event::init_device>(internal::OnInitDevice);
-      internal::shared.RegisterEvent<reshade::addon_event::init_pipeline>(internal::OnInitPipeline);
-
       break;
     case DLL_PROCESS_DETACH:
-      internal::shared.UnregisterEvent<reshade::addon_event::init_device>(internal::OnInitDevice);
-      internal::shared.UnregisterEvent<reshade::addon_event::init_pipeline>(internal::OnInitPipeline);
       internal::shared.UnregisterModule();
       break;
   }
