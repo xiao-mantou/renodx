@@ -514,6 +514,17 @@ static bool BuildReplacementPipeline(PipelineShaderDetails* details) {
   details->initialized_replacement = true;
   details->replacement_pipeline = {0};
   details->replacement_stages = static_cast<reshade::api::pipeline_stage>(0);
+#ifdef DEBUG_LEVEL_1
+  {
+    std::stringstream s;
+    s << "utils::shader::BuildReplacementPipeline(enter";
+    s << ", subobject_shaders: " << details->subobject_shaders.size();
+    s << ", subobjects: " << details->subobjects.size();
+    s << ", shader_hashes: " << details->shader_hashes.size();
+    s << ")";
+    reshade::log::message(reshade::log::level::info, s.str().c_str());
+  }
+#endif
   if (details->subobject_shaders.empty()) return true;
 
   auto subobject_count = details->subobjects.size();
