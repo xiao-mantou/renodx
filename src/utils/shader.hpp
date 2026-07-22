@@ -560,13 +560,17 @@ static bool BuildReplacementPipeline(PipelineShaderDetails* details) {
           details->replacement_stages |= info.stage;
         });
 #ifdef DEBUG_LEVEL_1
-    if (found_replacement) {
-      std::stringstream s;
-      s << "utils::shader::BuildReplacementPipeline(checking ";
-      s << PRINT_CRC32(info.shader_hash);
-      s << ", found: YES";
-      s << ")";
-      reshade::log::message(reshade::log::level::info, s.str().c_str());
+    {
+      static std::unordered_set<uint64_t> logged_check;
+      if (logged_check.insert(details->pipeline.handle).second) {
+        std::stringstream s;
+        s << "utils::shader::BuildReplacementPipeline(checking ";
+        s << PRINT_CRC32(info.shader_hash);
+        s << ", found: " << (found_replacement ? "YES" : "NO");
+        s << ", runtime_count: " << runtime_replacement_count.load();
+        s << ")";
+        reshade::log::message(reshade::log::level::info, s.str().c_str());
+      }
     }
 #endif
   }
