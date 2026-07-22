@@ -14,7 +14,7 @@ cbuffer cb0 : register(b0) {
 // 3Dmigoto declarations
 #define cmp -
 
-void main(float4 v1: TEXCOORD0, out float4 o0: SV_TARGET0) {
+void main(float4 v0: SV_POSITION0, float4 v1: TEXCOORD0, out float4 o0: SV_TARGET0) {
   float4 r0, r1, r2, r3;
 
   r0.x = -1000 + cb0[1].y;
