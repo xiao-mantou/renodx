@@ -514,17 +514,6 @@ static bool BuildReplacementPipeline(PipelineShaderDetails* details) {
   details->initialized_replacement = true;
   details->replacement_pipeline = {0};
   details->replacement_stages = static_cast<reshade::api::pipeline_stage>(0);
-#ifdef DEBUG_LEVEL_1
-  {
-    std::stringstream s;
-    s << "utils::shader::BuildReplacementPipeline(enter";
-    s << ", subobject_shaders: " << details->subobject_shaders.size();
-    s << ", subobjects: " << details->subobjects.size();
-    s << ", shader_hashes: " << details->shader_hashes.size();
-    s << ")";
-    reshade::log::message(reshade::log::level::info, s.str().c_str());
-  }
-#endif
   if (details->subobject_shaders.empty()) return true;
 
   auto subobject_count = details->subobjects.size();
@@ -543,24 +532,24 @@ static bool BuildReplacementPipeline(PipelineShaderDetails* details) {
                 subobject_count);
           }
           auto& subobject = replacement_subobjects[info.index];
-#ifdef DEBUG_LEVEL_0
+#if defined(DEBUG_LEVEL_0) || defined(DEBUG_LEVEL_1)
           {
             std::stringstream s;
             s << "utils::shader::BuildReplacementPipeline(Replacing ";
             s << PRINT_CRC32(info.shader_hash);
             s << ")";
-            reshade::log::message(reshade::log::level::debug, s.str().c_str());
+            reshade::log::message(reshade::log::level::info, s.str().c_str());
           }
 #endif
           AddShaderReplacement(&subobject, new_shader_pair.second);
           details->replacement_stages |= info.stage;
         });
 #ifdef DEBUG_LEVEL_1
-    {
+    if (found_replacement) {
       std::stringstream s;
       s << "utils::shader::BuildReplacementPipeline(checking ";
       s << PRINT_CRC32(info.shader_hash);
-      s << ", found: " << (found_replacement ? "YES" : "NO");
+      s << ", found: YES";
       s << ")";
       reshade::log::message(reshade::log::level::info, s.str().c_str());
     }

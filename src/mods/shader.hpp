@@ -1327,14 +1327,17 @@ inline constexpr auto OnCommandAction = []<typename T, typename Context>(
 
 #ifdef DEBUG_LEVEL_1
     {
-      std::stringstream s;
-      s << "mods::shader::OnCommandAction(found shader: ";
-      s << PRINT_CRC32(shader_hash);
-      s << ", pipeline_details: " << (state.pipeline_details != nullptr ? "non-null" : "NULL");
-      s << ", on_draw: " << (custom_shader_info->on_draw != nullptr ? "set" : "null");
-      s << ", on_replace: " << (custom_shader_info->on_replace != nullptr ? "set" : "null");
-      s << ")";
-      reshade::log::message(reshade::log::level::info, s.str().c_str());
+      static std::unordered_set<uint32_t> logged_found;
+      if (logged_found.insert(shader_hash).second) {
+        std::stringstream s;
+        s << "mods::shader::OnCommandAction(found shader: ";
+        s << PRINT_CRC32(shader_hash);
+        s << ", pipeline_details: " << (state.pipeline_details != nullptr ? "non-null" : "NULL");
+        s << ", on_draw: " << (custom_shader_info->on_draw != nullptr ? "set" : "null");
+        s << ", on_replace: " << (custom_shader_info->on_replace != nullptr ? "set" : "null");
+        s << ")";
+        reshade::log::message(reshade::log::level::info, s.str().c_str());
+      }
     }
 #endif
 
