@@ -510,6 +510,21 @@ inline uint32_t GetCurrentShaderHash(CommandListData* cmd_list_data, reshade::ap
 }
 
 static bool BuildReplacementPipeline(PipelineShaderDetails* details) {
+#ifdef DEBUG_LEVEL_1
+  {
+    static std::unordered_set<uint64_t> logged;
+    if (logged.insert(details->pipeline.handle).second) {
+      std::stringstream s;
+      s << "utils::shader::BuildReplacementPipeline(pipeline: " << PRINT_PTR(details->pipeline.handle);
+      s << ", initialized: " << (details->initialized_replacement ? "YES" : "no");
+      s << ", subobject_shaders: " << details->subobject_shaders.size();
+      s << ", shader_hashes: " << details->shader_hashes.size();
+      s << ", replacement_pipeline: " << PRINT_PTR(details->replacement_pipeline.handle);
+      s << ")";
+      reshade::log::message(reshade::log::level::info, s.str().c_str());
+    }
+  }
+#endif
   if (details->initialized_replacement) return true;
   details->initialized_replacement = true;
   details->replacement_pipeline = {0};
