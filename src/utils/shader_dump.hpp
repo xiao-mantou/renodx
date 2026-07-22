@@ -412,34 +412,9 @@ static std::filesystem::path GetShaderDumpPath(
   return GetShaderDumpPath(shader_hash, shader_data, shader_type, prefix, device_api);
 }
 
-static void DumpAllPending() {
-  auto* data = internal::shared.data;
-  if (data == nullptr) return;
-
-  uint32_t dumped_count = 0u;
-  data->shaders.for_each_m([&](std::pair<const uint32_t, internal::ShaderInfo>& pair) {
-    const auto& shader_hash = pair.first;
-    auto& shader_info = pair.second;
-    if (!shader_info.pending || shader_info.dumped) return;
-
-    std::stringstream s;
-    s << "utils::shader::dump(Starting dump: ";
-    s << PRINT_CRC32(shader_hash);
-    s << ")";
-    reshade::log::message(reshade::log::level::debug, s.str().c_str());
-
-    if (!DumpShader(shader_hash, shader_info.data, shader_info.type, "", shader_info.device_api)) {
-      return;
-    }
-
-    shader_info.data.clear();
-    shader_info.pending = false;
-    shader_info.dumped = true;
-    ++dumped_count;
-  });
-
-  if (dumped_count != 0u) data->pending_dump_count.fetch_sub(dumped_count);
-}
+// DL2 can become unstable when every pending shader is written from the render loop.
+// Keep bulk dumping disabled; callers must explicitly export a selected shader instead.
+static void DumpAllPending() {}
 
 static void Use(DWORD fdw_reason) {
   renodx::utils::shader::Use(fdw_reason);
