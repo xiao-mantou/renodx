@@ -23,6 +23,7 @@
 #include <span>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <include/reshade.hpp>
@@ -1301,6 +1302,22 @@ inline constexpr auto OnCommandAction = []<typename T, typename Context>(
     const uint32_t shader_hash = matched_shader_hash != 0u ? matched_shader_hash : state_shader_hash;
     if (shader_hash == 0u) return response;
 
+#ifdef DEBUG_LEVEL_1
+    {
+      static std::unordered_set<uint32_t> logged_hashes;
+      if (logged_hashes.insert(shader_hash).second) {
+        bool matched = custom_shaders.contains(shader_hash);
+        std::stringstream s;
+        s << "mods::shader::OnCommandAction(shader hash seen: ";
+        s << PRINT_CRC32(shader_hash);
+        s << ", matched: " << (matched ? "YES" : "no");
+        s << ", stage: " << shader_stage;
+        s << ")";
+        reshade::log::message(reshade::log::level::info, s.str().c_str());
+      }
+    }
+#endif
+
     const CustomShader* custom_shader_info = matched_custom_shader;
     if (custom_shader_info == nullptr) {
       const auto custom_shader_it = custom_shaders.find(shader_hash);
@@ -1309,11 +1326,13 @@ inline constexpr auto OnCommandAction = []<typename T, typename Context>(
     }
 
 #ifdef DEBUG_LEVEL_1
-    std::stringstream s;
-    s << "mods::shader::OnCommandAction(found shader: ";
-    s << PRINT_CRC32(shader_hash);
-    s << ")";
-    reshade::log::message(reshade::log::level::debug, s.str().c_str());
+    {
+      std::stringstream s;
+      s << "mods::shader::OnCommandAction(found shader: ";
+      s << PRINT_CRC32(shader_hash);
+      s << ")";
+      reshade::log::message(reshade::log::level::debug, s.str().c_str());
+    }
 #endif
 
     if (custom_shader_info->on_draw != nullptr) {
