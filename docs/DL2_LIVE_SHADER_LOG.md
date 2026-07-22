@@ -41,3 +41,70 @@ Interpretation: the world path is consistent with `0x268BAB6D` producing red-onl
 - Interpretation: at least one `t0` channel exceeded `1.0` in visible highlights. The colored result is expected from the per-channel threshold, rather than a binary all-channel white test.
 
 Conclusion: `0x268BAB6D` receives a linear scene/post-process signal with SDR-above highlight headroom. It is a viable shader-side HDR bridge capture point; it is not merely a completed SDR swapchain image.
+
+## 2026-07-23: test-M crash fix (shader signature mismatch)
+
+### Problem
+- Deployed `renodx-dyinglight2.addon64` built from commit `a5527e0` (with `SV_POSITION0` fix).
+- Game window became unresponsive ("未响应") instead of crashing.
+
+### Diagnosis from ReShade.log (21614 lines, 01:19:43 ~ 01:20:01)
+- **0x268BAB6D was registered 3 times** (`Registered API-based runtime replacement: 0x268bab6d`) but **never matched by any pipeline** — no `checking 0x268bab6d, found: YES`, no `PipelineShaderDetails(hash: 0x268bab6d`, no `Replacing 0x268bab6d`.
+- **Game never completed a single present** — no present/render logs at all.
+- **Log abruptly stops at 01:20:01:093** mid pipeline-creation; game hung.
+- **Swapchain modification succeeded**: `r8g8b8a8_unorm => r16g16b16a16_float` on D3D12 (1920x1080 primary, 1x1 temp, 1024x768 secondary).
+- **DX11 dummy window (EOSOVHDummyWindowClass) correctly skipped**.
+- **No ERROR/FATAL/exception** — only WARN (`LoadLibrary deadlock`, `No swapchain desc`).
+
+### Interpretation
+- The `SV_POSITION0` signature fix likely resolved the `create_pipeline` crash (no crash this run).
+- However, the game hung during render initialization **before** reaching any scene that uses `0x268BAB6D`.
+- The hang is **not** caused by the tonemapper replacement (it never triggered).
+- Likely cause: swapchain modification (R16G16B16A16_FLOAT upgrade + proxy shader + resource cloning) may be incompatible with DL2's D3D12 render pipeline at this loading stage.
+
+### Next steps
+1. Wait longer (1-2 min) to confirm it's a true hang, not slow loading.
+2. If persistent, try disabling `swap_chain_proxy_vertex/pixel_shader` or `use_resource_cloning` to isolate.
+3. Compare with pre-fix run: previously the game reached the tonemapper scene and crashed at `create_pipeline`; now it hangs earlier. The swapchain config itself is unchanged between runs, so the hang may be timing/state-dependent rather than config-dependent.
+
+## 2026-07-23: test-N black screen diagnosis (create_pipeline in constructor)
+
+### Problem
+- Deployed `renodx-dyinglight2.addon64` (commit a5527e0, with SV_POSITION0 fix).
+- Game can enter menu, but entering game scene shows black screen and hangs.
+- ReShade.log now has 67048 lines (vs 21614 in previous run), running 01:29:53 ~ 01:30:55 (62s).
+
+### Diagnosis from ReShade.log
+- **0x268BAB6D was successfully found and entered replacement flow** (unlike previous run):
+  - `PipelineShaderDetails(hash: 0x268bab6d, in_inverse_map: no, use_replace_async: no)` (line 21477)
+  - `ClonePipelineSubObjects(cloning pixel_shader with 0x268bab6d)` (line 21491)
+  - `BuildReplacementPipeline(Added replacement 0x268bab6d)` (line 21498) — this is from PipelineShaderDetails constructor (Path A), NOT from BuildReplacementPipeline function
+  - `OnCommandAction(shader hash seen: 0x268bab6d, matched: YES, stage: true)` (line 21707)
+- **But NO `Replacing 0x268bab6d`, NO `New pipeline`, NO `Failed to replace` logs** — the create_pipeline call result was invisible because:
+  - Constructor (Path A) success log was under `DEBUG_LEVEL_2` (not enabled)
+  - Constructor (Path A) failure log was under `DEBUG_LEVEL_0` (not enabled)
+  - `BuildReplacementPipeline` function was skipped because `initialized_replacement = true` was set in constructor
+- **Swapchain modification succeeded**: `r8g8b8a8_unorm => r16g16b16a16_float`
+- **No OnPresent/render logs** — game hung before completing first present after entering scene
+
+### Root cause (initial hypothesis)
+`create_pipeline` is called inside `PipelineShaderDetails` constructor (shader.hpp:334-399, Path A) when `!use_replace_async` and shader hash matches `runtime_replacements`. The call either:
+1. Returns false (shader signature/layout mismatch) — but failure log was hidden under DEBUG_LEVEL_0
+2. Hangs the GPU (driver-level issue)
+
+The SV_POSITION0 signature fix did NOT resolve the underlying create_pipeline issue — it only changed where the crash manifests (from BuildReplacementPipeline function to PipelineShaderDetails constructor).
+
+### Fix applied
+Added pre/post `create_pipeline` logging in both code paths (constructor Path A and BuildReplacementPipeline function) under `DEBUG_LEVEL_0 || DEBUG_LEVEL_1`:
+- `calling create_pipeline` (before) — to detect hangs (if this appears but no "returned" log, it's a hang)
+- `create_pipeline returned: true/false` (after) — to detect failures
+- Changed constructor success log from `DEBUG_LEVEL_2` to `DEBUG_LEVEL_0 || DEBUG_LEVEL_1`
+- Changed constructor failure log from `DEBUG_LEVEL_0` to `DEBUG_LEVEL_0 || DEBUG_LEVEL_1`
+- Removed `assert(built_pipeline_ok)` (meaningless in Release builds)
+
+### Verification status
+- [x] Code changes applied to `src/utils/shader.hpp`
+- [ ] Commit and push
+- [ ] GitHub Actions clang build
+- [ ] Deploy and test
+- [ ] Check if `create_pipeline` returns false or hangs

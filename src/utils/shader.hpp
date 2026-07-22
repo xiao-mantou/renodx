@@ -339,22 +339,42 @@ struct PipelineShaderDetails {
         create_layout = this->layout_data->replacement_layout;
       }
 
+#if defined(DEBUG_LEVEL_0) || defined(DEBUG_LEVEL_1)
+      {
+        std::stringstream s;
+        s << "utils::shader::PipelineShaderDetails(calling create_pipeline";
+        s << ", layout: " << PRINT_PTR(create_layout.handle);
+        s << ", subobject_count: " << subobject_count;
+        s << ")";
+        reshade::log::message(reshade::log::level::info, s.str().c_str());
+      }
+#endif
       const bool built_pipeline_ok = device->create_pipeline(
           create_layout,
           subobject_count,
           replacement_subobjects,
           &new_pipeline);
-
-#ifdef DEBUG_LEVEL_2
+#if defined(DEBUG_LEVEL_0) || defined(DEBUG_LEVEL_1)
       {
         std::stringstream s;
-        s << "utils::shader::BuildReplacementPipeline(Added replacement pipeline";
-        s << PRINT_PTR(new_pipeline.handle);
+        s << "utils::shader::PipelineShaderDetails(create_pipeline returned: ";
+        s << (built_pipeline_ok ? "true" : "false");
+        s << ", new_pipeline: " << PRINT_PTR(new_pipeline.handle);
         s << ")";
-        reshade::log::message(reshade::log::level::debug, s.str().c_str());
+        reshade::log::message(reshade::log::level::info, s.str().c_str());
       }
 #endif
-      renodx::utils::pipeline::DestroyPipelineSubobjects(replacement_subobjects, subobject_count);
+
+#if defined(DEBUG_LEVEL_0) || defined(DEBUG_LEVEL_1)
+      {
+        std::stringstream s;
+        s << "utils::shader::PipelineShaderDetails(Added replacement pipeline";
+        s << PRINT_PTR(new_pipeline.handle);
+        s << ")";
+        reshade::log::message(reshade::log::level::info, s.str().c_str());
+      }
+#endif
+      renodx::utils::pipeline::DestroyPipelineSubObjects(replacement_subobjects, subobject_count);
 
       if (built_pipeline_ok) {
         this->initialized_replacement = true;
@@ -371,8 +391,7 @@ struct PipelineShaderDetails {
         return;
       }
 
-      assert(built_pipeline_ok);
-#ifdef DEBUG_LEVEL_0
+#if defined(DEBUG_LEVEL_0) || defined(DEBUG_LEVEL_1)
       std::stringstream s;
       s << "utils::shader::PipelineShaderDetails(Failed to replace pipeline";
       s << ")";
@@ -601,11 +620,31 @@ static bool BuildReplacementPipeline(PipelineShaderDetails* details) {
       layout = details->layout_data->replacement_layout;
     }
 
+#if defined(DEBUG_LEVEL_0) || defined(DEBUG_LEVEL_1)
+    {
+      std::stringstream s;
+      s << "utils::shader::BuildReplacementPipeline(calling create_pipeline";
+      s << ", layout: " << PRINT_PTR(layout.handle);
+      s << ", subobject_count: " << subobject_count;
+      s << ")";
+      reshade::log::message(reshade::log::level::info, s.str().c_str());
+    }
+#endif
     const bool built_pipeline_ok = details->device->create_pipeline(
         layout,
         subobject_count,
         replacement_subobjects,
         &new_pipeline);
+#if defined(DEBUG_LEVEL_0) || defined(DEBUG_LEVEL_1)
+    {
+      std::stringstream s;
+      s << "utils::shader::BuildReplacementPipeline(create_pipeline returned: ";
+      s << (built_pipeline_ok ? "true" : "false");
+      s << ", new_pipeline: " << PRINT_PTR(new_pipeline.handle);
+      s << ")";
+      reshade::log::message(reshade::log::level::info, s.str().c_str());
+    }
+#endif
     renodx::utils::pipeline::DestroyPipelineSubobjects(replacement_subobjects, subobject_count);
     if (built_pipeline_ok) {
 #if defined(DEBUG_LEVEL_0) || defined(DEBUG_LEVEL_1)
