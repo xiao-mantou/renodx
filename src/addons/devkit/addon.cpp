@@ -143,9 +143,6 @@ uint32_t skip_draw_count = 0;
 
 void QueueSnapshotCapture(reshade::api::device* device) {
   snapshot_queued_device = device;
-  // Draw callbacks are only active while the trace utility tracks this device.
-  // Snapshot capture keeps that trace bounded by its frame and draw limits.
-  renodx::utils::trace::trace_scheduled_device = device;
 }
 
 [[nodiscard]] bool ReserveSnapshotDraw() {
