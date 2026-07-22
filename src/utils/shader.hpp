@@ -217,6 +217,25 @@ struct PipelineShaderDetails {
       const auto& stage = COMPATIBLE_STAGES[shader_type_index];
 
       // Shader may have been replaced. Get original hash
+      bool in_inverse_map = false;
+      shared.data->shader_replacements_inverse.if_contains(
+          {device, shader_hash},
+          [&](const std::pair<const std::pair<reshade::api::device*, uint32_t>, uint32_t>& pair) {
+            in_inverse_map = true;
+          });
+#ifdef DEBUG_LEVEL_1
+      {
+        static std::unordered_set<uint64_t> logged_hash;
+        if (logged_hash.insert(shader_hash).second) {
+          std::stringstream s;
+          s << "utils::shader::PipelineShaderDetails(hash: " << PRINT_CRC32(shader_hash);
+          s << ", in_inverse_map: " << (in_inverse_map ? "YES" : "no");
+          s << ", use_replace_async: " << (shared.data->use_replace_async ? "YES" : "no");
+          s << ")";
+          reshade::log::message(reshade::log::level::info, s.str().c_str());
+        }
+      }
+#endif
       if (shared.data->shader_replacements_inverse.if_contains(
               {device, shader_hash},
               [&](const std::pair<const std::pair<reshade::api::device*, uint32_t>, uint32_t>& pair) {
