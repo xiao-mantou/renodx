@@ -521,27 +521,11 @@ static bool BuildReplacementPipeline(PipelineShaderDetails* details) {
   reshade::api::pipeline_subobject* replacement_subobjects = nullptr;
   details->replacement_stages = static_cast<reshade::api::pipeline_stage>(0);
   for (const auto& info : details->subobject_shaders) {
-#ifdef DEBUG_LEVEL_1
-    bool exists = false;
+    bool found_replacement = false;
     shared.data->runtime_replacements.if_contains(
         {details->device, info.shader_hash},
         [&](const std::pair<const std::pair<reshade::api::device*, uint32_t>, std::span<const uint8_t>>& new_shader_pair) {
-          exists = true;
-        });
-    {
-      std::stringstream s;
-      s << "utils::shader::BuildReplacementPipeline(checking ";
-      s << PRINT_CRC32(info.shader_hash);
-      s << ", device: " << PRINT_PTR(details->device);
-      s << ", exists: " << (exists ? "YES" : "NO");
-      s << ", runtime_count: " << shared.data->runtime_replacements.size();
-      s << ")";
-      reshade::log::message(reshade::log::level::info, s.str().c_str());
-    }
-#endif
-    shared.data->runtime_replacements.if_contains(
-        {details->device, info.shader_hash},
-        [&](const std::pair<const std::pair<reshade::api::device*, uint32_t>, std::span<const uint8_t>>& new_shader_pair) {
+          found_replacement = true;
           if (replacement_subobjects == nullptr) {
             replacement_subobjects = renodx::utils::pipeline::ClonePipelineSubObjects(
                 details->subobjects.data(),
@@ -560,6 +544,16 @@ static bool BuildReplacementPipeline(PipelineShaderDetails* details) {
           AddShaderReplacement(&subobject, new_shader_pair.second);
           details->replacement_stages |= info.stage;
         });
+#ifdef DEBUG_LEVEL_1
+    {
+      std::stringstream s;
+      s << "utils::shader::BuildReplacementPipeline(checking ";
+      s << PRINT_CRC32(info.shader_hash);
+      s << ", found: " << (found_replacement ? "YES" : "NO");
+      s << ")";
+      reshade::log::message(reshade::log::level::info, s.str().c_str());
+    }
+#endif
   }
 
   if (replacement_subobjects != nullptr) {
