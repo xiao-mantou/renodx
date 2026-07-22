@@ -374,7 +374,7 @@ struct PipelineShaderDetails {
         reshade::log::message(reshade::log::level::info, s.str().c_str());
       }
 #endif
-      renodx::utils::pipeline::DestroyPipelineSubObjects(replacement_subobjects, subobject_count);
+      renodx::utils::pipeline::DestroyPipelineSubobjects(replacement_subobjects, subobject_count);
 
       if (built_pipeline_ok) {
         this->initialized_replacement = true;
