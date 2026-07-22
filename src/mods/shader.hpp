@@ -1330,8 +1330,11 @@ inline constexpr auto OnCommandAction = []<typename T, typename Context>(
       std::stringstream s;
       s << "mods::shader::OnCommandAction(found shader: ";
       s << PRINT_CRC32(shader_hash);
+      s << ", pipeline_details: " << (state.pipeline_details != nullptr ? "non-null" : "NULL");
+      s << ", on_draw: " << (custom_shader_info->on_draw != nullptr ? "set" : "null");
+      s << ", on_replace: " << (custom_shader_info->on_replace != nullptr ? "set" : "null");
       s << ")";
-      reshade::log::message(reshade::log::level::debug, s.str().c_str());
+      reshade::log::message(reshade::log::level::info, s.str().c_str());
     }
 #endif
 
