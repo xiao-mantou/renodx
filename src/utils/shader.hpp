@@ -521,6 +521,19 @@ static bool BuildReplacementPipeline(PipelineShaderDetails* details) {
   reshade::api::pipeline_subobject* replacement_subobjects = nullptr;
   details->replacement_stages = static_cast<reshade::api::pipeline_stage>(0);
   for (const auto& info : details->subobject_shaders) {
+#ifdef DEBUG_LEVEL_1
+    {
+      bool exists = shared.data->runtime_replacements.contains({details->device, info.shader_hash});
+      std::stringstream s;
+      s << "utils::shader::BuildReplacementPipeline(checking ";
+      s << PRINT_CRC32(info.shader_hash);
+      s << ", device: " << PRINT_PTR(details->device);
+      s << ", exists: " << (exists ? "YES" : "NO");
+      s << ", runtime_count: " << shared.data->runtime_replacements.size();
+      s << ")";
+      reshade::log::message(reshade::log::level::info, s.str().c_str());
+    }
+#endif
     shared.data->runtime_replacements.if_contains(
         {details->device, info.shader_hash},
         [&](const std::pair<const std::pair<reshade::api::device*, uint32_t>, std::span<const uint8_t>>& new_shader_pair) {
