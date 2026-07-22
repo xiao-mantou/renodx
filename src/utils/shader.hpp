@@ -549,15 +549,13 @@ inline uint32_t GetCurrentShaderHash(CommandListData* cmd_list_data, reshade::ap
 
 static bool BuildReplacementPipeline(PipelineShaderDetails* details) {
 #ifdef DEBUG_LEVEL_1
-  {
+  if (!details->initialized_replacement) {
     static std::unordered_set<uint64_t> logged;
     if (logged.insert(details->pipeline.handle).second) {
       std::stringstream s;
       s << "utils::shader::BuildReplacementPipeline(pipeline: " << PRINT_PTR(details->pipeline.handle);
-      s << ", initialized: " << (details->initialized_replacement ? "YES" : "no");
       s << ", subobject_shaders: " << details->subobject_shaders.size();
       s << ", shader_hashes: " << details->shader_hashes.size();
-      s << ", replacement_pipeline: " << PRINT_PTR(details->replacement_pipeline.handle);
       s << ")";
       reshade::log::message(reshade::log::level::info, s.str().c_str());
     }
@@ -600,11 +598,11 @@ static bool BuildReplacementPipeline(PipelineShaderDetails* details) {
 #ifdef DEBUG_LEVEL_1
     {
       static std::unordered_set<uint64_t> logged_check;
-      if (logged_check.insert(details->pipeline.handle).second) {
+      if (found_replacement && logged_check.insert(details->pipeline.handle).second) {
         std::stringstream s;
         s << "utils::shader::BuildReplacementPipeline(checking ";
         s << PRINT_CRC32(info.shader_hash);
-        s << ", found: " << (found_replacement ? "YES" : "NO");
+        s << ", found: YES";
         s << ", runtime_count: " << runtime_replacement_count.load();
         s << ")";
         reshade::log::message(reshade::log::level::info, s.str().c_str());

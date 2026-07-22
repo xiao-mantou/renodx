@@ -1624,11 +1624,7 @@ inline bool OnCreateResourceView(
   const bool changed = (current_desc.format != new_desc.format);
 
 #if defined(DEBUG_LEVEL_1) || defined(DEBUG_LEVEL_0)
-#ifdef DEBUG_LEVEL_1
-  if (true) {
-#else
   if (changed) {
-#endif
     std::stringstream s;
     s << "utils::resource::upgrade::OnCreateResourceView(" << (changed ? "upgrading" : "logging");
     s << ", found_upgrade: " << (found_upgrade ? "true" : "false");
