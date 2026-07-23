@@ -4375,7 +4375,11 @@ void OnBindPipeline(
     reshade::api::command_list* cmd_list,
     reshade::api::pipeline_stage stage,
     reshade::api::pipeline pipeline) {
-  if (cmd_list->get_device() != snapshot_device) return;
+  const auto* selected_device_data = GetSelectedDeviceData();
+  if (cmd_list->get_device() != snapshot_device
+      && (selected_device_data == nullptr || selected_device_data->device != cmd_list->get_device())) {
+    return;
+  }
 
   auto* cmd_list_data = renodx::utils::data::Get<CommandListData>(cmd_list);
   if (cmd_list_data == nullptr) return;
