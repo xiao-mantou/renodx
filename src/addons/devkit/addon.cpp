@@ -147,6 +147,11 @@ std::atomic_uint32_t dl2_tonemapper_first_srv_space = 0u;
 std::atomic_uint32_t dl2_tonemapper_writer_hash = 0u;
 std::atomic_uint64_t dl2_tonemapper_t0_resource = 0u;
 std::atomic_bool dl2_tonemapper_writer_is_compute = false;
+std::atomic_uint32_t dl2_descriptor_update_count = 0u;
+std::atomic_uint32_t dl2_descriptor_resource_update_count = 0u;
+std::atomic_uint32_t dl2_descriptor_bind_count = 0u;
+std::atomic_uint32_t dl2_descriptor_pixel_bind_count = 0u;
+std::atomic_uint32_t dl2_descriptor_table_match_count = 0u;
 std::atomic_bool snapshot_pane_filter_resources_by_shader_use = true;
 std::atomic_bool snapshot_pane_show_non_executed_command_lists = false;
 std::atomic_bool shaders_pane_show_vertex_shaders = false;
@@ -3856,6 +3861,11 @@ void ProcessPendingLiveShaderRequests(
             {"pixelSrvCount", dl2_tonemapper_srv_count.load(std::memory_order_relaxed)},
             {"firstPixelSrvSlot", dl2_tonemapper_first_srv_slot.load(std::memory_order_relaxed)},
             {"firstPixelSrvSpace", dl2_tonemapper_first_srv_space.load(std::memory_order_relaxed)},
+            {"descriptorUpdates", dl2_descriptor_update_count.load(std::memory_order_relaxed)},
+            {"descriptorResourceUpdates", dl2_descriptor_resource_update_count.load(std::memory_order_relaxed)},
+            {"descriptorBinds", dl2_descriptor_bind_count.load(std::memory_order_relaxed)},
+            {"descriptorPixelBinds", dl2_descriptor_pixel_bind_count.load(std::memory_order_relaxed)},
+            {"descriptorTableMatches", dl2_descriptor_table_match_count.load(std::memory_order_relaxed)},
             {"t0ResourceHandle", FormatHandle(dl2_tonemapper_t0_resource.load(std::memory_order_relaxed))},
             {"lastWriterHash", writer_hash == 0u ? json(nullptr) : json(FormatShaderHash(writer_hash))},
             {"lastWriterStage", writer_hash == 0u ? json(nullptr) : json(dl2_tonemapper_writer_is_compute.load(std::memory_order_relaxed) ? "compute" : "pixel")},
@@ -4597,6 +4607,7 @@ bool OnUpdateDescriptorTables(
     const reshade::api::descriptor_table_update* updates) {
   const auto* selected_device_data = GetSelectedDeviceData();
   if (selected_device_data == nullptr || selected_device_data->device != device) return false;
+  dl2_descriptor_update_count.fetch_add(count, std::memory_order_relaxed);
 
   auto* device_data = renodx::utils::data::Get<DeviceData>(device);
   if (device_data == nullptr) return false;
@@ -4618,6 +4629,7 @@ bool OnUpdateDescriptorTables(
       default:
         continue;
     }
+    dl2_descriptor_resource_update_count.fetch_add(update.count, std::memory_order_relaxed);
 
     std::unique_lock lock(device_data->mutex);
     auto& table_bindings = device_data->descriptor_table_bindings[update.table.handle];
@@ -4648,7 +4660,9 @@ void OnBindDescriptorTables(
     const reshade::api::descriptor_table* tables) {
   const auto* selected_device_data = GetSelectedDeviceData();
   if (selected_device_data == nullptr || selected_device_data->device != cmd_list->get_device()) return;
+  dl2_descriptor_bind_count.fetch_add(count, std::memory_order_relaxed);
   if (!renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::pixel)) return;
+  dl2_descriptor_pixel_bind_count.fetch_add(count, std::memory_order_relaxed);
 
   auto* command_list_data = renodx::utils::data::Get<CommandListData>(cmd_list);
   auto* device_data = renodx::utils::data::Get<DeviceData>(cmd_list->get_device());
@@ -4671,6 +4685,7 @@ void OnBindDescriptorTables(
     std::shared_lock lock(device_data->mutex);
     const auto table = device_data->descriptor_table_bindings.find(tables[table_index].handle);
     if (table == device_data->descriptor_table_bindings.end()) continue;
+    dl2_descriptor_table_match_count.fetch_add(1u, std::memory_order_relaxed);
     for (const auto& [binding, entry] : table->second) {
       auto& destination = entry.is_uav ? command_list_data->pixel_uav_binds : command_list_data->pixel_srv_binds;
       destination[{dx_register_index + binding, dx_register_space}] = entry.details;
