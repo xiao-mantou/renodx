@@ -42,6 +42,23 @@ Interpretation: the world path is consistent with `0x268BAB6D` producing red-onl
 
 Conclusion: `0x268BAB6D` receives a linear scene/post-process signal with SDR-above highlight headroom. It is a viable shader-side HDR bridge capture point; it is not merely a completed SDR swapchain image.
 
+## 2026-07-23: deployed addon verification
+
+- The deployed `renodx-dyinglight2.addon64` was updated at 19:51 and the matching ReShade session began at 19:51.
+- ReShade logged `Registered API-based runtime replacement: 0x268bab6d`, `Added replacement 0x268bab6d`, and `shader hash seen: 0x268bab6d, matched: YES`.
+- Therefore the deployed addon and the `0x268BAB6D` replacement are active; a missing or stale replacement is not the reason Peak Brightness has little effect.
+- After the range probe was corrected to use `max(t0.r, max(t0.g, t0.b))`, the whole scene was still blue. For this current scene, every sampled `t0` component at this LUT pass is at or below `1.0`.
+
+Conclusion: `0x268BAB6D` is a verified active SDR-bounded LUT/color-grade pass in the current render path. It should not be treated as the pre-SDR HDR source for Peak Brightness recovery. Continue upstream from this pass; do not re-enable the old copied LUT templates for `0x4D2B3F4D`, `0x79B3C079`, `0x8A1C8855`, or `0xA766966E` without matching current-game bytecode and interfaces.
+
+## 2026-07-23: ReShade log noise
+
+The remaining log flood was not DevKit shader tracking. It was the D3D12 successful fast-clone path:
+
+`utils::resource::upgrade::OnInitResourceView(copied d3d12 fast clone descriptor, ...)`
+
+The per-view success log was removed. Failure and warning logging remain available.
+
 ## 2026-07-23: test-M crash fix (shader signature mismatch)
 
 ### Problem

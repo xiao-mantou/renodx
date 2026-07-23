@@ -1732,21 +1732,6 @@ inline void OnInitResourceView(
 
   dx12_device->CopyDescriptorsSimple(1u, destination_descriptor, source_descriptor, heap_type);
 
-#ifdef DEBUG_LEVEL_1
-  {
-    std::stringstream s;
-    s << "utils::resource::upgrade::OnInitResourceView(copied d3d12 fast clone descriptor";
-    s << ", resource: " << PRINT_PTR(resource.handle);
-    s << ", view: " << PRINT_PTR(view.handle);
-    s << " => clone: " << PRINT_PTR(clone.handle);
-    s << ", usage: " << usage_type;
-    s << ", heap_type: " << heap_type;
-    s << ", desc type: " << desc.type;
-    s << ", desc format: " << desc.format;
-    s << ")";
-    reshade::log::message(reshade::log::level::info, s.str().c_str());
-  }
-#endif
 }
 
 inline void OnDestroyResourceViewInfo(utils::resource::ResourceViewInfo* resource_view_info) {
