@@ -136,8 +136,12 @@ void main(float4 v0: SV_POSITION0, float4 v1: TEXCOORD0, out float4 o0: SV_TARGE
     } else {
       debug_input = o0.rgb;
     }
-    float y_debug = renodx::color::y::from::BT709(max(0, debug_input));
-    o0.rgb = DebugFalseColor(y_debug);
+    // The t0 probe must detect HDR in any channel. BT.709 luminance can remain
+    // below one for saturated highlights even when an input component exceeds one.
+    float debug_range = RENODX_DEBUG_MODE < 1.5f
+        ? max(debug_input.r, max(debug_input.g, debug_input.b))
+        : renodx::color::y::from::BT709(max(0, debug_input));
+    o0.rgb = DebugFalseColor(debug_range);
     o0.rgb = renodx::draw::RenderIntermediatePass(o0.rgb);
     o0.w = 1;
     return;
