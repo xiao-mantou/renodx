@@ -362,6 +362,11 @@ struct __declspec(uuid("3224946b-5c5f-478a-8691-83fbb9f88f1b")) CommandListData 
   // std::vector<PipelineBindDetails> pipeline_binds;
 };
 
+struct DescriptorTableBinding {
+  ResourceViewDetails details = {};
+  bool is_uav = false;
+};
+
 ResourceViewDetails GetResourceViewDetails(reshade::api::resource_view resource_view, reshade::api::device* device) {
   ResourceViewDetails details = {
       .resource_view = resource_view,
@@ -426,6 +431,7 @@ struct __declspec(uuid("0190ec1a-2e19-74a6-ad41-4df0d4d8caed")) DeviceData {
   std::unordered_map<uint64_t, std::unordered_map<reshade::api::format, reshade::api::resource_view>> preview_srvs;
   std::shared_mutex mutex;
   std::unordered_map<uint64_t, reshade::api::blend_desc> pipeline_blends;
+  std::unordered_map<uint64_t, std::map<uint32_t, DescriptorTableBinding>> descriptor_table_bindings;
 
   reshade::api::effect_runtime* runtime = nullptr;
   std::deque<std::shared_ptr<devkit_resource_analysis::PendingRequest>> pending_resource_analysis_requests;
@@ -4583,6 +4589,93 @@ void OnDestroyResource(reshade::api::device* device, reshade::api::resource reso
     }
   }
   data->preview_srvs.erase(pair);
+}
+
+bool OnUpdateDescriptorTables(
+    reshade::api::device* device,
+    uint32_t count,
+    const reshade::api::descriptor_table_update* updates) {
+  const auto* selected_device_data = GetSelectedDeviceData();
+  if (selected_device_data == nullptr || selected_device_data->device != device) return false;
+
+  auto* device_data = renodx::utils::data::Get<DeviceData>(device);
+  if (device_data == nullptr) return false;
+
+  for (uint32_t update_index = 0u; update_index < count; ++update_index) {
+    const auto& update = updates[update_index];
+    if (update.table.handle == 0u) continue;
+
+    bool is_uav = false;
+    switch (update.type) {
+      case reshade::api::descriptor_type::unordered_access_view:
+      case reshade::api::descriptor_type::buffer_unordered_access_view:
+        is_uav = true;
+        [[fallthrough]];
+      case reshade::api::descriptor_type::shader_resource_view:
+      case reshade::api::descriptor_type::buffer_shader_resource_view:
+      case reshade::api::descriptor_type::sampler_with_resource_view:
+        break;
+      default:
+        continue;
+    }
+
+    std::unique_lock lock(device_data->mutex);
+    auto& table_bindings = device_data->descriptor_table_bindings[update.table.handle];
+    for (uint32_t descriptor_index = 0u; descriptor_index < update.count; ++descriptor_index) {
+      reshade::api::resource_view view = {0u};
+      if (update.type == reshade::api::descriptor_type::sampler_with_resource_view) {
+        view = static_cast<const reshade::api::sampler_with_resource_view*>(update.descriptors)[descriptor_index].view;
+      } else {
+        view = static_cast<const reshade::api::resource_view*>(update.descriptors)[descriptor_index];
+      }
+      const auto binding = update.binding + descriptor_index;
+      if (view.handle == 0u) {
+        table_bindings.erase(binding);
+      } else {
+        table_bindings[binding] = {.details = GetResourceViewDetails(view, device), .is_uav = is_uav};
+      }
+    }
+  }
+  return false;
+}
+
+void OnBindDescriptorTables(
+    reshade::api::command_list* cmd_list,
+    reshade::api::shader_stage stages,
+    reshade::api::pipeline_layout layout,
+    uint32_t first,
+    uint32_t count,
+    const reshade::api::descriptor_table* tables) {
+  const auto* selected_device_data = GetSelectedDeviceData();
+  if (selected_device_data == nullptr || selected_device_data->device != cmd_list->get_device()) return;
+  if (!renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::pixel)) return;
+
+  auto* command_list_data = renodx::utils::data::Get<CommandListData>(cmd_list);
+  auto* device_data = renodx::utils::data::Get<DeviceData>(cmd_list->get_device());
+  if (command_list_data == nullptr || device_data == nullptr) return;
+
+  for (uint32_t table_index = 0u; table_index < count; ++table_index) {
+    uint32_t dx_register_index = 0u;
+    uint32_t dx_register_space = 0u;
+    const auto layout_param = first + table_index;
+    const bool found_layout = renodx::utils::pipeline_layout::GetPipelineLayoutData(layout, [&](const auto& local_layout_data) {
+      const auto& layout_data = *local_layout_data;
+      if (layout_param >= layout_data.params.size()) return;
+      const auto& param = layout_data.params[layout_param];
+      if (param.type != reshade::api::pipeline_layout_param_type::descriptor_table || param.descriptor_table.count != 1) return;
+      dx_register_index = param.descriptor_table.ranges[0].dx_register_index;
+      dx_register_space = param.descriptor_table.ranges[0].dx_register_space;
+    });
+    if (!found_layout || tables[table_index].handle == 0u) continue;
+
+    std::shared_lock lock(device_data->mutex);
+    const auto table = device_data->descriptor_table_bindings.find(tables[table_index].handle);
+    if (table == device_data->descriptor_table_bindings.end()) continue;
+    for (const auto& [binding, entry] : table->second) {
+      auto& destination = entry.is_uav ? command_list_data->pixel_uav_binds : command_list_data->pixel_srv_binds;
+      destination[{dx_register_index + binding, dx_register_space}] = entry.details;
+    }
+  }
 }
 
 void OnPushDescriptors(
@@ -9300,6 +9393,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::register_event<reshade::addon_event::destroy_resource>(OnDestroyResource);
 
       reshade::register_event<reshade::addon_event::push_descriptors>(OnPushDescriptors);
+      reshade::register_event<reshade::addon_event::update_descriptor_tables>(OnUpdateDescriptorTables);
+      reshade::register_event<reshade::addon_event::bind_descriptor_tables>(OnBindDescriptorTables);
       reshade::register_event<reshade::addon_event::draw>(OnDraw);
       reshade::register_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);
       reshade::register_event<reshade::addon_event::draw_or_dispatch_indirect>(OnDrawOrDispatchIndirect);
@@ -9348,6 +9443,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::init_swapchain>(OnInitSwapchain);
       reshade::unregister_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
       reshade::unregister_event<reshade::addon_event::push_descriptors>(OnPushDescriptors);
+      reshade::unregister_event<reshade::addon_event::update_descriptor_tables>(OnUpdateDescriptorTables);
+      reshade::unregister_event<reshade::addon_event::bind_descriptor_tables>(OnBindDescriptorTables);
       reshade::unregister_event<reshade::addon_event::draw>(OnDraw);
       reshade::unregister_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);
       reshade::unregister_event<reshade::addon_event::draw_or_dispatch_indirect>(OnDrawOrDispatchIndirect);
