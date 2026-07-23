@@ -141,6 +141,9 @@ std::unordered_map<uint64_t, Dl2ResourceWriter> dl2_resource_writers;
 std::unordered_map<uint64_t, uint32_t> dl2_reported_writers;
 std::atomic_uint32_t dl2_tonemapper_draw_count = 0u;
 std::atomic_uint32_t dl2_tonemapper_t0_bind_count = 0u;
+std::atomic_uint32_t dl2_tonemapper_srv_count = 0u;
+std::atomic_uint32_t dl2_tonemapper_first_srv_slot = 0u;
+std::atomic_uint32_t dl2_tonemapper_first_srv_space = 0u;
 std::atomic_uint32_t dl2_tonemapper_writer_hash = 0u;
 std::atomic_uint64_t dl2_tonemapper_t0_resource = 0u;
 std::atomic_bool dl2_tonemapper_writer_is_compute = false;
@@ -3844,6 +3847,9 @@ void ProcessPendingLiveShaderRequests(
             {"targetShaderHash", FormatShaderHash(DL2_TONEMAPPER_PROBE_HASH)},
             {"targetDrawCount", dl2_tonemapper_draw_count.load(std::memory_order_relaxed)},
             {"t0BindCount", dl2_tonemapper_t0_bind_count.load(std::memory_order_relaxed)},
+            {"pixelSrvCount", dl2_tonemapper_srv_count.load(std::memory_order_relaxed)},
+            {"firstPixelSrvSlot", dl2_tonemapper_first_srv_slot.load(std::memory_order_relaxed)},
+            {"firstPixelSrvSpace", dl2_tonemapper_first_srv_space.load(std::memory_order_relaxed)},
             {"t0ResourceHandle", FormatHandle(dl2_tonemapper_t0_resource.load(std::memory_order_relaxed))},
             {"lastWriterHash", writer_hash == 0u ? json(nullptr) : json(FormatShaderHash(writer_hash))},
             {"lastWriterStage", writer_hash == 0u ? json(nullptr) : json(dl2_tonemapper_writer_is_compute.load(std::memory_order_relaxed) ? "compute" : "pixel")},
@@ -4824,6 +4830,12 @@ void TrackDl2TonemapperProducer(reshade::api::command_list* cmd_list, DrawDetail
 
   if (shader_hash != DL2_TONEMAPPER_PROBE_HASH) return;
   dl2_tonemapper_draw_count.fetch_add(1u, std::memory_order_relaxed);
+  dl2_tonemapper_srv_count.store(static_cast<uint32_t>(command_list_data->pixel_srv_binds.size()), std::memory_order_relaxed);
+  if (!command_list_data->pixel_srv_binds.empty()) {
+    const auto& first_srv = *command_list_data->pixel_srv_binds.begin();
+    dl2_tonemapper_first_srv_slot.store(first_srv.first.first, std::memory_order_relaxed);
+    dl2_tonemapper_first_srv_space.store(first_srv.first.second, std::memory_order_relaxed);
+  }
   const auto t0 = command_list_data->pixel_srv_binds.find({0u, 0u});
   if (t0 == command_list_data->pixel_srv_binds.end()) return;
   dl2_tonemapper_t0_bind_count.fetch_add(1u, std::memory_order_relaxed);
