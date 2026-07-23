@@ -4609,10 +4609,12 @@ bool OnUpdateDescriptorTables(
     switch (update.type) {
       case reshade::api::descriptor_type::unordered_access_view:
       case reshade::api::descriptor_type::buffer_unordered_access_view:
+      case reshade::api::descriptor_type::texture_unordered_access_view:
         is_uav = true;
         [[fallthrough]];
       case reshade::api::descriptor_type::shader_resource_view:
       case reshade::api::descriptor_type::buffer_shader_resource_view:
+      case reshade::api::descriptor_type::texture_shader_resource_view:
       case reshade::api::descriptor_type::sampler_with_resource_view:
         break;
       default:
