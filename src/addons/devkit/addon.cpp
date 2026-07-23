@@ -128,6 +128,17 @@ std::atomic_bool snapshot_pane_show_pixel_shaders = true;
 std::atomic_bool snapshot_pane_show_compute_shaders = true;
 std::atomic_bool snapshot_pane_show_blends = true;
 std::atomic_bool snapshot_pane_expand_all_nodes = true;
+
+// DL2 probe: follows the resource read by the known final color-grading pass without
+// scheduling a snapshot, dumping shaders, or reading texture data back to the CPU.
+inline constexpr uint32_t DL2_TONEMAPPER_PROBE_HASH = 0x268BAB6Du;
+struct Dl2ResourceWriter {
+  uint32_t shader_hash = 0u;
+  bool is_compute = false;
+};
+std::mutex dl2_resource_writer_mutex;
+std::unordered_map<uint64_t, Dl2ResourceWriter> dl2_resource_writers;
+std::unordered_map<uint64_t, uint32_t> dl2_reported_writers;
 std::atomic_bool snapshot_pane_filter_resources_by_shader_use = true;
 std::atomic_bool snapshot_pane_show_non_executed_command_lists = false;
 std::atomic_bool shaders_pane_show_vertex_shaders = false;
@@ -438,6 +449,8 @@ struct __declspec(uuid("0190ec1a-2e19-74a6-ad41-4df0d4d8caed")) DeviceData {
     return &iterator->second;
   }
 };
+
+[[nodiscard]] DeviceData* GetSelectedDeviceData();
 
 [[nodiscard]] std::vector<uint8_t> LoadShaderDataForShaderHash(reshade::api::device* device, uint32_t shader_hash) {
   reshade::api::pipeline pipeline = {0};
@@ -4528,6 +4541,11 @@ bool OnCopyTextureRegion(
 }
 
 void OnDestroyResource(reshade::api::device* device, reshade::api::resource resource) {
+  {
+    std::unique_lock lock(dl2_resource_writer_mutex);
+    dl2_resource_writers.erase(resource.handle);
+    dl2_reported_writers.erase(resource.handle);
+  }
   auto* data = renodx::utils::data::Get<DeviceData>(device);
   if (data == nullptr) return;
   const std::unique_lock lock(data->mutex);
@@ -4548,7 +4566,11 @@ void OnPushDescriptors(
     reshade::api::pipeline_layout layout,
     uint32_t layout_param,
     const reshade::api::descriptor_table_update& update) {
-  if (cmd_list->get_device() != snapshot_device) return;
+  const auto* selected_device_data = GetSelectedDeviceData();
+  if (cmd_list->get_device() != snapshot_device
+      && (selected_device_data == nullptr || selected_device_data->device != cmd_list->get_device())) {
+    return;
+  }
   auto* data = renodx::utils::data::Get<CommandListData>(cmd_list);
   if (data == nullptr) return;
 
@@ -4746,10 +4768,84 @@ void OnPushDescriptors(
   }
 }
 
+void TrackDl2TonemapperProducer(reshade::api::command_list* cmd_list, DrawDetails::DrawMethods draw_method) {
+  const auto* selected_device_data = GetSelectedDeviceData();
+  if (selected_device_data == nullptr || selected_device_data->device != cmd_list->get_device()) return;
+
+  auto* command_list_data = renodx::utils::data::Get<CommandListData>(cmd_list);
+  auto* shader_state = renodx::utils::shader::GetCurrentState(cmd_list);
+  if (command_list_data == nullptr || shader_state == nullptr) return;
+
+  const bool is_compute = draw_method == DrawDetails::DrawMethods::DISPATCH;
+  const uint32_t shader_hash = is_compute
+      ? renodx::utils::shader::GetCurrentComputeShaderHash(shader_state)
+      : renodx::utils::shader::GetCurrentPixelShaderHash(shader_state);
+  if (shader_hash == 0u) return;
+
+  auto* device = cmd_list->get_device();
+  const auto record_writer = [&](reshade::api::resource_view view) {
+    if (view.handle == 0u) return;
+    const auto resource = renodx::utils::resource::GetResourceFromView(device, view);
+    if (resource.handle == 0u) return;
+    std::unique_lock lock(dl2_resource_writer_mutex);
+    dl2_resource_writers[resource.handle] = {.shader_hash = shader_hash, .is_compute = is_compute};
+  };
+
+  if (is_compute) {
+    for (const auto& [slot, details] : command_list_data->compute_uav_binds) {
+      (void)slot;
+      record_writer(details.resource_view);
+    }
+    return;
+  }
+
+  for (const auto render_target : renodx::utils::swapchain::GetRenderTargets(cmd_list)) {
+    record_writer(render_target);
+  }
+
+  if (shader_hash != DL2_TONEMAPPER_PROBE_HASH) return;
+  const auto t0 = command_list_data->pixel_srv_binds.find({0u, 0u});
+  if (t0 == command_list_data->pixel_srv_binds.end()) return;
+
+  const auto input_resource = renodx::utils::resource::GetResourceFromView(device, t0->second.resource_view);
+  if (input_resource.handle == 0u) return;
+
+  Dl2ResourceWriter writer = {};
+  bool should_report = false;
+  {
+    std::unique_lock lock(dl2_resource_writer_mutex);
+    if (const auto found_writer = dl2_resource_writers.find(input_resource.handle);
+        found_writer != dl2_resource_writers.end()) {
+      writer = found_writer->second;
+    }
+    auto [reported, inserted] = dl2_reported_writers.try_emplace(input_resource.handle, writer.shader_hash);
+    should_report = inserted || reported->second != writer.shader_hash;
+    reported->second = writer.shader_hash;
+  }
+  if (!should_report) return;
+
+  if (writer.shader_hash == 0u) {
+    reshade::log::message(
+        reshade::log::level::info,
+        std::format("[RenoDX DevKit] DL2 0x268BAB6D t0=0x{:016X}; last writer unknown", input_resource.handle).c_str());
+  } else {
+    reshade::log::message(
+        reshade::log::level::info,
+        std::format(
+            "[RenoDX DevKit] DL2 0x268BAB6D t0=0x{:016X}; last writer={} 0x{:08X}",
+            input_resource.handle,
+            writer.is_compute ? "CS" : "PS",
+            writer.shader_hash)
+            .c_str());
+  }
+}
+
 bool OnDraw(reshade::api::command_list* cmd_list, DrawDetails::DrawMethods draw_method) {
   bool bypass_draw = false;
 
   auto* device = cmd_list->get_device();
+
+  TrackDl2TonemapperProducer(cmd_list, draw_method);
 
   auto* device_data = renodx::utils::data::Get<DeviceData>(device);
   if (device_data == nullptr) return false;
