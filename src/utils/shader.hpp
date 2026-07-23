@@ -226,10 +226,10 @@ struct PipelineShaderDetails {
 #ifdef DEBUG_LEVEL_1
       {
         static std::unordered_set<uint64_t> logged_hash;
-        if (logged_hash.insert(shader_hash).second) {
+        if (in_inverse_map && logged_hash.insert(shader_hash).second) {
           std::stringstream s;
           s << "utils::shader::PipelineShaderDetails(hash: " << PRINT_CRC32(shader_hash);
-          s << ", in_inverse_map: " << (in_inverse_map ? "YES" : "no");
+          s << ", in_inverse_map: YES";
           s << ", use_replace_async: " << (shared.data->use_replace_async ? "YES" : "no");
           s << ")";
           reshade::log::message(reshade::log::level::info, s.str().c_str());
@@ -293,42 +293,6 @@ struct PipelineShaderDetails {
       });
       this->compatible_shader_infos[shader_type_index] = this->subobject_shaders.back();
 
-      // TEMP DEBUG: log all pixel shaders encountered (only for DL2 debug build)
-#ifdef DEBUG_LEVEL_0
-      if (subobject.type == reshade::api::pipeline_subobject_type::pixel_shader) {
-        std::stringstream ss;
-        ss << "utils::shader::TempDebug(PS hash: " << PRINT_CRC32(shader_hash) << ")";
-        reshade::log::message(reshade::log::level::debug, ss.str().c_str());
-      }
-#endif
-
-      if (replacement_subobjects != nullptr) {
-#ifdef DEBUG_LEVEL_0
-        std::stringstream s;
-        s << "utils::shader::PipelineShaderDetails(";
-        s << "Replacing pipeline for ";
-        s << PRINT_CRC32(shader_hash);
-        s << ", pipeline: " << PRINT_PTR(pipeline.handle);
-        s << ", index: " << i;
-        s << ", type: " << subobject.type;
-        s << ", stage: " << stage;
-        s << ")";
-        reshade::log::message(reshade::log::level::debug, s.str().c_str());
-#endif
-      } else {
-#ifdef DEBUG_LEVEL_1
-        std::stringstream s;
-        s << "utils::shader::PipelineShaderDetails(";
-        s << "Tracking ";
-        s << PRINT_CRC32(shader_hash);
-        s << ", pipeline: " << PRINT_PTR(pipeline.handle);
-        s << ", index: " << i;
-        s << ", type: " << subobject.type;
-        s << ", stage: " << stage;
-        s << ")";
-        reshade::log::message(reshade::log::level::debug, s.str().c_str());
-#endif
-      }
     }
 
     if (replacement_subobjects != nullptr) {
@@ -548,19 +512,6 @@ inline uint32_t GetCurrentShaderHash(CommandListData* cmd_list_data, reshade::ap
 }
 
 static bool BuildReplacementPipeline(PipelineShaderDetails* details) {
-#ifdef DEBUG_LEVEL_1
-  if (!details->initialized_replacement) {
-    static std::unordered_set<uint64_t> logged;
-    if (logged.insert(details->pipeline.handle).second) {
-      std::stringstream s;
-      s << "utils::shader::BuildReplacementPipeline(pipeline: " << PRINT_PTR(details->pipeline.handle);
-      s << ", subobject_shaders: " << details->subobject_shaders.size();
-      s << ", shader_hashes: " << details->shader_hashes.size();
-      s << ")";
-      reshade::log::message(reshade::log::level::info, s.str().c_str());
-    }
-  }
-#endif
   if (details->initialized_replacement) return true;
   details->initialized_replacement = true;
   details->replacement_pipeline = {0};

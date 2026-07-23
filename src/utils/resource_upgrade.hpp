@@ -515,48 +515,12 @@ inline reshade::api::resource_view CloneResourceView(
 
   bool published_created_clone = false;
 
-#ifdef DEBUG_LEVEL_1
-  {
-    std::stringstream s;
-    s << "utils::resource::upgrade::CloneResourceView(";
-    s << PRINT_PTR(view.handle);
-    s << ", original resource: " << PRINT_PTR(view_info_snapshot->original_resource.handle);
-    s << ", creating view clone";
-    s << ")";
-    reshade::log::message(reshade::log::level::debug, s.str().c_str());
-  }
-#endif
-
   auto new_desc = view_info_snapshot->desc;
   if (auto pair2 = target->view_upgrades.find({view_info_snapshot->usage, new_desc.format});
       pair2 != target->view_upgrades.end() && pair2->second != reshade::api::format::unknown) {
     new_desc.format = pair2->second;
-#ifdef DEBUG_LEVEL_1
-    {
-      std::stringstream s;
-      s << "utils::resource::upgrade::CloneResourceView(";
-      s << PRINT_PTR(view.handle);
-      s << ", view_upgrades format: " << new_desc.format;
-      s << ", clone resource: " << PRINT_PTR(resource_clone.handle);
-      s << ", type: " << new_desc.type;
-      s << ", usage: " << static_cast<uint32_t>(view_info_snapshot->usage) << "(" << view_info_snapshot->usage << ")";
-      s << ")";
-      reshade::log::message(reshade::log::level::debug, s.str().c_str());
-    }
-#endif
   } else {
     new_desc.format = target->new_format;
-#ifdef DEBUG_LEVEL_1
-    {
-      std::stringstream s;
-      s << "utils::resource::upgrade::CloneResourceView(";
-      s << PRINT_PTR(view.handle);
-      s << ", fallback format: " << new_desc.format;
-      s << ", clone resource: " << PRINT_PTR(resource_clone.handle);
-      s << ")";
-      reshade::log::message(reshade::log::level::debug, s.str().c_str());
-    }
-#endif
   }
 
   reshade::api::resource_view created_clone = {0u};
@@ -618,17 +582,6 @@ inline reshade::api::resource_view CloneResourceView(
     view_info_snapshot->device->destroy_resource_view(created_clone);
     return existing_clone;
   }
-
-#ifdef DEBUG_LEVEL_1
-  {
-    std::stringstream s;
-    s << "utils::resource::upgrade::CloneResourceView(";
-    s << PRINT_PTR(view.handle);
-    s << " => " << PRINT_PTR(created_clone.handle);
-    s << ")";
-    reshade::log::message(reshade::log::level::debug, s.str().c_str());
-  }
-#endif
 
   return created_clone;
 }
@@ -1697,21 +1650,6 @@ inline void OnInitResourceViewInfo(utils::resource::ResourceViewInfo* resource_v
 
   // Copy locally
   pending_dx12_clone_resource_view_info = *resource_view_info;
-
-#ifdef DEBUG_LEVEL_1
-  {
-    std::stringstream s;
-    s << "utils::resource::upgrade::OnInitResourceViewInfo(queue d3d12 fast clone";
-    s << ", resource: " << PRINT_PTR(resource_view_info->original_resource.handle);
-    s << ", view: " << PRINT_PTR(resource_view_info->view.handle);
-    s << ", usage: " << resource_view_info->usage;
-    s << ", desc type: " << resource_view_info->desc.type;
-    s << ", desc format: " << resource_view_info->desc.format;
-    s << ", target: " << resource_view_info->clone_target->name;
-    s << ")";
-    reshade::log::message(reshade::log::level::debug, s.str().c_str());
-  }
-#endif
 }
 
 inline void OnInitResourceView(

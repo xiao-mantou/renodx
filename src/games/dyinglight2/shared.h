@@ -30,6 +30,7 @@ struct ShaderInjectData {
   float custom_lut_scaling;
   float swap_chain_encoding;
   float swap_chain_encoding_color_space;
+  float debug_mode;
 };
 
 #ifndef __cplusplus
@@ -63,6 +64,7 @@ cbuffer shader_injection : register(b13) {
 #define CUSTOM_AUTO_EXPOSURE                   shader_injection.custom_auto_exposure
 #define CUSTOM_LENS_FLARE                      shader_injection.custom_lens_flare
 #define CUSTOM_LUT_SCALING                     shader_injection.custom_lut_scaling
+#define RENODX_DEBUG_MODE                      shader_injection.debug_mode
 
 #include "../../shaders/renodx.hlsl"
 

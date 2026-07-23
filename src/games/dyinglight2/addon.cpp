@@ -242,6 +242,18 @@ renodx::utils::settings::Settings settings = {
         .max = 100.f,
         .parse = [](float value) { return value * 0.01f; },
     },
+    new renodx::utils::settings::Setting{
+        .key = "DebugMode",
+        .binding = &shader_injection.debug_mode,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "Debug Mode",
+        .section = "Debug",
+        .tooltip = "False-color visualization. 0=Off, 1=t0 HDR range, 2=NeutralSDR, 3=Graded SDR",
+        .labels = {"Off", "t0 HDR Range", "Neutral SDR", "Graded SDR"},
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
 };
 
 void OnPresetOff() {
@@ -265,6 +277,7 @@ void OnPresetOff() {
       {"FxAutoExposure", 100.f},
       {"FxLensFlare", 100.f},
       {"SwapChainEncoding", 4.f},
+      {"DebugMode", 0.f},
   });
 }
 

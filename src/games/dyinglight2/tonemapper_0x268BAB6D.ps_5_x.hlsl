@@ -14,6 +14,34 @@ cbuffer cb0 : register(b0) {
 // 3Dmigoto declarations
 #define cmp -
 
+// Debug false-color visualization for HDR range analysis.
+// Uses log2-scale mapping to clearly distinguish SDR (<=1.0) from HDR (>1.0).
+//   near-black -> blue -> cyan (SDR) -> green (1.0 boundary) -> yellow -> red -> white
+float3 DebugFalseColor(float value) {
+  float v = max(0, value);
+  float log_v = log2(max(0.001, v));
+  float3 col;
+  [flatten] if (log_v < -3.0) {
+    col = float3(0, 0, 0.1);
+  } else if (log_v < 0.0) {
+    float t = (log_v + 3.0) / 3.0;
+    col = lerp(float3(0, 0, 0.2), float3(0, 0.5, 1.0), t);
+  } else if (log_v < 1.0) {
+    float t = log_v;
+    col = lerp(float3(0, 0.5, 1.0), float3(0, 1.0, 0.3), t);
+  } else if (log_v < 2.0) {
+    float t = log_v - 1.0;
+    col = lerp(float3(0, 1.0, 0.3), float3(1.0, 1.0, 0), t);
+  } else if (log_v < 3.0) {
+    float t = log_v - 2.0;
+    col = lerp(float3(1.0, 1.0, 0), float3(1.0, 0, 0), t);
+  } else {
+    float t = saturate(log_v - 3.0);
+    col = lerp(float3(1.0, 0, 0), float3(1.0, 1.0, 1.0), t);
+  }
+  return col;
+}
+
 void main(float4 v0: SV_POSITION0, float4 v1: TEXCOORD0, out float4 o0: SV_TARGET0) {
   float4 r0, r1, r2, r3;
 
@@ -94,6 +122,27 @@ void main(float4 v0: SV_POSITION0, float4 v1: TEXCOORD0, out float4 o0: SV_TARGE
   o0.xyz = r0.www ? r1.xyz : r0.xyz;
 
   o0.rgb *= signs;
+
+  // Debug visualization: bypass tonemapping, show raw values as false color
+  // Mode 1: t0 (untonemapped) — shows actual HDR scene values (critical for Peak diagnosis)
+  // Mode 2: neutral_sdr — shows NeutralSDR extraction
+  // Mode 3: graded_sdr — shows o0.rgb after LUT grading, before ToneMapPass
+  if (RENODX_DEBUG_MODE > 0.5f) {
+    float3 debug_input;
+    [flatten] if (RENODX_DEBUG_MODE < 1.5f) {
+      debug_input = untonemapped;
+    } else if (RENODX_DEBUG_MODE < 2.5f) {
+      debug_input = neutral_sdr;
+    } else {
+      debug_input = o0.rgb;
+    }
+    float y_debug = renodx::color::y::from::BT709(max(0, debug_input));
+    o0.rgb = DebugFalseColor(y_debug);
+    o0.rgb = renodx::draw::RenderIntermediatePass(o0.rgb);
+    o0.w = 1;
+    return;
+  }
+
   if (RENODX_TONE_MAP_TYPE == 0.f) {
     o0.rgb = saturate(o0.rgb);
   } else {
