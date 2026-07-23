@@ -63,7 +63,7 @@ The per-view success log was removed. Failure and warning logging remain availab
 
 - Offline screening found `0x3E36DA5B` to be a one-target full-screen pass that samples a scene texture, applies a scalar exposure texture, then uses a rational curve followed by `saturate`.
 - An isolated live probe showed mostly SDR-range values, with green/yellow and occasional red highlights. Therefore its input retains values above 1.0 (and above 4.0 in some lights) before the game clamps them.
-- It feeds the later `0x268BAB6D` LUT/color-grade pass. RenoDX mode must preserve the exposed scene signal here and apply the final HDR mapping at `0x268BAB6D`; replacing only either pass would either lose HDR headroom or cause a second SDR transform.
+- A live gain probe did not change the `0x268BAB6D` input-range visualization. This does not establish a direct resource dependency because DevKit live replacement/unload rebuilds the device replacement set, so `0x3E36DA5B` remains an independent candidate rather than a shipping replacement.
 
 ## 2026-07-23: test-M crash fix (shader signature mismatch)
 
