@@ -43,6 +43,7 @@ struct ToolContext {
   std::function<bool()> has_queued_snapshot;
   std::function<bool(std::uint32_t)> is_snapshot_active;
   std::function<bool(std::uint32_t)> is_snapshot_queued;
+  std::function<json()> get_probe_status;
   std::function<device_summary::DeviceSummary(std::uint32_t index, bool is_selected)> build_device_summary;
   std::function<std::vector<shader_summary::TrackedShaderSummary>(
       std::uint32_t device_index,
@@ -204,6 +205,9 @@ inline ToolResult HandleStatusTool([[maybe_unused]] const json& arguments, const
   }
   if (renodx::build_info::HasKnownSourceDateEpoch()) {
     result["serverInfo"]["sourceDateEpoch"] = renodx::build_info::kSourceDateEpoch;
+  }
+  if (context.get_probe_status) {
+    result["dl2TonemapperProbe"] = context.get_probe_status();
   }
 
   if (device_count == 0u) {
