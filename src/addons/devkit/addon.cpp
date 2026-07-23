@@ -152,6 +152,7 @@ std::atomic_uint32_t dl2_descriptor_resource_update_count = 0u;
 std::atomic_uint32_t dl2_descriptor_bind_count = 0u;
 std::atomic_uint32_t dl2_descriptor_pixel_bind_count = 0u;
 std::atomic_uint32_t dl2_descriptor_table_match_count = 0u;
+std::atomic_uint32_t dl2_descriptor_copy_count = 0u;
 std::atomic_bool snapshot_pane_filter_resources_by_shader_use = true;
 std::atomic_bool snapshot_pane_show_non_executed_command_lists = false;
 std::atomic_bool shaders_pane_show_vertex_shaders = false;
@@ -3866,6 +3867,7 @@ void ProcessPendingLiveShaderRequests(
             {"descriptorBinds", dl2_descriptor_bind_count.load(std::memory_order_relaxed)},
             {"descriptorPixelBinds", dl2_descriptor_pixel_bind_count.load(std::memory_order_relaxed)},
             {"descriptorTableMatches", dl2_descriptor_table_match_count.load(std::memory_order_relaxed)},
+            {"descriptorCopies", dl2_descriptor_copy_count.load(std::memory_order_relaxed)},
             {"t0ResourceHandle", FormatHandle(dl2_tonemapper_t0_resource.load(std::memory_order_relaxed))},
             {"lastWriterHash", writer_hash == 0u ? json(nullptr) : json(FormatShaderHash(writer_hash))},
             {"lastWriterStage", writer_hash == 0u ? json(nullptr) : json(dl2_tonemapper_writer_is_compute.load(std::memory_order_relaxed) ? "compute" : "pixel")},
@@ -4640,12 +4642,49 @@ bool OnUpdateDescriptorTables(
       } else {
         view = static_cast<const reshade::api::resource_view*>(update.descriptors)[descriptor_index];
       }
-      const auto binding = update.binding + descriptor_index;
+      const auto binding = update.binding + update.array_offset + descriptor_index;
       if (view.handle == 0u) {
         table_bindings.erase(binding);
       } else {
         table_bindings[binding] = {.details = GetResourceViewDetails(view, device), .is_uav = is_uav};
       }
+    }
+  }
+  return false;
+}
+
+bool OnCopyDescriptorTables(
+    reshade::api::device* device,
+    uint32_t count,
+    const reshade::api::descriptor_table_copy* copies) {
+  const auto* selected_device_data = GetSelectedDeviceData();
+  if (selected_device_data == nullptr || selected_device_data->device != device) return false;
+
+  auto* device_data = renodx::utils::data::Get<DeviceData>(device);
+  if (device_data == nullptr) return false;
+  dl2_descriptor_copy_count.fetch_add(count, std::memory_order_relaxed);
+
+  std::unique_lock lock(device_data->mutex);
+  for (uint32_t copy_index = 0u; copy_index < count; ++copy_index) {
+    const auto& copy = copies[copy_index];
+    if (copy.source_table.handle == 0u || copy.dest_table.handle == 0u) continue;
+    const auto source_table = device_data->descriptor_table_bindings.find(copy.source_table.handle);
+    if (source_table == device_data->descriptor_table_bindings.end()) continue;
+
+    std::vector<std::pair<uint32_t, DescriptorTableBinding>> copied_bindings;
+    copied_bindings.reserve(copy.count);
+    for (uint32_t descriptor_index = 0u; descriptor_index < copy.count; ++descriptor_index) {
+      const auto source_binding = copy.source_binding + copy.source_array_offset + descriptor_index;
+      const auto source = source_table->second.find(source_binding);
+      if (source != source_table->second.end()) {
+        copied_bindings.emplace_back(descriptor_index, source->second);
+      }
+    }
+
+    auto& destination_table = device_data->descriptor_table_bindings[copy.dest_table.handle];
+    for (const auto& [descriptor_index, binding] : copied_bindings) {
+      const auto destination_binding = copy.dest_binding + copy.dest_array_offset + descriptor_index;
+      destination_table[destination_binding] = binding;
     }
   }
   return false;
@@ -9409,6 +9448,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
       reshade::register_event<reshade::addon_event::push_descriptors>(OnPushDescriptors);
       reshade::register_event<reshade::addon_event::update_descriptor_tables>(OnUpdateDescriptorTables);
+      reshade::register_event<reshade::addon_event::copy_descriptor_tables>(OnCopyDescriptorTables);
       reshade::register_event<reshade::addon_event::bind_descriptor_tables>(OnBindDescriptorTables);
       reshade::register_event<reshade::addon_event::draw>(OnDraw);
       reshade::register_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);
@@ -9459,6 +9499,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
       reshade::unregister_event<reshade::addon_event::push_descriptors>(OnPushDescriptors);
       reshade::unregister_event<reshade::addon_event::update_descriptor_tables>(OnUpdateDescriptorTables);
+      reshade::unregister_event<reshade::addon_event::copy_descriptor_tables>(OnCopyDescriptorTables);
       reshade::unregister_event<reshade::addon_event::bind_descriptor_tables>(OnBindDescriptorTables);
       reshade::unregister_event<reshade::addon_event::draw>(OnDraw);
       reshade::unregister_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);
