@@ -4812,6 +4812,7 @@ void OnBindDescriptorTables(
 
   for (uint32_t table_index = 0u; table_index < count; ++table_index) {
     struct DescriptorRange {
+      reshade::api::descriptor_type type = reshade::api::descriptor_type::sampler;
       uint32_t binding = 0u;
       uint32_t count = 0u;
       uint32_t dx_register_index = 0u;
@@ -4828,6 +4829,7 @@ void OnBindDescriptorTables(
       for (uint32_t range_index = 0u; range_index < param.descriptor_table.count; ++range_index) {
         const auto& range = param.descriptor_table.ranges[range_index];
         ranges.push_back({
+            .type = range.type,
             .binding = range.binding,
             .count = range.count,
             .dx_register_index = range.dx_register_index,
@@ -4839,6 +4841,21 @@ void OnBindDescriptorTables(
 
     std::shared_lock lock(device_data->mutex);
     for (const auto& range : ranges) {
+      bool is_uav_range = false;
+      switch (range.type) {
+        case reshade::api::descriptor_type::sampler_with_resource_view:
+        case reshade::api::descriptor_type::texture_shader_resource_view:
+        case reshade::api::descriptor_type::buffer_shader_resource_view:
+        case reshade::api::descriptor_type::acceleration_structure:
+          break;
+        case reshade::api::descriptor_type::texture_unordered_access_view:
+        case reshade::api::descriptor_type::buffer_unordered_access_view:
+          is_uav_range = true;
+          break;
+        default:
+          continue;
+      }
+
       reshade::api::descriptor_heap heap = {0u};
       uint32_t heap_offset = 0u;
       cmd_list->get_device()->get_descriptor_heap_offset(tables[table_index], range.binding, 0u, &heap, &heap_offset);
@@ -4848,9 +4865,14 @@ void OnBindDescriptorTables(
 
       for (uint32_t descriptor_index = 0u; descriptor_index < range.count; ++descriptor_index) {
         const auto& entry = heap_bindings->second[heap_offset + descriptor_index];
-        if (entry.details.resource_view.handle == 0u) continue;
-        auto& destination = entry.is_uav ? command_list_data->pixel_uav_binds : command_list_data->pixel_srv_binds;
-        destination[{range.dx_register_index + descriptor_index, range.dx_register_space}] = entry.details;
+        auto& destination = is_uav_range ? command_list_data->pixel_uav_binds : command_list_data->pixel_srv_binds;
+        const auto slot = std::pair{range.dx_register_index + descriptor_index, range.dx_register_space};
+        if (entry.details.resource_view.handle == 0u) {
+          // A newly bound table must not inherit a view left by an earlier table.
+          destination.erase(slot);
+          continue;
+        }
+        destination[slot] = entry.details;
         dl2_descriptor_table_match_count.fetch_add(1u, std::memory_order_relaxed);
       }
     }
