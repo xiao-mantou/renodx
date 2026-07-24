@@ -136,9 +136,26 @@ std::atomic_uint32_t dl2_probe_target_hash = DL2_TONEMAPPER_PROBE_HASH;
 struct Dl2ResourceWriter {
   uint32_t shader_hash = 0u;
   bool is_compute = false;
+  uint32_t submission_order = 0u;
 };
+
+struct Dl2ProbeEvent {
+  enum class Kind : uint8_t {
+    TARGET_READ,
+    RESOURCE_WRITE,
+  } kind = Kind::RESOURCE_WRITE;
+  uint64_t resource_handle = 0u;
+  uint32_t shader_hash = 0u;
+  bool is_compute = false;
+  uint32_t srv_count = 0u;
+  uint32_t first_srv_slot = 0u;
+  uint32_t first_srv_space = 0u;
+};
+
 std::mutex dl2_resource_writer_mutex;
 std::unordered_map<uint64_t, Dl2ResourceWriter> dl2_resource_writers;
+std::atomic_uint32_t dl2_probe_submission_count = 0u;
+std::atomic_uint32_t dl2_probe_event_count = 0u;
 std::atomic_uint32_t dl2_tonemapper_draw_count = 0u;
 std::atomic_uint32_t dl2_tonemapper_t0_bind_count = 0u;
 std::atomic_uint32_t dl2_tonemapper_srv_count = 0u;
@@ -147,6 +164,7 @@ std::atomic_uint32_t dl2_tonemapper_first_srv_space = 0u;
 std::atomic_uint32_t dl2_tonemapper_writer_hash = 0u;
 std::atomic_uint64_t dl2_tonemapper_t0_resource = 0u;
 std::atomic_bool dl2_tonemapper_writer_is_compute = false;
+std::atomic_uint32_t dl2_tonemapper_writer_submission_order = 0u;
 std::atomic_uint32_t dl2_descriptor_update_count = 0u;
 std::atomic_uint32_t dl2_descriptor_resource_update_count = 0u;
 std::atomic_uint32_t dl2_descriptor_bind_count = 0u;
@@ -364,6 +382,7 @@ struct __declspec(uuid("3224946b-5c5f-478a-8691-83fbb9f88f1b")) CommandListData 
   std::optional<reshade::api::blend_desc> blend_desc = std::nullopt;
   std::optional<reshade::api::rasterizer_desc> rasterizer_desc = std::nullopt;
   uint32_t draw_counter = 0u;
+  std::vector<Dl2ProbeEvent> dl2_probe_events;
 
   // std::vector<PipelineBindDetails> pipeline_binds;
 };
@@ -3858,6 +3877,8 @@ void ProcessPendingLiveShaderRequests(
         const auto writer_hash = dl2_tonemapper_writer_hash.load(std::memory_order_relaxed);
         return json{
             {"targetShaderHash", FormatShaderHash(dl2_probe_target_hash.load(std::memory_order_relaxed))},
+            {"submissionCount", dl2_probe_submission_count.load(std::memory_order_relaxed)},
+            {"eventCount", dl2_probe_event_count.load(std::memory_order_relaxed)},
             {"targetDrawCount", dl2_tonemapper_draw_count.load(std::memory_order_relaxed)},
             {"t0BindCount", dl2_tonemapper_t0_bind_count.load(std::memory_order_relaxed)},
             {"pixelSrvCount", dl2_tonemapper_srv_count.load(std::memory_order_relaxed)},
@@ -3872,6 +3893,7 @@ void ProcessPendingLiveShaderRequests(
             {"t0ResourceHandle", FormatHandle(dl2_tonemapper_t0_resource.load(std::memory_order_relaxed))},
             {"lastWriterHash", writer_hash == 0u ? json(nullptr) : json(FormatShaderHash(writer_hash))},
             {"lastWriterStage", writer_hash == 0u ? json(nullptr) : json(dl2_tonemapper_writer_is_compute.load(std::memory_order_relaxed) ? "compute" : "pixel")},
+            {"lastWriterSubmissionOrder", dl2_tonemapper_writer_submission_order.load(std::memory_order_relaxed)},
         }; },
       .build_device_summary = [](uint32_t device_index, bool is_selected) {
         std::shared_lock list_lock(device_data_list_mutex);
@@ -4032,9 +4054,12 @@ void ProcessPendingLiveShaderRequests(
   dl2_tonemapper_writer_hash.store(0u, std::memory_order_relaxed);
   dl2_tonemapper_t0_resource.store(0u, std::memory_order_relaxed);
   dl2_tonemapper_writer_is_compute.store(false, std::memory_order_relaxed);
+  dl2_tonemapper_writer_submission_order.store(0u, std::memory_order_relaxed);
   dl2_tonemapper_srv_count.store(0u, std::memory_order_relaxed);
   dl2_tonemapper_first_srv_slot.store(0u, std::memory_order_relaxed);
   dl2_tonemapper_first_srv_space.store(0u, std::memory_order_relaxed);
+  dl2_probe_submission_count.store(0u, std::memory_order_relaxed);
+  dl2_probe_event_count.store(0u, std::memory_order_relaxed);
 
   return ToolResult{
       .text = std::format("Set the DL2 resource producer probe target to {}.", FormatShaderHash(shader_hash)),
@@ -5040,52 +5065,52 @@ void TrackDl2TonemapperProducer(reshade::api::command_list* cmd_list, DrawDetail
   if (shader_hash == 0u) return;
 
   auto* device = cmd_list->get_device();
-  const auto record_writer = [&](reshade::api::resource_view view) {
+  const auto record_event = [&](Dl2ProbeEvent::Kind kind, reshade::api::resource_view view) {
     if (view.handle == 0u) return;
     const auto resource = renodx::utils::resource::GetResourceFromView(device, view);
     if (resource.handle == 0u) return;
-    std::unique_lock lock(dl2_resource_writer_mutex);
-    dl2_resource_writers[resource.handle] = {.shader_hash = shader_hash, .is_compute = is_compute};
+    command_list_data->dl2_probe_events.push_back({
+        .kind = kind,
+        .resource_handle = resource.handle,
+        .shader_hash = shader_hash,
+        .is_compute = is_compute,
+    });
   };
+
+  if (shader_hash == dl2_probe_target_hash.load(std::memory_order_relaxed)) {
+    const auto& srv_binds = is_compute ? command_list_data->compute_srv_binds : command_list_data->pixel_srv_binds;
+    Dl2ProbeEvent read_event = {
+        .kind = Dl2ProbeEvent::Kind::TARGET_READ,
+        .shader_hash = shader_hash,
+        .is_compute = is_compute,
+        .srv_count = static_cast<uint32_t>(srv_binds.size()),
+    };
+    if (!srv_binds.empty()) {
+      const auto& first_srv = *srv_binds.begin();
+      read_event.first_srv_slot = first_srv.first.first;
+      read_event.first_srv_space = first_srv.first.second;
+    }
+    if (const auto t0 = srv_binds.find({0u, 0u}); t0 != srv_binds.end()) {
+      read_event.resource_handle = renodx::utils::resource::GetResourceFromView(device, t0->second.resource_view).handle;
+    }
+    command_list_data->dl2_probe_events.push_back(read_event);
+  }
 
   if (is_compute) {
     for (const auto& [slot, details] : command_list_data->compute_uav_binds) {
       (void)slot;
-      record_writer(details.resource_view);
+      record_event(Dl2ProbeEvent::Kind::RESOURCE_WRITE, details.resource_view);
     }
     return;
   }
 
   for (const auto render_target : renodx::utils::swapchain::GetRenderTargets(cmd_list)) {
-    record_writer(render_target);
+    record_event(Dl2ProbeEvent::Kind::RESOURCE_WRITE, render_target);
   }
-
-  if (shader_hash != dl2_probe_target_hash.load(std::memory_order_relaxed)) return;
-  dl2_tonemapper_draw_count.fetch_add(1u, std::memory_order_relaxed);
-  dl2_tonemapper_srv_count.store(static_cast<uint32_t>(command_list_data->pixel_srv_binds.size()), std::memory_order_relaxed);
-  if (!command_list_data->pixel_srv_binds.empty()) {
-    const auto& first_srv = *command_list_data->pixel_srv_binds.begin();
-    dl2_tonemapper_first_srv_slot.store(first_srv.first.first, std::memory_order_relaxed);
-    dl2_tonemapper_first_srv_space.store(first_srv.first.second, std::memory_order_relaxed);
+  for (const auto& [slot, details] : command_list_data->pixel_uav_binds) {
+    (void)slot;
+    record_event(Dl2ProbeEvent::Kind::RESOURCE_WRITE, details.resource_view);
   }
-  const auto t0 = command_list_data->pixel_srv_binds.find({0u, 0u});
-  if (t0 == command_list_data->pixel_srv_binds.end()) return;
-  dl2_tonemapper_t0_bind_count.fetch_add(1u, std::memory_order_relaxed);
-
-  const auto input_resource = renodx::utils::resource::GetResourceFromView(device, t0->second.resource_view);
-  if (input_resource.handle == 0u) return;
-
-  Dl2ResourceWriter writer = {};
-  {
-    std::unique_lock lock(dl2_resource_writer_mutex);
-    if (const auto found_writer = dl2_resource_writers.find(input_resource.handle);
-        found_writer != dl2_resource_writers.end()) {
-      writer = found_writer->second;
-    }
-  }
-  dl2_tonemapper_t0_resource.store(input_resource.handle, std::memory_order_relaxed);
-  dl2_tonemapper_writer_hash.store(writer.shader_hash, std::memory_order_relaxed);
-  dl2_tonemapper_writer_is_compute.store(writer.is_compute, std::memory_order_relaxed);
 }
 
 bool OnDraw(reshade::api::command_list* cmd_list, DrawDetails::DrawMethods draw_method) {
@@ -5514,6 +5539,50 @@ bool OnDrawOrDispatchIndirect(
 
   return OnDraw(cmd_list, is_dispatch ? DrawDetails::DrawMethods::DISPATCH
                                       : DrawDetails::DrawMethods::DRAW_INDEXED);
+}
+
+void CommitDl2ProbeEvents(reshade::api::command_list* cmd_list) {
+  const auto* selected_device_data = GetSelectedDeviceData();
+  if (selected_device_data == nullptr || selected_device_data->device != cmd_list->get_device()) return;
+
+  auto* command_list_data = renodx::utils::data::Get<CommandListData>(cmd_list);
+  if (command_list_data == nullptr || command_list_data->dl2_probe_events.empty()) return;
+
+  const uint32_t submission_order = dl2_probe_submission_count.fetch_add(1u, std::memory_order_relaxed) + 1u;
+  const uint32_t target_hash = dl2_probe_target_hash.load(std::memory_order_relaxed);
+  std::unique_lock lock(dl2_resource_writer_mutex);
+
+  for (const auto& event : command_list_data->dl2_probe_events) {
+    dl2_probe_event_count.fetch_add(1u, std::memory_order_relaxed);
+    if (event.kind == Dl2ProbeEvent::Kind::RESOURCE_WRITE) {
+      dl2_resource_writers[event.resource_handle] = {
+          .shader_hash = event.shader_hash,
+          .is_compute = event.is_compute,
+          .submission_order = submission_order,
+      };
+      continue;
+    }
+
+    // A target change can occur between command-list recording and submission.
+    if (event.shader_hash != target_hash) continue;
+    dl2_tonemapper_draw_count.fetch_add(1u, std::memory_order_relaxed);
+    dl2_tonemapper_srv_count.store(event.srv_count, std::memory_order_relaxed);
+    dl2_tonemapper_first_srv_slot.store(event.first_srv_slot, std::memory_order_relaxed);
+    dl2_tonemapper_first_srv_space.store(event.first_srv_space, std::memory_order_relaxed);
+    if (event.resource_handle == 0u) continue;
+
+    dl2_tonemapper_t0_bind_count.fetch_add(1u, std::memory_order_relaxed);
+    Dl2ResourceWriter writer = {};
+    if (const auto found_writer = dl2_resource_writers.find(event.resource_handle);
+        found_writer != dl2_resource_writers.end()) {
+      writer = found_writer->second;
+    }
+    dl2_tonemapper_t0_resource.store(event.resource_handle, std::memory_order_relaxed);
+    dl2_tonemapper_writer_hash.store(writer.shader_hash, std::memory_order_relaxed);
+    dl2_tonemapper_writer_is_compute.store(writer.is_compute, std::memory_order_relaxed);
+    dl2_tonemapper_writer_submission_order.store(writer.submission_order, std::memory_order_relaxed);
+  }
+  command_list_data->dl2_probe_events.clear();
 }
 
 void DeactivateShader(reshade::api::device* device, uint32_t shader_hash) {
@@ -9264,11 +9333,12 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
 void OnExecuteCommandList(
     reshade::api::command_queue* queue,
     reshade::api::command_list* cmd_list) {
-  if (snapshot_device == nullptr) return;
-
   auto* device = cmd_list->get_device();
-  if (device != snapshot_device) return;
   if (!SupportsSnapshotSubmissionOrder(device->get_api())) return;
+
+  CommitDl2ProbeEvents(cmd_list);
+
+  if (device != snapshot_device) return;
 
   auto* device_data = renodx::utils::data::Get<DeviceData>(device);
   if (device_data == nullptr) return;
