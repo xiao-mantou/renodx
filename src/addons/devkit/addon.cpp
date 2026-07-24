@@ -162,8 +162,15 @@ struct Dl2ProbeEvent {
   uint32_t first_srv_space = 0u;
 };
 
+struct Dl2ProbeInputObservation {
+  uint64_t resource_handle = 0u;
+  Dl2ResourceWriter writer = {};
+};
+
 std::mutex dl2_resource_writer_mutex;
 std::unordered_map<uint64_t, Dl2ResourceWriter> dl2_resource_writers;
+std::vector<Dl2ProbeInputObservation> dl2_probe_recent_inputs;
+inline constexpr size_t DL2_PROBE_INPUT_HISTORY_LIMIT = 64u;
 std::atomic_uint32_t dl2_probe_srv_slot = 0u;
 std::atomic_uint32_t dl2_probe_srv_space = 0u;
 std::atomic_uint64_t dl2_probe_tracked_resource = 0u;
@@ -3892,6 +3899,22 @@ void ProcessPendingLiveShaderRequests(
         const auto writer_hash = dl2_tonemapper_writer_hash.load(std::memory_order_relaxed);
         const auto writer_kind = static_cast<Dl2ResourceWriter::Kind>(
             dl2_tonemapper_writer_kind.load(std::memory_order_relaxed));
+        json recent_inputs = json::array();
+        {
+          std::lock_guard lock(dl2_resource_writer_mutex);
+          for (const auto& observation : dl2_probe_recent_inputs) {
+            const auto kind = observation.writer.kind;
+            recent_inputs.push_back({
+                {"resourceHandle", FormatHandle(observation.resource_handle)},
+                {"writerHash", observation.writer.shader_hash == 0u ? json(nullptr) : json(FormatShaderHash(observation.writer.shader_hash))},
+                {"writerStage", observation.writer.shader_hash == 0u ? json(nullptr) : json(observation.writer.is_compute ? "compute" : "pixel")},
+                {"writerKind", kind == Dl2ResourceWriter::Kind::SHADER ? "shader"
+                                 : kind == Dl2ResourceWriter::Kind::COPY ? "copy"
+                                 : kind == Dl2ResourceWriter::Kind::CLEAR ? "clear" : "none"},
+                {"writerSubmissionOrder", observation.writer.submission_order},
+            });
+          }
+        }
         return json{
             {"targetShaderHash", FormatShaderHash(dl2_probe_target_hash.load(std::memory_order_relaxed))},
             {"targetSrvSlot", dl2_probe_srv_slot.load(std::memory_order_relaxed)},
@@ -3920,6 +3943,7 @@ void ProcessPendingLiveShaderRequests(
                                 : writer_kind == Dl2ResourceWriter::Kind::CLEAR ? "clear" : "none"},
             {"lastWriterSourceResourceHandle", FormatHandle(dl2_tonemapper_writer_source_resource.load(std::memory_order_relaxed))},
             {"lastWriterSubmissionOrder", dl2_tonemapper_writer_submission_order.load(std::memory_order_relaxed)},
+            {"recentInputs", recent_inputs},
         }; },
       .build_device_summary = [](uint32_t device_index, bool is_selected) {
         std::shared_lock list_lock(device_data_list_mutex);
@@ -4085,6 +4109,10 @@ void ProcessPendingLiveShaderRequests(
   dl2_tonemapper_writer_submission_order.store(0u, std::memory_order_relaxed);
   dl2_tonemapper_writer_kind.store(static_cast<uint32_t>(Dl2ResourceWriter::Kind::NONE), std::memory_order_relaxed);
   dl2_tonemapper_writer_source_resource.store(0u, std::memory_order_relaxed);
+  {
+    std::lock_guard lock(dl2_resource_writer_mutex);
+    dl2_probe_recent_inputs.clear();
+  }
   dl2_tonemapper_srv_count.store(0u, std::memory_order_relaxed);
   dl2_tonemapper_first_srv_slot.store(0u, std::memory_order_relaxed);
   dl2_tonemapper_first_srv_space.store(0u, std::memory_order_relaxed);
@@ -5744,6 +5772,14 @@ void CommitDl2ProbeEvents(reshade::api::command_list* cmd_list) {
     dl2_tonemapper_writer_submission_order.store(writer.submission_order, std::memory_order_relaxed);
     dl2_tonemapper_writer_kind.store(static_cast<uint32_t>(writer.kind), std::memory_order_relaxed);
     dl2_tonemapper_writer_source_resource.store(writer.source_resource_handle, std::memory_order_relaxed);
+
+    dl2_probe_recent_inputs.push_back({
+        .resource_handle = event.resource_handle,
+        .writer = writer,
+    });
+    if (dl2_probe_recent_inputs.size() > DL2_PROBE_INPUT_HISTORY_LIMIT) {
+      dl2_probe_recent_inputs.erase(dl2_probe_recent_inputs.begin());
+    }
   }
   command_list_data->dl2_probe_events.clear();
 }
