@@ -29,7 +29,14 @@ void main(
     out float4 o0 : SV_TARGET0) {
   const float4 source = t0.SampleLevel(s0_s, v1.xy, 0);
   const float exposure = t1.SampleLevel(s0_s, float2(0.0, 0.0), 0).x;
-  const float3 untonemapped = source.rgb * exposure * 0.6;
+  const float3 scene_linear = source.rgb * 0.6;
+  const float3 game_exposed = scene_linear * exposure;
+  // The game's final auto-exposure normalizes bright outdoor content to SDR
+  // before its curve. Preserve the raw scene signal for RenoDX so Peak
+  // Brightness can map that headroom; Vanilla retains the original exposure.
+  const float3 untonemapped = RENODX_TONE_MAP_TYPE == 0.0
+      ? game_exposed
+      : scene_linear;
   const float3 neutral_sdr = renodx::tonemap::renodrt::NeutralSDR(untonemapped);
 
   // Preserve the game's original curve for Vanilla mode.

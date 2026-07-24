@@ -196,3 +196,9 @@ Conclusion: `0x3E36DA5B` receives genuine HDR scene values before its original c
 - `0x268BAB6D` is now retained only as a documented later LUT/color-grade reference; it is no longer registered as a runtime replacement.
 
 Next test: run only `0x3E36DA5B` as the HDR bridge. Investigate a separate UI path only if UI behavior remains incorrect after this correction.
+
+## 2026-07-25: Preserve pre-exposure HDR for RenoDX
+
+- With the single bridge active, the range debug changed from red to green after DL2 auto-exposure settled on the sky.
+- The original `t0` remains HDR, but the game's `t1` exposure scalar normalizes it before RenoDX receives it.
+- Vanilla continues to use the original `t1` path. RenoDX modes now use the pre-exposure scene signal, leaving final exposure, diffuse white, and peak mapping to RenoDX.
