@@ -132,6 +132,7 @@ std::atomic_bool snapshot_pane_expand_all_nodes = true;
 // DL2 probe: follows the resource read by the known final color-grading pass without
 // scheduling a snapshot, dumping shaders, or reading texture data back to the CPU.
 inline constexpr uint32_t DL2_TONEMAPPER_PROBE_HASH = 0x268BAB6Du;
+inline constexpr uint32_t DL2_TONEMAPPER_PRODUCER_PROBE_HASH = 0x80C96448u;
 struct Dl2ResourceWriter {
   uint32_t shader_hash = 0u;
   bool is_compute = false;
@@ -147,6 +148,11 @@ std::atomic_uint32_t dl2_tonemapper_first_srv_space = 0u;
 std::atomic_uint32_t dl2_tonemapper_writer_hash = 0u;
 std::atomic_uint64_t dl2_tonemapper_t0_resource = 0u;
 std::atomic_bool dl2_tonemapper_writer_is_compute = false;
+std::atomic_uint32_t dl2_tonemapper_producer_draw_count = 0u;
+std::atomic_uint32_t dl2_tonemapper_producer_t0_bind_count = 0u;
+std::atomic_uint32_t dl2_tonemapper_producer_writer_hash = 0u;
+std::atomic_uint64_t dl2_tonemapper_producer_t0_resource = 0u;
+std::atomic_bool dl2_tonemapper_producer_writer_is_compute = false;
 std::atomic_uint32_t dl2_descriptor_update_count = 0u;
 std::atomic_uint32_t dl2_descriptor_resource_update_count = 0u;
 std::atomic_uint32_t dl2_descriptor_bind_count = 0u;
@@ -3856,6 +3862,7 @@ void ProcessPendingLiveShaderRequests(
         return snapshot_queued_device == device_data_list[device_index]->device; },
       .get_probe_status = []() {
         const auto writer_hash = dl2_tonemapper_writer_hash.load(std::memory_order_relaxed);
+        const auto producer_writer_hash = dl2_tonemapper_producer_writer_hash.load(std::memory_order_relaxed);
         return json{
             {"targetShaderHash", FormatShaderHash(DL2_TONEMAPPER_PROBE_HASH)},
             {"targetDrawCount", dl2_tonemapper_draw_count.load(std::memory_order_relaxed)},
@@ -3872,6 +3879,14 @@ void ProcessPendingLiveShaderRequests(
             {"t0ResourceHandle", FormatHandle(dl2_tonemapper_t0_resource.load(std::memory_order_relaxed))},
             {"lastWriterHash", writer_hash == 0u ? json(nullptr) : json(FormatShaderHash(writer_hash))},
             {"lastWriterStage", writer_hash == 0u ? json(nullptr) : json(dl2_tonemapper_writer_is_compute.load(std::memory_order_relaxed) ? "compute" : "pixel")},
+            {"producerInput", {
+                {"targetShaderHash", FormatShaderHash(DL2_TONEMAPPER_PRODUCER_PROBE_HASH)},
+                {"targetDrawCount", dl2_tonemapper_producer_draw_count.load(std::memory_order_relaxed)},
+                {"t0BindCount", dl2_tonemapper_producer_t0_bind_count.load(std::memory_order_relaxed)},
+                {"t0ResourceHandle", FormatHandle(dl2_tonemapper_producer_t0_resource.load(std::memory_order_relaxed))},
+                {"lastWriterHash", producer_writer_hash == 0u ? json(nullptr) : json(FormatShaderHash(producer_writer_hash))},
+                {"lastWriterStage", producer_writer_hash == 0u ? json(nullptr) : json(dl2_tonemapper_producer_writer_is_compute.load(std::memory_order_relaxed) ? "compute" : "pixel")},
+            }},
         }; },
       .build_device_summary = [](uint32_t device_index, bool is_selected) {
         std::shared_lock list_lock(device_data_list_mutex);
@@ -5041,6 +5056,28 @@ void TrackDl2TonemapperProducer(reshade::api::command_list* cmd_list, DrawDetail
 
   for (const auto render_target : renodx::utils::swapchain::GetRenderTargets(cmd_list)) {
     record_writer(render_target);
+  }
+
+  if (shader_hash == DL2_TONEMAPPER_PRODUCER_PROBE_HASH) {
+    dl2_tonemapper_producer_draw_count.fetch_add(1u, std::memory_order_relaxed);
+    if (const auto t0 = command_list_data->pixel_srv_binds.find({0u, 0u});
+        t0 != command_list_data->pixel_srv_binds.end()) {
+      dl2_tonemapper_producer_t0_bind_count.fetch_add(1u, std::memory_order_relaxed);
+      const auto input_resource = renodx::utils::resource::GetResourceFromView(device, t0->second.resource_view);
+      if (input_resource.handle != 0u) {
+        Dl2ResourceWriter writer = {};
+        {
+          std::unique_lock lock(dl2_resource_writer_mutex);
+          if (const auto found_writer = dl2_resource_writers.find(input_resource.handle);
+              found_writer != dl2_resource_writers.end()) {
+            writer = found_writer->second;
+          }
+        }
+        dl2_tonemapper_producer_t0_resource.store(input_resource.handle, std::memory_order_relaxed);
+        dl2_tonemapper_producer_writer_hash.store(writer.shader_hash, std::memory_order_relaxed);
+        dl2_tonemapper_producer_writer_is_compute.store(writer.is_compute, std::memory_order_relaxed);
+      }
+    }
   }
 
   if (shader_hash != DL2_TONEMAPPER_PROBE_HASH) return;
