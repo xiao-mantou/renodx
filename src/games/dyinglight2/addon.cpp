@@ -20,6 +20,7 @@
 namespace {
 
 renodx::mods::shader::CustomShaders custom_shaders = {
+    CustomDirectXShaders(0x3E36DA5B),
     CustomDirectXShaders(0x268BAB6D),
     // Disabled: guessed hashes caused crashes because the copied tonemapper
     // template shader has mismatched inputs/outputs.
