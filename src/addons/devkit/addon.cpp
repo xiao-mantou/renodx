@@ -154,6 +154,8 @@ struct Dl2ProbeEvent {
 
 std::mutex dl2_resource_writer_mutex;
 std::unordered_map<uint64_t, Dl2ResourceWriter> dl2_resource_writers;
+std::atomic_uint32_t dl2_probe_srv_slot = 0u;
+std::atomic_uint32_t dl2_probe_srv_space = 0u;
 std::atomic_uint64_t dl2_probe_tracked_resource = 0u;
 std::atomic_uint32_t dl2_probe_submission_count = 0u;
 std::atomic_uint32_t dl2_probe_event_count = 0u;
@@ -3878,11 +3880,14 @@ void ProcessPendingLiveShaderRequests(
         const auto writer_hash = dl2_tonemapper_writer_hash.load(std::memory_order_relaxed);
         return json{
             {"targetShaderHash", FormatShaderHash(dl2_probe_target_hash.load(std::memory_order_relaxed))},
+            {"targetSrvSlot", dl2_probe_srv_slot.load(std::memory_order_relaxed)},
+            {"targetSrvSpace", dl2_probe_srv_space.load(std::memory_order_relaxed)},
             {"trackedResourceHandle", FormatHandle(dl2_probe_tracked_resource.load(std::memory_order_relaxed))},
             {"submissionCount", dl2_probe_submission_count.load(std::memory_order_relaxed)},
             {"eventCount", dl2_probe_event_count.load(std::memory_order_relaxed)},
             {"targetDrawCount", dl2_tonemapper_draw_count.load(std::memory_order_relaxed)},
             {"t0BindCount", dl2_tonemapper_t0_bind_count.load(std::memory_order_relaxed)},
+            {"inputBindCount", dl2_tonemapper_t0_bind_count.load(std::memory_order_relaxed)},
             {"pixelSrvCount", dl2_tonemapper_srv_count.load(std::memory_order_relaxed)},
             {"firstPixelSrvSlot", dl2_tonemapper_first_srv_slot.load(std::memory_order_relaxed)},
             {"firstPixelSrvSpace", dl2_tonemapper_first_srv_space.load(std::memory_order_relaxed)},
@@ -3893,6 +3898,7 @@ void ProcessPendingLiveShaderRequests(
             {"descriptorTableMatches", dl2_descriptor_table_match_count.load(std::memory_order_relaxed)},
             {"descriptorCopies", dl2_descriptor_copy_count.load(std::memory_order_relaxed)},
             {"t0ResourceHandle", FormatHandle(dl2_tonemapper_t0_resource.load(std::memory_order_relaxed))},
+            {"inputResourceHandle", FormatHandle(dl2_tonemapper_t0_resource.load(std::memory_order_relaxed))},
             {"lastWriterHash", writer_hash == 0u ? json(nullptr) : json(FormatShaderHash(writer_hash))},
             {"lastWriterStage", writer_hash == 0u ? json(nullptr) : json(dl2_tonemapper_writer_is_compute.load(std::memory_order_relaxed) ? "compute" : "pixel")},
             {"lastWriterSubmissionOrder", dl2_tonemapper_writer_submission_order.load(std::memory_order_relaxed)},
@@ -4049,8 +4055,10 @@ void ProcessPendingLiveShaderRequests(
   };
 }
 
-[[nodiscard]] ToolResult SetDl2ProbeTargetForMcp(uint32_t shader_hash) {
+[[nodiscard]] ToolResult SetDl2ProbeTargetForMcp(uint32_t shader_hash, uint32_t srv_slot, uint32_t srv_space) {
   dl2_probe_target_hash.store(shader_hash, std::memory_order_relaxed);
+  dl2_probe_srv_slot.store(srv_slot, std::memory_order_relaxed);
+  dl2_probe_srv_space.store(srv_space, std::memory_order_relaxed);
   dl2_tonemapper_draw_count.store(0u, std::memory_order_relaxed);
   dl2_tonemapper_t0_bind_count.store(0u, std::memory_order_relaxed);
   dl2_tonemapper_writer_hash.store(0u, std::memory_order_relaxed);
@@ -4065,8 +4073,12 @@ void ProcessPendingLiveShaderRequests(
   dl2_probe_event_count.store(0u, std::memory_order_relaxed);
 
   return ToolResult{
-      .text = std::format("Set the DL2 resource producer probe target to {}.", FormatShaderHash(shader_hash)),
-      .structured_content = json{{"targetShaderHash", FormatShaderHash(shader_hash)}},
+      .text = std::format("Set the DL2 resource producer probe target to {} SRV t{},space{}.", FormatShaderHash(shader_hash), srv_slot, srv_space),
+      .structured_content = json{
+          {"targetShaderHash", FormatShaderHash(shader_hash)},
+          {"targetSrvSlot", srv_slot},
+          {"targetSrvSpace", srv_space},
+      },
   };
 }
 
@@ -5099,11 +5111,10 @@ void TrackDl2TonemapperProducer(reshade::api::command_list* cmd_list, DrawDetail
       read_event.first_srv_slot = first_srv.first.first;
       read_event.first_srv_space = first_srv.first.second;
     }
-    if (const auto t0 = srv_binds.find({0u, 0u}); t0 != srv_binds.end()) {
-      read_event.resource_handle = renodx::utils::resource::GetResourceFromView(device, t0->second.resource_view).handle;
-      if (read_event.resource_handle != 0u) {
-        dl2_probe_tracked_resource.store(read_event.resource_handle, std::memory_order_relaxed);
-      }
+    const auto srv_slot = dl2_probe_srv_slot.load(std::memory_order_relaxed);
+    const auto srv_space = dl2_probe_srv_space.load(std::memory_order_relaxed);
+    if (const auto input_srv = srv_binds.find({srv_slot, srv_space}); input_srv != srv_binds.end()) {
+      read_event.resource_handle = renodx::utils::resource::GetResourceFromView(device, input_srv->second.resource_view).handle;
     }
     command_list_data->dl2_probe_events.push_back(read_event);
   }
@@ -5584,6 +5595,7 @@ void CommitDl2ProbeEvents(reshade::api::command_list* cmd_list) {
     if (event.resource_handle == 0u) continue;
 
     dl2_tonemapper_t0_bind_count.fetch_add(1u, std::memory_order_relaxed);
+    dl2_probe_tracked_resource.store(event.resource_handle, std::memory_order_relaxed);
     Dl2ResourceWriter writer = {};
     if (const auto found_writer = dl2_resource_writers.find(event.resource_handle);
         found_writer != dl2_resource_writers.end()) {

@@ -33,7 +33,7 @@ struct RegistrationContext {
   std::function<resource_clone::ToolContext()> build_resource_clone_tool_context;
   std::function<texture_replace::ToolContext()> build_texture_replace_tool_context;
   std::function<renodx::utils::mcp::ToolResult(const std::optional<std::string>&)> set_tools_path;
-  std::function<renodx::utils::mcp::ToolResult(std::uint32_t)> set_dl2_probe_target;
+  std::function<renodx::utils::mcp::ToolResult(std::uint32_t, std::uint32_t, std::uint32_t)> set_dl2_probe_target;
 };
 
 inline void RegisterTools(renodx::utils::mcp::Server& server, const RegistrationContext& context) {
@@ -82,7 +82,9 @@ inline void RegisterTools(renodx::utils::mcp::Server& server, const Registration
   });
   register_tool("devkit_set_dl2_probe_target", [set_dl2_probe_target = context.set_dl2_probe_target](
                                                     const renodx::utils::mcp::json& arguments) {
-    return set_dl2_probe_target(shader_hash::GetRequired(arguments, "shaderHash"));
+    const auto srv_slot = renodx::utils::mcp::arguments::GetOptional<std::uint32_t>(arguments, "srvSlot").value_or(0u);
+    const auto srv_space = renodx::utils::mcp::arguments::GetOptional<std::uint32_t>(arguments, "srvSpace").value_or(0u);
+    return set_dl2_probe_target(shader_hash::GetRequired(arguments, "shaderHash"), srv_slot, srv_space);
   });
   register_tool("devkit_set_live_shader_path", [build_live_shaders_tool_context = context.build_live_shaders_tool_context](
                                                     const renodx::utils::mcp::json& arguments) {

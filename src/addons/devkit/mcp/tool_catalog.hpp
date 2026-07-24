@@ -86,6 +86,8 @@ inline const renodx::utils::mcp::ToolCatalog METADATA = {
             .input_schema = {
                 .properties = {
                     {"shaderHash", {.types = {"string", "integer"}}},
+                    {"srvSlot", {.types = {"integer"}, .minimum = 0}},
+                    {"srvSpace", {.types = {"integer"}, .minimum = 0}},
                 },
                 .required = {"shaderHash"},
             },
