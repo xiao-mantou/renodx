@@ -6,6 +6,7 @@ on:
     branches: [main, dyinglight2-fix, "test-*", "codex/**"]
     paths:
       - "src/addons/devkit/**"
+      - "src/apps/mcp_bridge/**"
       - "src/utils/**"
       - "CMakeLists.txt"
       - "CMakePresets.json"
@@ -46,15 +47,22 @@ jobs:
       - name: Configure CMake (x64)
         run: cmake --preset clang-x64 -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
-      - name: Build DevKit (x64)
-        run: cmake --build --preset clang-x64-release --target devkit --verbose
+      - name: Build DevKit and MCP bridge (x64)
+        run: cmake --build --preset clang-x64-release --target devkit mcp_bridge --verbose
 
       - name: Show sccache stats
         if: always()
         run: sccache --show-stats
 
-      - name: Upload DevKit artifact
+      - name: Create DevKit MCP artifact
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path build_output
+          Copy-Item build\release\renodx-devkit.addon64 build_output\
+          Copy-Item build\release\renodx-mcp-bridge.exe build_output\
+
+      - name: Upload DevKit MCP artifact
         uses: actions/upload-artifact@v4
         with:
-          name: renodx-devkit
-          path: build/release/renodx-devkit.addon64
+          name: renodx-devkit-mcp
+          path: build_output/
