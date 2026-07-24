@@ -134,17 +134,27 @@ std::atomic_bool snapshot_pane_expand_all_nodes = true;
 inline constexpr uint32_t DL2_TONEMAPPER_PROBE_HASH = 0x268BAB6Du;
 std::atomic_uint32_t dl2_probe_target_hash = DL2_TONEMAPPER_PROBE_HASH;
 struct Dl2ResourceWriter {
+  enum class Kind : uint8_t {
+    NONE,
+    SHADER,
+    COPY,
+    CLEAR,
+  } kind = Kind::NONE;
   uint32_t shader_hash = 0u;
   bool is_compute = false;
   uint32_t submission_order = 0u;
+  uint64_t source_resource_handle = 0u;
 };
 
 struct Dl2ProbeEvent {
   enum class Kind : uint8_t {
     TARGET_READ,
     RESOURCE_WRITE,
+    RESOURCE_COPY,
+    RESOURCE_CLEAR,
   } kind = Kind::RESOURCE_WRITE;
   uint64_t resource_handle = 0u;
+  uint64_t source_resource_handle = 0u;
   uint32_t shader_hash = 0u;
   bool is_compute = false;
   uint32_t srv_count = 0u;
@@ -168,6 +178,8 @@ std::atomic_uint32_t dl2_tonemapper_writer_hash = 0u;
 std::atomic_uint64_t dl2_tonemapper_t0_resource = 0u;
 std::atomic_bool dl2_tonemapper_writer_is_compute = false;
 std::atomic_uint32_t dl2_tonemapper_writer_submission_order = 0u;
+std::atomic_uint32_t dl2_tonemapper_writer_kind = static_cast<uint32_t>(Dl2ResourceWriter::Kind::NONE);
+std::atomic_uint64_t dl2_tonemapper_writer_source_resource = 0u;
 std::atomic_uint32_t dl2_descriptor_update_count = 0u;
 std::atomic_uint32_t dl2_descriptor_resource_update_count = 0u;
 std::atomic_uint32_t dl2_descriptor_bind_count = 0u;
@@ -3878,6 +3890,8 @@ void ProcessPendingLiveShaderRequests(
         return snapshot_queued_device == device_data_list[device_index]->device; },
       .get_probe_status = []() {
         const auto writer_hash = dl2_tonemapper_writer_hash.load(std::memory_order_relaxed);
+        const auto writer_kind = static_cast<Dl2ResourceWriter::Kind>(
+            dl2_tonemapper_writer_kind.load(std::memory_order_relaxed));
         return json{
             {"targetShaderHash", FormatShaderHash(dl2_probe_target_hash.load(std::memory_order_relaxed))},
             {"targetSrvSlot", dl2_probe_srv_slot.load(std::memory_order_relaxed)},
@@ -3901,6 +3915,10 @@ void ProcessPendingLiveShaderRequests(
             {"inputResourceHandle", FormatHandle(dl2_tonemapper_t0_resource.load(std::memory_order_relaxed))},
             {"lastWriterHash", writer_hash == 0u ? json(nullptr) : json(FormatShaderHash(writer_hash))},
             {"lastWriterStage", writer_hash == 0u ? json(nullptr) : json(dl2_tonemapper_writer_is_compute.load(std::memory_order_relaxed) ? "compute" : "pixel")},
+            {"lastWriterKind", writer_kind == Dl2ResourceWriter::Kind::SHADER ? "shader"
+                                : writer_kind == Dl2ResourceWriter::Kind::COPY ? "copy"
+                                : writer_kind == Dl2ResourceWriter::Kind::CLEAR ? "clear" : "none"},
+            {"lastWriterSourceResourceHandle", FormatHandle(dl2_tonemapper_writer_source_resource.load(std::memory_order_relaxed))},
             {"lastWriterSubmissionOrder", dl2_tonemapper_writer_submission_order.load(std::memory_order_relaxed)},
         }; },
       .build_device_summary = [](uint32_t device_index, bool is_selected) {
@@ -4065,6 +4083,8 @@ void ProcessPendingLiveShaderRequests(
   dl2_tonemapper_t0_resource.store(0u, std::memory_order_relaxed);
   dl2_tonemapper_writer_is_compute.store(false, std::memory_order_relaxed);
   dl2_tonemapper_writer_submission_order.store(0u, std::memory_order_relaxed);
+  dl2_tonemapper_writer_kind.store(static_cast<uint32_t>(Dl2ResourceWriter::Kind::NONE), std::memory_order_relaxed);
+  dl2_tonemapper_writer_source_resource.store(0u, std::memory_order_relaxed);
   dl2_tonemapper_srv_count.store(0u, std::memory_order_relaxed);
   dl2_tonemapper_first_srv_slot.store(0u, std::memory_order_relaxed);
   dl2_tonemapper_first_srv_space.store(0u, std::memory_order_relaxed);
@@ -4559,10 +4579,73 @@ void OnBindPipeline(
   }
 }
 
+void RecordDl2CopyEvent(
+    reshade::api::command_list* cmd_list,
+    reshade::api::resource source,
+    reshade::api::resource dest) {
+  const auto* selected_device_data = GetSelectedDeviceData();
+  if (selected_device_data == nullptr || selected_device_data->device != cmd_list->get_device()) return;
+  auto* command_list_data = renodx::utils::data::Get<CommandListData>(cmd_list);
+  if (command_list_data == nullptr || source.handle == 0u || dest.handle == 0u) return;
+  const uint64_t tracked_resource = dl2_probe_tracked_resource.load(std::memory_order_relaxed);
+  if (tracked_resource != 0u && dest.handle != tracked_resource) return;
+  command_list_data->dl2_probe_events.push_back({
+      .kind = Dl2ProbeEvent::Kind::RESOURCE_COPY,
+      .resource_handle = dest.handle,
+      .source_resource_handle = source.handle,
+  });
+}
+
+void RecordDl2ClearEvent(reshade::api::command_list* cmd_list, reshade::api::resource_view view) {
+  const auto* selected_device_data = GetSelectedDeviceData();
+  if (selected_device_data == nullptr || selected_device_data->device != cmd_list->get_device()) return;
+  const auto resource = renodx::utils::resource::GetResourceFromView(cmd_list->get_device(), view);
+  if (resource.handle == 0u) return;
+  const uint64_t tracked_resource = dl2_probe_tracked_resource.load(std::memory_order_relaxed);
+  if (tracked_resource != 0u && resource.handle != tracked_resource) return;
+  auto* command_list_data = renodx::utils::data::Get<CommandListData>(cmd_list);
+  if (command_list_data == nullptr) return;
+  command_list_data->dl2_probe_events.push_back({
+      .kind = Dl2ProbeEvent::Kind::RESOURCE_CLEAR,
+      .resource_handle = resource.handle,
+  });
+}
+
+bool OnClearRenderTargetView(
+    reshade::api::command_list* cmd_list,
+    reshade::api::resource_view rtv,
+    const float color[4],
+    uint32_t rect_count,
+    const reshade::api::rect* rects) {
+  RecordDl2ClearEvent(cmd_list, rtv);
+  return false;
+}
+
+bool OnClearUnorderedAccessViewUint(
+    reshade::api::command_list* cmd_list,
+    reshade::api::resource_view uav,
+    const uint32_t values[4],
+    uint32_t rect_count,
+    const reshade::api::rect* rects) {
+  RecordDl2ClearEvent(cmd_list, uav);
+  return false;
+}
+
+bool OnClearUnorderedAccessViewFloat(
+    reshade::api::command_list* cmd_list,
+    reshade::api::resource_view uav,
+    const float values[4],
+    uint32_t rect_count,
+    const reshade::api::rect* rects) {
+  RecordDl2ClearEvent(cmd_list, uav);
+  return false;
+}
+
 bool OnCopyResource(
     reshade::api::command_list* cmd_list,
     reshade::api::resource source,
     reshade::api::resource dest) {
+  RecordDl2CopyEvent(cmd_list, source, dest);
   reshade::api::device* active_snapshot_device = snapshot_device;
   if (active_snapshot_device == nullptr) return false;
 
@@ -4607,6 +4690,7 @@ bool OnCopyTextureRegion(
     uint32_t dest_subresource,
     const reshade::api::subresource_box* dest_box,
     reshade::api::filter_mode filter) {
+  RecordDl2CopyEvent(cmd_list, source, dest);
   reshade::api::device* active_snapshot_device = snapshot_device;
   if (active_snapshot_device == nullptr) return false;
 
@@ -5609,8 +5693,24 @@ void CommitDl2ProbeEvents(reshade::api::command_list* cmd_list) {
     dl2_probe_event_count.fetch_add(1u, std::memory_order_relaxed);
     if (event.kind == Dl2ProbeEvent::Kind::RESOURCE_WRITE) {
       dl2_resource_writers[event.resource_handle] = {
+          .kind = Dl2ResourceWriter::Kind::SHADER,
           .shader_hash = event.shader_hash,
           .is_compute = event.is_compute,
+          .submission_order = submission_order,
+      };
+      continue;
+    }
+    if (event.kind == Dl2ProbeEvent::Kind::RESOURCE_COPY) {
+      dl2_resource_writers[event.resource_handle] = {
+          .kind = Dl2ResourceWriter::Kind::COPY,
+          .submission_order = submission_order,
+          .source_resource_handle = event.source_resource_handle,
+      };
+      continue;
+    }
+    if (event.kind == Dl2ProbeEvent::Kind::RESOURCE_CLEAR) {
+      dl2_resource_writers[event.resource_handle] = {
+          .kind = Dl2ResourceWriter::Kind::CLEAR,
           .submission_order = submission_order,
       };
       continue;
@@ -5631,10 +5731,19 @@ void CommitDl2ProbeEvents(reshade::api::command_list* cmd_list) {
         found_writer != dl2_resource_writers.end()) {
       writer = found_writer->second;
     }
+    for (uint32_t copy_hops = 0u;
+         writer.kind == Dl2ResourceWriter::Kind::COPY && writer.source_resource_handle != 0u && copy_hops < 8u;
+         ++copy_hops) {
+      const auto source_writer = dl2_resource_writers.find(writer.source_resource_handle);
+      if (source_writer == dl2_resource_writers.end()) break;
+      writer = source_writer->second;
+    }
     dl2_tonemapper_t0_resource.store(event.resource_handle, std::memory_order_relaxed);
     dl2_tonemapper_writer_hash.store(writer.shader_hash, std::memory_order_relaxed);
     dl2_tonemapper_writer_is_compute.store(writer.is_compute, std::memory_order_relaxed);
     dl2_tonemapper_writer_submission_order.store(writer.submission_order, std::memory_order_relaxed);
+    dl2_tonemapper_writer_kind.store(static_cast<uint32_t>(writer.kind), std::memory_order_relaxed);
+    dl2_tonemapper_writer_source_resource.store(writer.source_resource_handle, std::memory_order_relaxed);
   }
   command_list_data->dl2_probe_events.clear();
 }
@@ -9633,6 +9742,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::register_event<reshade::addon_event::destroy_pipeline>(OnDestroyPipeline);
       reshade::register_event<reshade::addon_event::copy_resource>(OnCopyResource);
       reshade::register_event<reshade::addon_event::copy_texture_region>(OnCopyTextureRegion);
+      reshade::register_event<reshade::addon_event::clear_render_target_view>(OnClearRenderTargetView);
+      reshade::register_event<reshade::addon_event::clear_unordered_access_view_uint>(OnClearUnorderedAccessViewUint);
+      reshade::register_event<reshade::addon_event::clear_unordered_access_view_float>(OnClearUnorderedAccessViewFloat);
       reshade::register_event<reshade::addon_event::destroy_resource>(OnDestroyResource);
 
       reshade::register_event<reshade::addon_event::push_descriptors>(OnPushDescriptors);
@@ -9680,6 +9792,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::destroy_pipeline>(OnDestroyPipeline);
       reshade::unregister_event<reshade::addon_event::copy_resource>(OnCopyResource);
       reshade::unregister_event<reshade::addon_event::copy_texture_region>(OnCopyTextureRegion);
+      reshade::unregister_event<reshade::addon_event::clear_render_target_view>(OnClearRenderTargetView);
+      reshade::unregister_event<reshade::addon_event::clear_unordered_access_view_uint>(OnClearUnorderedAccessViewUint);
+      reshade::unregister_event<reshade::addon_event::clear_unordered_access_view_float>(OnClearUnorderedAccessViewFloat);
       reshade::unregister_event<reshade::addon_event::destroy_resource>(OnDestroyResource);
       reshade::unregister_event<reshade::addon_event::create_swapchain>(OnCreateSwapchain);
       reshade::unregister_event<reshade::addon_event::dispatch>(OnDispatch);
