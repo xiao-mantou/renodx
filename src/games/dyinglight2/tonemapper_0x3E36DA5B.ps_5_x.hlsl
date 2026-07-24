@@ -45,8 +45,13 @@ void main(
   const float3 vanilla = saturate((a * untonemapped) / (b * untonemapped + cb0[1].xxx));
 
   if (RENODX_DEBUG_MODE > 0.5) {
+    // Mode 4 runs the actual RenoDRT curve first. It verifies Peak and White
+    // Clip before the game's later composite passes.
+    const float3 renodrt_output = renodx::draw::ToneMapPass(untonemapped, neutral_sdr, neutral_sdr);
     const float3 debug_input = RENODX_DEBUG_MODE < 1.5 ? untonemapped
-        : RENODX_DEBUG_MODE < 2.5 ? neutral_sdr : vanilla;
+        : RENODX_DEBUG_MODE < 2.5 ? neutral_sdr
+        : RENODX_DEBUG_MODE < 3.5 ? vanilla
+        : renodrt_output;
     const float debug_range = RENODX_DEBUG_MODE < 1.5
         ? max(debug_input.r, max(debug_input.g, debug_input.b))
         : renodx::color::y::from::BT709(max(0.0, debug_input));

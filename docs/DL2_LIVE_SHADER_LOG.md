@@ -207,3 +207,8 @@ Next test: run only `0x3E36DA5B` as the HDR bridge. Investigate a separate UI pa
 
 - DL2 raw `t0` values reached roughly 8 or more in the sky, while most indoor lights were in the 1-4 range.
 - Added the Advanced-only RenoDRT `White Clip` setting with a default of 10. It controls the input scene value that rolls into Peak Brightness; it is intentionally separate from Game White and Peak.
+
+## 2026-07-25: White Clip response probe
+
+- Added Debug Mode 4, `RenoDRT Output`, to false-color the result of the actual RenoDRT `ToneMapPass` before DL2's later composite passes.
+- This is intended to compare White Clip values in a fixed scene. It is a curve-response probe, not a final-display luminance measurement.
