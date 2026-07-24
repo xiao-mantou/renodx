@@ -154,6 +154,7 @@ struct Dl2ProbeEvent {
 
 std::mutex dl2_resource_writer_mutex;
 std::unordered_map<uint64_t, Dl2ResourceWriter> dl2_resource_writers;
+std::atomic_uint64_t dl2_probe_tracked_resource = 0u;
 std::atomic_uint32_t dl2_probe_submission_count = 0u;
 std::atomic_uint32_t dl2_probe_event_count = 0u;
 std::atomic_uint32_t dl2_tonemapper_draw_count = 0u;
@@ -3877,6 +3878,7 @@ void ProcessPendingLiveShaderRequests(
         const auto writer_hash = dl2_tonemapper_writer_hash.load(std::memory_order_relaxed);
         return json{
             {"targetShaderHash", FormatShaderHash(dl2_probe_target_hash.load(std::memory_order_relaxed))},
+            {"trackedResourceHandle", FormatHandle(dl2_probe_tracked_resource.load(std::memory_order_relaxed))},
             {"submissionCount", dl2_probe_submission_count.load(std::memory_order_relaxed)},
             {"eventCount", dl2_probe_event_count.load(std::memory_order_relaxed)},
             {"targetDrawCount", dl2_tonemapper_draw_count.load(std::memory_order_relaxed)},
@@ -4058,6 +4060,7 @@ void ProcessPendingLiveShaderRequests(
   dl2_tonemapper_srv_count.store(0u, std::memory_order_relaxed);
   dl2_tonemapper_first_srv_slot.store(0u, std::memory_order_relaxed);
   dl2_tonemapper_first_srv_space.store(0u, std::memory_order_relaxed);
+  dl2_probe_tracked_resource.store(0u, std::memory_order_relaxed);
   dl2_probe_submission_count.store(0u, std::memory_order_relaxed);
   dl2_probe_event_count.store(0u, std::memory_order_relaxed);
 
@@ -5069,6 +5072,12 @@ void TrackDl2TonemapperProducer(reshade::api::command_list* cmd_list, DrawDetail
     if (view.handle == 0u) return;
     const auto resource = renodx::utils::resource::GetResourceFromView(device, view);
     if (resource.handle == 0u) return;
+    const uint64_t tracked_resource = dl2_probe_tracked_resource.load(std::memory_order_relaxed);
+    if (kind == Dl2ProbeEvent::Kind::RESOURCE_WRITE
+        && tracked_resource != 0u
+        && resource.handle != tracked_resource) {
+      return;
+    }
     command_list_data->dl2_probe_events.push_back({
         .kind = kind,
         .resource_handle = resource.handle,
@@ -5092,6 +5101,9 @@ void TrackDl2TonemapperProducer(reshade::api::command_list* cmd_list, DrawDetail
     }
     if (const auto t0 = srv_binds.find({0u, 0u}); t0 != srv_binds.end()) {
       read_event.resource_handle = renodx::utils::resource::GetResourceFromView(device, t0->second.resource_view).handle;
+      if (read_event.resource_handle != 0u) {
+        dl2_probe_tracked_resource.store(read_event.resource_handle, std::memory_order_relaxed);
+      }
     }
     command_list_data->dl2_probe_events.push_back(read_event);
   }
