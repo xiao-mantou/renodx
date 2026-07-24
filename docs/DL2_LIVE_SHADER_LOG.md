@@ -187,3 +187,12 @@ Conclusion: use `0x3E36DA5B` as the primary DL2 HDR tonemapper target. A final H
 - The temporary replacement was unloaded and deleted.
 
 Conclusion: `0x3E36DA5B` receives genuine HDR scene values before its original compression curve. The candidate is validated for the formal HDR-preserving replacement; no further shader search is warranted.
+
+## 2026-07-25: Single HDR bridge correction
+
+- The first formal build registered both `0x3E36DA5B` and the older `0x268BAB6D` replacement.
+- ReShade confirmed that both replacements matched in the same session.
+- Both paths call `RenderIntermediatePass`, causing a second HDR intermediate encoding and white-point scale. This explained the blue debug overlay, ineffective Peak Brightness, Game White flicker, and UI White inversely affecting the scene.
+- `0x268BAB6D` is now retained only as a documented later LUT/color-grade reference; it is no longer registered as a runtime replacement.
+
+Next test: run only `0x3E36DA5B` as the HDR bridge. Investigate a separate UI path only if UI behavior remains incorrect after this correction.

@@ -21,7 +21,9 @@ namespace {
 
 renodx::mods::shader::CustomShaders custom_shaders = {
     CustomDirectXShaders(0x3E36DA5B),
-    CustomDirectXShaders(0x268BAB6D),
+    // 0x268BAB6D is a later LUT/color-grade pass. Do not inject it after the
+    // scene HDR bridge, or the intermediate encoding and white-point scaling
+    // are applied twice.
     // Disabled: guessed hashes caused crashes because the copied tonemapper
     // template shader has mismatched inputs/outputs.
     // CustomDirectXShaders(0x4d2b3f4d),
