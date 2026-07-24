@@ -5088,7 +5088,7 @@ void OnPushDescriptors(
 }
 
 void TrackDl2TonemapperProducer(reshade::api::command_list* cmd_list, DrawDetails::DrawMethods draw_method) {
-  const auto* selected_device_data = GetSelectedDeviceData();
+  auto* selected_device_data = GetSelectedDeviceData();
   if (selected_device_data == nullptr || selected_device_data->device != cmd_list->get_device()) return;
 
   auto* command_list_data = renodx::utils::data::Get<CommandListData>(cmd_list);
@@ -5135,8 +5135,16 @@ void TrackDl2TonemapperProducer(reshade::api::command_list* cmd_list, DrawDetail
     }
     const auto srv_slot = dl2_probe_srv_slot.load(std::memory_order_relaxed);
     const auto srv_space = dl2_probe_srv_space.load(std::memory_order_relaxed);
-    if (const auto input_srv = srv_binds.find({srv_slot, srv_space}); input_srv != srv_binds.end()) {
-      read_event.resource_handle = renodx::utils::resource::GetResourceFromView(device, input_srv->second.resource_view).handle;
+    auto* shader_details = selected_device_data->GetShaderDetails(shader_hash);
+    const auto resource_binds = GetResourceBindsForShaderDetails(device, selected_device_data, shader_details);
+    const bool declares_input_srv = resource_binds.has_value()
+        && std::ranges::any_of(*resource_binds, [srv_slot, srv_space](const ResourceBind& bind) {
+             return bind.type == ResourceBind::BindType::SRV && bind.slot == srv_slot && bind.space == srv_space;
+           });
+    if (declares_input_srv) {
+      if (const auto input_srv = srv_binds.find({srv_slot, srv_space}); input_srv != srv_binds.end()) {
+        read_event.resource_handle = renodx::utils::resource::GetResourceFromView(device, input_srv->second.resource_view).handle;
+      }
     }
     command_list_data->dl2_probe_events.push_back(read_event);
   }
