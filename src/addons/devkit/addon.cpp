@@ -438,6 +438,7 @@ struct __declspec(uuid("0190ec1a-2e19-74a6-ad41-4df0d4d8caed")) DeviceData {
   std::shared_mutex mutex;
   std::unordered_map<uint64_t, reshade::api::blend_desc> pipeline_blends;
   std::unordered_map<uint64_t, std::map<uint32_t, DescriptorTableBinding>> descriptor_table_bindings;
+  std::unordered_map<uint64_t, std::vector<DescriptorTableBinding>> descriptor_heap_bindings;
 
   reshade::api::effect_runtime* runtime = nullptr;
   std::deque<std::shared_ptr<devkit_resource_analysis::PendingRequest>> pending_resource_analysis_requests;
@@ -4633,8 +4634,16 @@ bool OnUpdateDescriptorTables(
     }
     dl2_descriptor_resource_update_count.fetch_add(update.count, std::memory_order_relaxed);
 
+    reshade::api::descriptor_heap heap = {0u};
+    uint32_t heap_offset = 0u;
+    device->get_descriptor_heap_offset(update.table, update.binding, update.array_offset, &heap, &heap_offset);
+
     std::unique_lock lock(device_data->mutex);
     auto& table_bindings = device_data->descriptor_table_bindings[update.table.handle];
+    auto& heap_bindings = device_data->descriptor_heap_bindings[heap.handle];
+    if (heap_bindings.size() < heap_offset + update.count) {
+      heap_bindings.resize(heap_offset + update.count);
+    }
     for (uint32_t descriptor_index = 0u; descriptor_index < update.count; ++descriptor_index) {
       reshade::api::resource_view view = {0u};
       if (update.type == reshade::api::descriptor_type::sampler_with_resource_view) {
@@ -4645,8 +4654,11 @@ bool OnUpdateDescriptorTables(
       const auto binding = update.binding + update.array_offset + descriptor_index;
       if (view.handle == 0u) {
         table_bindings.erase(binding);
+        heap_bindings[heap_offset + descriptor_index] = {};
       } else {
-        table_bindings[binding] = {.details = GetResourceViewDetails(view, device), .is_uav = is_uav};
+        const DescriptorTableBinding entry = {.details = GetResourceViewDetails(view, device), .is_uav = is_uav};
+        table_bindings[binding] = entry;
+        heap_bindings[heap_offset + descriptor_index] = entry;
       }
     }
   }
@@ -4668,6 +4680,40 @@ bool OnCopyDescriptorTables(
   for (uint32_t copy_index = 0u; copy_index < count; ++copy_index) {
     const auto& copy = copies[copy_index];
     if (copy.source_table.handle == 0u || copy.dest_table.handle == 0u) continue;
+
+    reshade::api::descriptor_heap source_heap = {0u};
+    reshade::api::descriptor_heap destination_heap = {0u};
+    uint32_t source_heap_offset = 0u;
+    uint32_t destination_heap_offset = 0u;
+    device->get_descriptor_heap_offset(
+        copy.source_table,
+        copy.source_binding,
+        copy.source_array_offset,
+        &source_heap,
+        &source_heap_offset);
+    device->get_descriptor_heap_offset(
+        copy.dest_table,
+        copy.dest_binding,
+        copy.dest_array_offset,
+        &destination_heap,
+        &destination_heap_offset);
+
+    if (const auto source_heap_bindings = device_data->descriptor_heap_bindings.find(source_heap.handle);
+        source_heap_bindings != device_data->descriptor_heap_bindings.end()
+        && source_heap_bindings->second.size() >= source_heap_offset + copy.count) {
+      std::vector<DescriptorTableBinding> copied_heap_bindings(
+          source_heap_bindings->second.begin() + source_heap_offset,
+          source_heap_bindings->second.begin() + source_heap_offset + copy.count);
+      auto& destination_heap_bindings = device_data->descriptor_heap_bindings[destination_heap.handle];
+      if (destination_heap_bindings.size() < destination_heap_offset + copy.count) {
+        destination_heap_bindings.resize(destination_heap_offset + copy.count);
+      }
+      std::copy(
+          copied_heap_bindings.begin(),
+          copied_heap_bindings.end(),
+          destination_heap_bindings.begin() + destination_heap_offset);
+    }
+
     const auto source_table = device_data->descriptor_table_bindings.find(copy.source_table.handle);
     if (source_table == device_data->descriptor_table_bindings.end()) continue;
 
@@ -4708,26 +4754,48 @@ void OnBindDescriptorTables(
   if (command_list_data == nullptr || device_data == nullptr) return;
 
   for (uint32_t table_index = 0u; table_index < count; ++table_index) {
-    uint32_t dx_register_index = 0u;
-    uint32_t dx_register_space = 0u;
+    struct DescriptorRange {
+      uint32_t binding = 0u;
+      uint32_t count = 0u;
+      uint32_t dx_register_index = 0u;
+      uint32_t dx_register_space = 0u;
+    };
+    std::vector<DescriptorRange> ranges;
     const auto layout_param = first + table_index;
     const bool found_layout = renodx::utils::pipeline_layout::GetPipelineLayoutData(layout, [&](const auto& local_layout_data) {
       const auto& layout_data = *local_layout_data;
       if (layout_param >= layout_data.params.size()) return;
       const auto& param = layout_data.params[layout_param];
-      if (param.type != reshade::api::pipeline_layout_param_type::descriptor_table || param.descriptor_table.count != 1) return;
-      dx_register_index = param.descriptor_table.ranges[0].dx_register_index;
-      dx_register_space = param.descriptor_table.ranges[0].dx_register_space;
+      if (param.type != reshade::api::pipeline_layout_param_type::descriptor_table) return;
+      ranges.reserve(param.descriptor_table.count);
+      for (uint32_t range_index = 0u; range_index < param.descriptor_table.count; ++range_index) {
+        const auto& range = param.descriptor_table.ranges[range_index];
+        ranges.push_back({
+            .binding = range.binding,
+            .count = range.count,
+            .dx_register_index = range.dx_register_index,
+            .dx_register_space = range.dx_register_space,
+        });
+      }
     });
-    if (!found_layout || tables[table_index].handle == 0u) continue;
+    if (!found_layout || ranges.empty() || tables[table_index].handle == 0u) continue;
 
     std::shared_lock lock(device_data->mutex);
-    const auto table = device_data->descriptor_table_bindings.find(tables[table_index].handle);
-    if (table == device_data->descriptor_table_bindings.end()) continue;
-    dl2_descriptor_table_match_count.fetch_add(1u, std::memory_order_relaxed);
-    for (const auto& [binding, entry] : table->second) {
-      auto& destination = entry.is_uav ? command_list_data->pixel_uav_binds : command_list_data->pixel_srv_binds;
-      destination[{dx_register_index + binding, dx_register_space}] = entry.details;
+    for (const auto& range : ranges) {
+      reshade::api::descriptor_heap heap = {0u};
+      uint32_t heap_offset = 0u;
+      cmd_list->get_device()->get_descriptor_heap_offset(tables[table_index], range.binding, 0u, &heap, &heap_offset);
+      const auto heap_bindings = device_data->descriptor_heap_bindings.find(heap.handle);
+      if (heap_bindings == device_data->descriptor_heap_bindings.end()) continue;
+      if (heap_bindings->second.size() < heap_offset + range.count) continue;
+
+      for (uint32_t descriptor_index = 0u; descriptor_index < range.count; ++descriptor_index) {
+        const auto& entry = heap_bindings->second[heap_offset + descriptor_index];
+        if (entry.details.resource_view.handle == 0u) continue;
+        auto& destination = entry.is_uav ? command_list_data->pixel_uav_binds : command_list_data->pixel_srv_binds;
+        destination[{range.dx_register_index + descriptor_index, range.dx_register_space}] = entry.details;
+        dl2_descriptor_table_match_count.fetch_add(1u, std::memory_order_relaxed);
+      }
     }
   }
 }
