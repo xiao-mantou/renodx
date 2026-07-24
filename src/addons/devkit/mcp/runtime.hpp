@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <stdexcept>
@@ -16,6 +17,7 @@
 #include "live_shaders.hpp"
 #include "resource_analysis.hpp"
 #include "resource_clone.hpp"
+#include "shader_hash.hpp"
 #include "shader_inspection.hpp"
 #include "snapshot_tools.hpp"
 #include "texture_replace.hpp"
@@ -31,6 +33,7 @@ struct RegistrationContext {
   std::function<resource_clone::ToolContext()> build_resource_clone_tool_context;
   std::function<texture_replace::ToolContext()> build_texture_replace_tool_context;
   std::function<renodx::utils::mcp::ToolResult(const std::optional<std::string>&)> set_tools_path;
+  std::function<renodx::utils::mcp::ToolResult(std::uint32_t)> set_dl2_probe_target;
 };
 
 inline void RegisterTools(renodx::utils::mcp::Server& server, const RegistrationContext& context) {
@@ -76,6 +79,10 @@ inline void RegisterTools(renodx::utils::mcp::Server& server, const Registration
   register_tool("devkit_set_tools_path", [set_tools_path = context.set_tools_path](const renodx::utils::mcp::json& arguments) {
     const auto path = renodx::utils::mcp::arguments::GetOptional<std::string>(arguments, "path");
     return set_tools_path(path);
+  });
+  register_tool("devkit_set_dl2_probe_target", [set_dl2_probe_target = context.set_dl2_probe_target](
+                                                    const renodx::utils::mcp::json& arguments) {
+    return set_dl2_probe_target(shader_hash::GetRequired(arguments, "shaderHash"));
   });
   register_tool("devkit_set_live_shader_path", [build_live_shaders_tool_context = context.build_live_shaders_tool_context](
                                                     const renodx::utils::mcp::json& arguments) {

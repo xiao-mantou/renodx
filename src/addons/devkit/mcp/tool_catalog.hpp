@@ -79,6 +79,19 @@ inline const renodx::utils::mcp::ToolCatalog METADATA = {
         },
     },
     {
+        "devkit_set_dl2_probe_target",
+        {
+            .title = "Set DL2 Producer Probe Target",
+            .description = "Set the shader hash inspected by the DL2 resource producer probe.",
+            .input_schema = {
+                .properties = {
+                    {"shaderHash", {.types = {"string", "integer"}}},
+                },
+                .required = {"shaderHash"},
+            },
+        },
+    },
+    {
         "devkit_list_shaders",
         {
             .title = "List Shaders",
