@@ -177,3 +177,13 @@ After the fix:
 - The temporary live replacement was unloaded and removed after verification.
 
 Conclusion: use `0x3E36DA5B` as the primary DL2 HDR tonemapper target. A final HDR-preserving replacement test is the remaining validation; do not spend further cycles searching unrelated hashes unless that test fails.
+
+## 2026-07-24: HDR range verification in SDR mode
+
+- A temporary false-color replacement for `0x3E36DA5B` was tested with Windows in SDR mode.
+- The probe encoded `t0` peak values as blue/green/yellow/red/white bands, so the monitor output mode did not affect the measurement.
+- Outdoor sky produced red and white; indoor scenes were mostly blue while lamps reached green/yellow/red.
+- In this mapping, red means `t0` peak above 4.0 and white means above 12.0; ordinary SDR white would remain blue/green.
+- The temporary replacement was unloaded and deleted.
+
+Conclusion: `0x3E36DA5B` receives genuine HDR scene values before its original compression curve. The candidate is validated for the formal HDR-preserving replacement; no further shader search is warranted.
