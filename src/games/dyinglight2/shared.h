@@ -31,6 +31,7 @@ struct ShaderInjectData {
   float swap_chain_encoding;
   float swap_chain_encoding_color_space;
   float debug_mode;
+  float tone_map_white_clip;
 };
 
 #ifndef __cplusplus
@@ -65,6 +66,7 @@ cbuffer shader_injection : register(b13) {
 #define CUSTOM_LENS_FLARE                      shader_injection.custom_lens_flare
 #define CUSTOM_LUT_SCALING                     shader_injection.custom_lut_scaling
 #define RENODX_DEBUG_MODE                      shader_injection.debug_mode
+#define RENODX_RENO_DRT_WHITE_CLIP             shader_injection.tone_map_white_clip
 
 #include "../../shaders/renodx.hlsl"
 

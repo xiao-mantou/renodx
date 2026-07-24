@@ -202,3 +202,8 @@ Next test: run only `0x3E36DA5B` as the HDR bridge. Investigate a separate UI pa
 - With the single bridge active, the range debug changed from red to green after DL2 auto-exposure settled on the sky.
 - The original `t0` remains HDR, but the game's `t1` exposure scalar normalizes it before RenoDX receives it.
 - Vanilla continues to use the original `t1` path. RenoDX modes now use the pre-exposure scene signal, leaving final exposure, diffuse white, and peak mapping to RenoDX.
+
+## 2026-07-25: RenoDRT White Clip control
+
+- DL2 raw `t0` values reached roughly 8 or more in the sky, while most indoor lights were in the 1-4 range.
+- Added the Advanced-only RenoDRT `White Clip` setting with a default of 10. It controls the input scene value that rolls into Peak Brightness; it is intentionally separate from Game White and Peak.
