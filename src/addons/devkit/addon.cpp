@@ -139,7 +139,6 @@ struct Dl2ResourceWriter {
 };
 std::mutex dl2_resource_writer_mutex;
 std::unordered_map<uint64_t, Dl2ResourceWriter> dl2_resource_writers;
-std::unordered_map<uint64_t, uint32_t> dl2_reported_writers;
 std::atomic_uint32_t dl2_tonemapper_draw_count = 0u;
 std::atomic_uint32_t dl2_tonemapper_t0_bind_count = 0u;
 std::atomic_uint32_t dl2_tonemapper_srv_count = 0u;
@@ -4603,7 +4602,6 @@ void OnDestroyResource(reshade::api::device* device, reshade::api::resource reso
   {
     std::unique_lock lock(dl2_resource_writer_mutex);
     dl2_resource_writers.erase(resource.handle);
-    dl2_reported_writers.erase(resource.handle);
   }
   auto* data = renodx::utils::data::Get<DeviceData>(device);
   if (data == nullptr) return;
@@ -5096,36 +5094,16 @@ void TrackDl2TonemapperProducer(reshade::api::command_list* cmd_list, DrawDetail
   if (input_resource.handle == 0u) return;
 
   Dl2ResourceWriter writer = {};
-  bool should_report = false;
   {
     std::unique_lock lock(dl2_resource_writer_mutex);
     if (const auto found_writer = dl2_resource_writers.find(input_resource.handle);
         found_writer != dl2_resource_writers.end()) {
       writer = found_writer->second;
     }
-    auto [reported, inserted] = dl2_reported_writers.try_emplace(input_resource.handle, writer.shader_hash);
-    should_report = inserted || reported->second != writer.shader_hash;
-    reported->second = writer.shader_hash;
   }
   dl2_tonemapper_t0_resource.store(input_resource.handle, std::memory_order_relaxed);
   dl2_tonemapper_writer_hash.store(writer.shader_hash, std::memory_order_relaxed);
   dl2_tonemapper_writer_is_compute.store(writer.is_compute, std::memory_order_relaxed);
-  if (!should_report) return;
-
-  if (writer.shader_hash == 0u) {
-    reshade::log::message(
-        reshade::log::level::info,
-        std::format("[RenoDX DevKit] DL2 0x268BAB6D t0=0x{:016X}; last writer unknown", input_resource.handle).c_str());
-  } else {
-    reshade::log::message(
-        reshade::log::level::info,
-        std::format(
-            "[RenoDX DevKit] DL2 0x268BAB6D t0=0x{:016X}; last writer={} 0x{:08X}",
-            input_resource.handle,
-            writer.is_compute ? "CS" : "PS",
-            writer.shader_hash)
-            .c_str());
-  }
 }
 
 bool OnDraw(reshade::api::command_list* cmd_list, DrawDetails::DrawMethods draw_method) {
