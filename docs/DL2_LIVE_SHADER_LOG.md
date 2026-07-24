@@ -167,3 +167,13 @@ After the fix:
 - [ ] Commit and push
 - [ ] GitHub Actions clang build
 - [ ] Deploy and test sliders
+
+## 2026-07-24: Confirmed main-scene tonemapper candidate
+
+- `0x268BAB6D` was traced with the producer probe and found to follow a LUT/bloom-related resource chain; it is not the best HDR source candidate.
+- `0x3E36DA5B` was tested using a reversible live shader replacement that preserved only the source red channel.
+- The result was a red 3D scene while UI remained unchanged, proving that this shader owns the main world-color path rather than UI or an isolated post-process.
+- Its original assembly contains exposure texture sampling, a rational compression curve, and `saturate`, matching a tonemapper structure.
+- The temporary live replacement was unloaded and removed after verification.
+
+Conclusion: use `0x3E36DA5B` as the primary DL2 HDR tonemapper target. A final HDR-preserving replacement test is the remaining validation; do not spend further cycles searching unrelated hashes unless that test fails.
