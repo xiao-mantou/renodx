@@ -55,20 +55,13 @@ void main(
     // Mode 4 runs the actual RenoDRT curve first. It verifies Peak and White
     // Clip before the game's later composite passes.
     const float3 renodrt_output = renodx::draw::ToneMapPass(untonemapped, neutral_sdr, neutral_sdr);
-    const float input_luminance = renodx::color::y::from::BT709(max(0.0, untonemapped));
-    const float output_luminance = renodx::color::y::from::BT709(max(0.0, renodrt_output));
-    const float normalized_peak = max(
-        RENODX_PEAK_WHITE_NITS / max(RENODX_DIFFUSE_WHITE_NITS, 1.0), 0.001);
-    const float clip_threshold = max(RENODX_RENO_DRT_WHITE_CLIP, normalized_peak);
     const float3 debug_input = RENODX_DEBUG_MODE < 1.5 ? untonemapped
         : RENODX_DEBUG_MODE < 2.5 ? neutral_sdr
         : RENODX_DEBUG_MODE < 3.5 ? vanilla
         : renodrt_output;
     const float debug_range = RENODX_DEBUG_MODE < 1.5
         ? max(debug_input.r, max(debug_input.g, debug_input.b))
-        : RENODX_DEBUG_MODE < 4.5 ? renodx::color::y::from::BT709(max(0.0, debug_input))
-        : RENODX_DEBUG_MODE < 5.5 ? output_luminance / normalized_peak
-        : input_luminance / clip_threshold;
+        : renodx::color::y::from::BT709(max(0.0, debug_input));
     o0 = float4(renodx::draw::RenderIntermediatePass(DebugFalseColor(debug_range)), 1.0);
     return;
   }
