@@ -451,6 +451,18 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .usage_include = reshade::api::resource_usage::render_target,
       });
 
+      // DL2's SDR scene composite may use the sRGB view format. Promote it
+      // as well, otherwise HDR values emitted by the scene bridge are clipped
+      // to 1.0 before the late UI composite and swapchain proxy can see them.
+      renodx::mods::swapchain::resource_upgrade_infos.push_back({
+          .old_format = reshade::api::format::r8g8b8a8_unorm_srgb,
+          .new_format = reshade::api::format::r16g16b16a16_float,
+          .ignore_size = false,
+          .use_resource_view_cloning = true,
+          .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
+          .usage_include = reshade::api::resource_usage::render_target,
+      });
+
       reshade::register_event<reshade::addon_event::init_device>(OnInitDevice);
 
       break;
