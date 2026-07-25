@@ -36,6 +36,10 @@ struct ShaderInjectData {
   float auto_exposure_max;
   float hdr_exposure_protection_start;
   float hdr_exposure_protection_end;
+  float renodrt_tone_map_method;
+  float renodrt_padding_0;
+  float renodrt_padding_1;
+  float renodrt_padding_2;
 };
 
 #ifndef __cplusplus
@@ -57,6 +61,7 @@ cbuffer shader_injection : register(b13) {
 #define RENODX_GAMMA_CORRECTION                shader_injection.gamma_correction
 #define RENODX_TONE_MAP_HUE_PROCESSOR          shader_injection.tone_map_hue_processor
 #define RENODX_TONE_MAP_HUE_CORRECTION         shader_injection.tone_map_hue_correction
+#define RENODX_TONE_MAP_PER_CHANNEL            shader_injection.tone_map_per_channel
 #define RENODX_TONE_MAP_EXPOSURE               shader_injection.tone_map_exposure
 #define RENODX_TONE_MAP_HIGHLIGHTS             shader_injection.tone_map_highlights
 #define RENODX_TONE_MAP_SHADOWS                shader_injection.tone_map_shadows
@@ -68,7 +73,8 @@ cbuffer shader_injection : register(b13) {
 #define RENODX_COLOR_GRADE_STRENGTH            shader_injection.color_grade_strength
 #define RENODX_SWAP_CHAIN_ENCODING             shader_injection.swap_chain_encoding
 #define RENODX_SWAP_CHAIN_ENCODING_COLOR_SPACE shader_injection.swap_chain_encoding_color_space
-#define RENODX_RENO_DRT_TONE_MAP_METHOD        renodx::tonemap::renodrt::config::tone_map_method::REINHARD
+#define RENODX_RENO_DRT_TONE_MAP_METHOD        shader_injection.renodrt_tone_map_method
+#define RENODX_RENO_DRT_SCALING_METHOD         shader_injection.tone_map_per_channel
 #define CUSTOM_AUTO_EXPOSURE                   shader_injection.custom_auto_exposure
 #define RENODX_AUTO_EXPOSURE_MIN               shader_injection.auto_exposure_min
 #define RENODX_AUTO_EXPOSURE_MAX               shader_injection.auto_exposure_max

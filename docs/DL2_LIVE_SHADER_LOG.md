@@ -231,3 +231,9 @@ Next test: run only `0x3E36DA5B` as the HDR bridge. Investigate a separate UI pa
 - RenoDRT now receives this exact vanilla SDR result as its graded SDR reference rather than using `NeutralSDR` as both reference inputs.
 - HDR input now keeps full DL2 exposure for shadow and midtone scene values, then transitions to protected exposure only above configurable raw-scene luminance thresholds.
 - Added Advanced-only `HDR Protection Start` (0.75) and `HDR Protection End` (4.0); the existing exposure retention/min/max controls now apply only to the highlighted protected range.
+
+## 2026-07-25: RenoDRT curve controls
+
+- Replaced the temporary fixed Reinhard method with a runtime `RenoDRT Curve` selector. `Daniele` is the default; Reinhard, Hermite Spline, and Neutwo remain available for comparison.
+- Added Advanced-only `RenoDRT Scaling`: Luminance (default), Per Channel, and Max Channel.
+- These controls change only the RenoDRT display mapping. The exact DL2 vanilla SDR reference and the adaptive HDR input remain unchanged.
