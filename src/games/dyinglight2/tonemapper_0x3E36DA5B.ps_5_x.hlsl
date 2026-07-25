@@ -80,6 +80,21 @@ void main(
     return;
   }
 
+  // Four known linear values travel through every later DL2 composite pass.
+  // With Game Brightness at 203 nits, their expected unclipped output is
+  // approximately 51, 203, 812, and 3248 nits respectively.
+  if (RENODX_DEBUG_MODE > 6.5 && RENODX_DEBUG_MODE < 7.5) {
+    float3 output = vanilla;
+    if (v1.x > 0.55 && v1.x < 0.95 && v1.y > 0.82 && v1.y < 0.92) {
+      const uint index = min((uint)((v1.x - 0.55) * 10.0), 3u);
+      const float levels[4] = {0.25, 1.0, 4.0, 16.0};
+      output = levels[index].xxx;
+    }
+    o0.rgb = renodx::draw::RenderIntermediatePass(output);
+    o0.a = 1.0;
+    return;
+  }
+
   // This reaches the game's subsequent composite passes, unlike the output
   // probe in the swapchain proxy. With Peak=500 and Game=100, the scene area
   // should measure 500 nits if no later pass normalizes it back to SDR.
