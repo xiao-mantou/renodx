@@ -247,3 +247,25 @@ Next test: run only `0x3E36DA5B` as the HDR bridge. Investigate a separate UI pa
 
 - Set the slider display precision for highlight exposure minimum/maximum and HDR protection start/end to two decimals.
 - These settings were already float values in the shader, but the UI's inherited integer display format quantized the slider interaction to whole numbers.
+
+## 2026-07-25: DevKit idle-mode performance repair
+
+- DL2 remained heavily stuttery even after the producer probe itself was made opt-in.
+- The remaining cause was DevKit's idle render hooks: pipeline binds plus descriptor-table updates, copies, binds, and push-descriptor updates still built full inspection state on every frame while no snapshot or probe was active.
+- DevKit now leaves all of those high-frequency paths idle unless a snapshot is actively capturing or an MCP caller explicitly starts the DL2 producer probe with `devkit_set_dl2_probe_target`.
+- The probe is disabled by default and its writer map is cleared when a new target is selected. No snapshot, shader dump, texture readback, resource clone, or bulk dump is involved.
+- DevKit now stops its named-pipe MCP session when the last tracked device is destroyed, rather than waiting for DLL process detach. This avoids joining the pipe worker under the loader lock and fixes the game process lingering after exit.
+
+Verification:
+
+- Built DevKit deployment was tested in DL2 with the bridge idle.
+- Scene performance recovered to normal.
+- Next safe investigation step: explicitly start the producer probe only for the known scene pass `0x3E36DA5B`, wait a few frames, then query its writer status.
+
+### First live probe result and follow-up
+
+- The first live query hit `0x3E36DA5B` thousands of times but resolved no `t0` resource. The D3D12 descriptor cache was not populated from its pre-existing tables.
+- That failure exposed a second safety issue: before `t0` was known, the probe still processed all descriptor-table copies and all resource writes. It accumulated tens of millions of entries in seconds and reintroduced severe stutter.
+- The probe now ignores global copy, clear, and writer events until the target input resource has actually been resolved. Descriptor binds and pipeline tracking are restricted to the target shader while probing.
+- Passing `shaderHash: 0` to `devkit_set_dl2_probe_target` now immediately disables and clears the probe, so future tests do not require a game restart to return to idle mode.
+- The descriptor-resolution problem remains separate: the next investigation must add a bounded, target-specific D3D12 descriptor lookup rather than restoring global table-copy tracking.

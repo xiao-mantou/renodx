@@ -4125,6 +4125,12 @@ void ProcessPendingLiveShaderRequests(
   dl2_probe_tracked_resource.store(0u, std::memory_order_relaxed);
   dl2_probe_submission_count.store(0u, std::memory_order_relaxed);
   dl2_probe_event_count.store(0u, std::memory_order_relaxed);
+  if (shader_hash == 0u) {
+    return ToolResult{
+        .text = "Stopped the DL2 resource producer probe.",
+        .structured_content = json{{"active", false}},
+    };
+  }
   dl2_probe_active.store(true, std::memory_order_release);
 
   return ToolResult{
@@ -4567,6 +4573,18 @@ void OnBindPipeline(
   auto* device_data = renodx::utils::data::Get<DeviceData>(device);
   if (device_data == nullptr) return;
 
+  const bool is_snapshot_tracking = device == snapshot_device;
+  if (!is_snapshot_tracking) {
+    auto* shader_state = renodx::utils::shader::GetCurrentState(cmd_list);
+    if (shader_state == nullptr
+        || (renodx::utils::shader::GetCurrentPixelShaderHash(shader_state)
+                != dl2_probe_target_hash.load(std::memory_order_relaxed)
+            && renodx::utils::shader::GetCurrentComputeShaderHash(shader_state)
+                   != dl2_probe_target_hash.load(std::memory_order_relaxed))) {
+      return;
+    }
+  }
+
   std::unique_lock lock(device_data->mutex);
 
   std::set<uint32_t> added_shaders;
@@ -4626,6 +4644,7 @@ void OnBindPipeline(
     }
   }
 
+  if (!is_snapshot_tracking) return;
   auto pair = device_data->pipeline_blends.find(pipeline.handle);
   if (pair != device_data->pipeline_blends.end()) {
     auto& blend_desc = pair->second;
@@ -4643,7 +4662,7 @@ void RecordDl2CopyEvent(
   auto* command_list_data = renodx::utils::data::Get<CommandListData>(cmd_list);
   if (command_list_data == nullptr || source.handle == 0u || dest.handle == 0u) return;
   const uint64_t tracked_resource = dl2_probe_tracked_resource.load(std::memory_order_relaxed);
-  if (tracked_resource != 0u && dest.handle != tracked_resource) return;
+  if (tracked_resource == 0u || dest.handle != tracked_resource) return;
   command_list_data->dl2_probe_events.push_back({
       .kind = Dl2ProbeEvent::Kind::RESOURCE_COPY,
       .resource_handle = dest.handle,
@@ -4658,7 +4677,7 @@ void RecordDl2ClearEvent(reshade::api::command_list* cmd_list, reshade::api::res
   const auto resource = renodx::utils::resource::GetResourceFromView(cmd_list->get_device(), view);
   if (resource.handle == 0u) return;
   const uint64_t tracked_resource = dl2_probe_tracked_resource.load(std::memory_order_relaxed);
-  if (tracked_resource != 0u && resource.handle != tracked_resource) return;
+  if (tracked_resource == 0u || resource.handle != tracked_resource) return;
   auto* command_list_data = renodx::utils::data::Get<CommandListData>(cmd_list);
   if (command_list_data == nullptr) return;
   command_list_data->dl2_probe_events.push_back({
@@ -4866,6 +4885,10 @@ bool OnCopyDescriptorTables(
     uint32_t count,
     const reshade::api::descriptor_table_copy* copies) {
   if (!IsDevkitDeviceTrackingActive(device)) return false;
+  if (device != snapshot_device
+      && dl2_probe_tracked_resource.load(std::memory_order_relaxed) == 0u) {
+    return false;
+  }
 
   auto* device_data = renodx::utils::data::Get<DeviceData>(device);
   if (device_data == nullptr) return false;
@@ -4939,6 +4962,14 @@ void OnBindDescriptorTables(
     uint32_t count,
     const reshade::api::descriptor_table* tables) {
   if (!IsDevkitCommandTrackingActive(cmd_list)) return;
+  if (cmd_list->get_device() != snapshot_device) {
+    auto* shader_state = renodx::utils::shader::GetCurrentState(cmd_list);
+    if (shader_state == nullptr
+        || renodx::utils::shader::GetCurrentPixelShaderHash(shader_state)
+               != dl2_probe_target_hash.load(std::memory_order_relaxed)) {
+      return;
+    }
+  }
   dl2_descriptor_bind_count.fetch_add(count, std::memory_order_relaxed);
   if (!renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::pixel)) return;
   dl2_descriptor_pixel_bind_count.fetch_add(count, std::memory_order_relaxed);
@@ -5023,6 +5054,16 @@ void OnPushDescriptors(
     uint32_t layout_param,
     const reshade::api::descriptor_table_update& update) {
   if (!IsDevkitCommandTrackingActive(cmd_list)) return;
+  if (cmd_list->get_device() != snapshot_device) {
+    auto* shader_state = renodx::utils::shader::GetCurrentState(cmd_list);
+    if (shader_state == nullptr
+        || (renodx::utils::shader::GetCurrentPixelShaderHash(shader_state)
+                != dl2_probe_target_hash.load(std::memory_order_relaxed)
+            && renodx::utils::shader::GetCurrentComputeShaderHash(shader_state)
+                   != dl2_probe_target_hash.load(std::memory_order_relaxed))) {
+      return;
+    }
+  }
   auto* data = renodx::utils::data::Get<CommandListData>(cmd_list);
   if (data == nullptr) return;
 
@@ -5282,6 +5323,10 @@ void TrackDl2TonemapperProducer(reshade::api::command_list* cmd_list, DrawDetail
     }
     command_list_data->dl2_probe_events.push_back(read_event);
   }
+
+  // Until the target's input resource is known, recording every render-target
+  // write would turn a failed descriptor lookup into a full-frame trace.
+  if (dl2_probe_tracked_resource.load(std::memory_order_relaxed) == 0u) return;
 
   if (is_compute) {
     for (const auto& [slot, details] : command_list_data->compute_uav_binds) {
