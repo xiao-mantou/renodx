@@ -218,3 +218,9 @@ Next test: run only `0x3E36DA5B` as the HDR bridge. Investigate a separate UI pa
 - RenoDX modes now apply a global log-space compression to DL2's `t1` exposure (`0.35` strength, clamped to `0.5..2.0`) instead of fully using or fully discarding it.
 - The UI/intermediate reference is fixed at 203 nits in the shader until a true late UI composite pass is identified; the old UI slider was affecting the whole scene because the bridge runs before UI composition.
 - Vanilla mode still uses the original full `t1` path.
+
+## 2026-07-25: Peak and White Clip probes
+
+- Debug Mode 5, `Peak Utilization`, false-colors RenoDRT output luminance relative to the configured Peak/Game ratio.
+- Debug Mode 6, `White Clip Input`, false-colors raw scene luminance relative to the effective White Clip threshold (`max(WhiteClip, Peak)` in the current Reinhard path).
+- These probes distinguish a rolloff threshold that is never reached from a later output stage that clips an already-tonemapped result.

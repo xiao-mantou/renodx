@@ -252,8 +252,8 @@ renodx::utils::settings::Settings settings = {
         .can_reset = false,
         .label = "Debug Mode",
         .section = "Debug",
-        .tooltip = "False-color visualization. 0=Off, 1=t0 HDR range, 2=Neutral SDR, 3=Graded SDR, 4=RenoDRT output",
-        .labels = {"Off", "t0 HDR Range", "Neutral SDR", "Graded SDR", "RenoDRT Output"},
+        .tooltip = "False-color visualization. 0=Off, 1=t0 HDR range, 2=Neutral SDR, 3=Graded SDR, 4=RenoDRT output, 5=Peak utilization, 6=White Clip input",
+        .labels = {"Off", "t0 HDR Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Peak Utilization", "White Clip Input"},
         .is_visible = []() { return current_settings_mode >= 2; },
     },
 };
