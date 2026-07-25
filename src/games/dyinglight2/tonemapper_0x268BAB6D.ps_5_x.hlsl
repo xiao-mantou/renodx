@@ -51,7 +51,7 @@ void main(
   // The scene bridge (0x3E36DA5B) supplies HDR here. The original LUT has
   // an SDR domain and ends in a saturate, so grade its SDR reference only;
   // the HDR magnitude is restored after the original grading code below.
-  const float3 input_hdr = max(r1.xyz, 0.0);
+  const float3 input_hdr = max(renodx::draw::InvertIntermediatePass(r1.xyz), 0.0);
   const float3 input_sdr = saturate(input_hdr);
   if (RENODX_TONE_MAP_TYPE != 0.0) {
     r1.xyz = input_sdr;
@@ -96,10 +96,11 @@ void main(
   o0.xyz = r0.www ? r1.xyz : r0.xyz;
 
   if (RENODX_TONE_MAP_TYPE != 0.0) {
-    // Apply the original LUT/color-grade hue and saturation changes without
-    // retaining its SDR white clamp. The earlier bridge already performed
-    // the sole intermediate encoding for this path.
-    o0.rgb = renodx::tonemap::UpgradeToneMap(input_hdr, input_sdr, o0.rgb, 1.0);
+    // The input was decoded above, so this re-encodes rather than applying a
+    // second intermediate transform. Preserve the HDR magnitude while using
+    // the original LUT/color-grade result for hue and saturation.
+    o0.rgb = renodx::draw::RenderIntermediatePass(
+        renodx::tonemap::UpgradeToneMap(input_hdr, input_sdr, o0.rgb, 1.0));
   }
   return;
 }
