@@ -269,3 +269,11 @@ Verification:
 - The probe now ignores global copy, clear, and writer events until the target input resource has actually been resolved. Descriptor binds and pipeline tracking are restricted to the target shader while probing.
 - Passing `shaderHash: 0` to `devkit_set_dl2_probe_target` now immediately disables and clears the probe, so future tests do not require a game restart to return to idle mode.
 - The descriptor-resolution problem remains separate: the next investigation must add a bounded, target-specific D3D12 descriptor lookup rather than restoring global table-copy tracking.
+
+### Bounded probe verification
+
+- Deployed the bounded DevKit build and confirmed normal scene performance while idle (`active: false`, no probe events).
+- With `0x3E36DA5B` / `t0` enabled for three seconds, the shader was hit 274 times and exactly 274 probe events were submitted.
+- Crucially, descriptor-table copies remained at zero and no resource writer history was created. The former unbounded path would have created tens of millions of entries in the same interval.
+- `t0` was still unresolved (`pixelSrvCount: 0`, `t0ResourceHandle: 0`), so no producer hash can yet be inferred. This is a descriptor-cache coverage issue, not evidence that `0x3E36DA5B` is the wrong scene pass.
+- The probe was then stopped through `devkit_set_dl2_probe_target` with `shaderHash: 0`; status confirmed `active: false` and all target/event counters reset.
