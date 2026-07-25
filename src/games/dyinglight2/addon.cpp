@@ -322,8 +322,8 @@ renodx::utils::settings::Settings settings = {
         .can_reset = false,
         .label = "Debug Mode",
         .section = "Debug",
-        .tooltip = "False-color visualization. The output probe verifies the final HDR present path.",
-        .labels = {"Off", "t0 HDR Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500 nits)"},
+        .tooltip = "False-color visualization. The two probes isolate the scene and final HDR output paths.",
+        .labels = {"Off", "t0 HDR Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500-nit red)", "Scene Probe (Peak white)"},
         .is_visible = []() { return current_settings_mode >= 2; },
     },
 };

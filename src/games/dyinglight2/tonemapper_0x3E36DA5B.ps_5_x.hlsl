@@ -80,6 +80,16 @@ void main(
     return;
   }
 
+  // This reaches the game's subsequent composite passes, unlike the output
+  // probe in the swapchain proxy. With Peak=500 and Game=100, the scene area
+  // should measure 500 nits if no later pass normalizes it back to SDR.
+  if (RENODX_DEBUG_MODE > 5.5) {
+    const float target_white = RENODX_PEAK_WHITE_NITS / max(RENODX_DIFFUSE_WHITE_NITS, 1.0);
+    o0.rgb = renodx::draw::RenderIntermediatePass(float3(target_white, target_white, target_white));
+    o0.a = 1.0;
+    return;
+  }
+
   o0.rgb = RENODX_TONE_MAP_TYPE == 0.0
       ? vanilla
       : renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr);

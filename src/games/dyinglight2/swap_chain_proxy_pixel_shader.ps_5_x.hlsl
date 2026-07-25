@@ -13,7 +13,7 @@ float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
   // Diagnostic only: scRGB 1.0 is 80 nits, so this is a 500-nit red patch.
   // It verifies the actual final-present shader independently of DL2's scene
   // resources, exposure, and tone-mapping passes.
-  if (RENODX_DEBUG_MODE > 4.5) {
+  if (RENODX_DEBUG_MODE > 4.5 && RENODX_DEBUG_MODE < 5.5) {
     return float4(6.25, 0.0, 0.0, 1.0);
   }
 
