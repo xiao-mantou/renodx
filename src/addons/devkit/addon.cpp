@@ -171,6 +171,7 @@ std::mutex dl2_resource_writer_mutex;
 std::unordered_map<uint64_t, Dl2ResourceWriter> dl2_resource_writers;
 std::vector<Dl2ProbeInputObservation> dl2_probe_recent_inputs;
 inline constexpr size_t DL2_PROBE_INPUT_HISTORY_LIMIT = 64u;
+inline constexpr size_t DL2_PROBE_DESCRIPTOR_TABLE_LIMIT = 64u;
 std::atomic_uint32_t dl2_probe_srv_slot = 0u;
 std::atomic_uint32_t dl2_probe_srv_space = 0u;
 // The producer probe can observe every resource write. It must stay dormant
@@ -483,6 +484,7 @@ struct __declspec(uuid("0190ec1a-2e19-74a6-ad41-4df0d4d8caed")) DeviceData {
   std::unordered_map<uint64_t, reshade::api::blend_desc> pipeline_blends;
   std::unordered_map<uint64_t, std::map<uint32_t, DescriptorTableBinding>> descriptor_table_bindings;
   std::unordered_map<uint64_t, std::vector<DescriptorTableBinding>> descriptor_heap_bindings;
+  std::unordered_set<uint64_t> dl2_probe_descriptor_tables;
 
   reshade::api::effect_runtime* runtime = nullptr;
   std::deque<std::shared_ptr<devkit_resource_analysis::PendingRequest>> pending_resource_analysis_requests;
@@ -3902,6 +3904,11 @@ void ProcessPendingLiveShaderRequests(
         const auto writer_hash = dl2_tonemapper_writer_hash.load(std::memory_order_relaxed);
         const auto writer_kind = static_cast<Dl2ResourceWriter::Kind>(
             dl2_tonemapper_writer_kind.load(std::memory_order_relaxed));
+        size_t descriptor_candidate_tables = 0u;
+        if (const auto* selected_device_data = GetSelectedDeviceData(); selected_device_data != nullptr) {
+          std::shared_lock lock(selected_device_data->mutex);
+          descriptor_candidate_tables = selected_device_data->dl2_probe_descriptor_tables.size();
+        }
         json recent_inputs = json::array();
         {
           std::lock_guard lock(dl2_resource_writer_mutex);
@@ -3937,6 +3944,7 @@ void ProcessPendingLiveShaderRequests(
             {"descriptorBinds", dl2_descriptor_bind_count.load(std::memory_order_relaxed)},
             {"descriptorPixelBinds", dl2_descriptor_pixel_bind_count.load(std::memory_order_relaxed)},
             {"descriptorTableMatches", dl2_descriptor_table_match_count.load(std::memory_order_relaxed)},
+            {"descriptorCandidateTables", descriptor_candidate_tables},
             {"descriptorCopies", dl2_descriptor_copy_count.load(std::memory_order_relaxed)},
             {"t0ResourceHandle", FormatHandle(dl2_tonemapper_t0_resource.load(std::memory_order_relaxed))},
             {"inputResourceHandle", FormatHandle(dl2_tonemapper_t0_resource.load(std::memory_order_relaxed))},
@@ -4118,6 +4126,10 @@ void ProcessPendingLiveShaderRequests(
     std::lock_guard lock(dl2_resource_writer_mutex);
     dl2_resource_writers.clear();
     dl2_probe_recent_inputs.clear();
+  }
+  if (auto* selected_device_data = GetSelectedDeviceData(); selected_device_data != nullptr) {
+    std::unique_lock lock(selected_device_data->mutex);
+    selected_device_data->dl2_probe_descriptor_tables.clear();
   }
   dl2_tonemapper_srv_count.store(0u, std::memory_order_relaxed);
   dl2_tonemapper_first_srv_slot.store(0u, std::memory_order_relaxed);
@@ -4833,6 +4845,10 @@ bool OnUpdateDescriptorTables(
   for (uint32_t update_index = 0u; update_index < count; ++update_index) {
     const auto& update = updates[update_index];
     if (update.table.handle == 0u) continue;
+    if (device != snapshot_device) {
+      std::shared_lock lock(device_data->mutex);
+      if (!device_data->dl2_probe_descriptor_tables.contains(update.table.handle)) continue;
+    }
 
     bool is_uav = false;
     switch (update.type) {
@@ -4885,19 +4901,21 @@ bool OnCopyDescriptorTables(
     uint32_t count,
     const reshade::api::descriptor_table_copy* copies) {
   if (!IsDevkitDeviceTrackingActive(device)) return false;
-  if (device != snapshot_device
-      && dl2_probe_tracked_resource.load(std::memory_order_relaxed) == 0u) {
-    return false;
-  }
 
   auto* device_data = renodx::utils::data::Get<DeviceData>(device);
   if (device_data == nullptr) return false;
-  dl2_descriptor_copy_count.fetch_add(count, std::memory_order_relaxed);
 
   std::unique_lock lock(device_data->mutex);
   for (uint32_t copy_index = 0u; copy_index < count; ++copy_index) {
     const auto& copy = copies[copy_index];
     if (copy.source_table.handle == 0u || copy.dest_table.handle == 0u) continue;
+    if (device != snapshot_device) {
+      if (!device_data->dl2_probe_descriptor_tables.contains(copy.dest_table.handle)) continue;
+      if (device_data->dl2_probe_descriptor_tables.size() < DL2_PROBE_DESCRIPTOR_TABLE_LIMIT) {
+        device_data->dl2_probe_descriptor_tables.emplace(copy.source_table.handle);
+      }
+    }
+    dl2_descriptor_copy_count.fetch_add(1u, std::memory_order_relaxed);
 
     reshade::api::descriptor_heap source_heap = {0u};
     reshade::api::descriptor_heap destination_heap = {0u};
@@ -5006,6 +5024,12 @@ void OnBindDescriptorTables(
       }
     });
     if (!found_layout || ranges.empty() || tables[table_index].handle == 0u) continue;
+    if (cmd_list->get_device() != snapshot_device) {
+      std::unique_lock lock(device_data->mutex);
+      if (device_data->dl2_probe_descriptor_tables.size() < DL2_PROBE_DESCRIPTOR_TABLE_LIMIT) {
+        device_data->dl2_probe_descriptor_tables.emplace(tables[table_index].handle);
+      }
+    }
 
     std::shared_lock lock(device_data->mutex);
     for (const auto& range : ranges) {
