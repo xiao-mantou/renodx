@@ -95,6 +95,21 @@ void main(
     return;
   }
 
+  // Same ladder as mode 7, but bypasses RenoDX's intermediate encoding.
+  // Comparing modes 7 and 8 isolates an encoding/target-format clamp from
+  // a later DL2 composite clamp in one game session.
+  if (RENODX_DEBUG_MODE > 7.5 && RENODX_DEBUG_MODE < 8.5) {
+    float3 output = vanilla;
+    if (v1.x > 0.55 && v1.x < 0.95 && v1.y > 0.82 && v1.y < 0.92) {
+      const uint index = min((uint)((v1.x - 0.55) * 10.0), 3u);
+      const float levels[4] = {0.25, 1.0, 4.0, 16.0};
+      output = levels[index].xxx;
+    }
+    o0.rgb = output;
+    o0.a = 1.0;
+    return;
+  }
+
   // This reaches the game's subsequent composite passes, unlike the output
   // probe in the swapchain proxy. With Peak=500 and Game=100, the scene area
   // should measure 500 nits if no later pass normalizes it back to SDR.
