@@ -30,13 +30,20 @@ void main(
   const float4 source = t0.SampleLevel(s0_s, v1.xy, 0);
   const float exposure = t1.SampleLevel(s0_s, float2(0.0, 0.0), 0).x;
   const float3 scene_linear = source.rgb * 0.6;
+  // Keep the game's global exposure direction, but compress its magnitude in
+  // log space. Full t1 multiplication normalizes outdoor HDR back to SDR;
+  // ignoring it leaves indoor midtones too dark. A global scalar preserves
+  // scene consistency and leaves highlight rolloff to RenoDRT.
+  const float exposure_log = log2(max(exposure, 0.001));
+  const float preserved_exposure = exp2(clamp(exposure_log * 0.35, -1.0, 1.0));
   const float3 game_exposed = scene_linear * exposure;
+  const float3 preserved_exposed = scene_linear * preserved_exposure;
   // The game's final auto-exposure normalizes bright outdoor content to SDR
   // before its curve. Preserve the raw scene signal for RenoDX so Peak
   // Brightness can map that headroom; Vanilla retains the original exposure.
   const float3 untonemapped = RENODX_TONE_MAP_TYPE == 0.0
       ? game_exposed
-      : scene_linear;
+      : preserved_exposed;
   const float3 neutral_sdr = renodx::tonemap::renodrt::NeutralSDR(untonemapped);
 
   // Preserve the game's original curve for Vanilla mode.

@@ -212,3 +212,9 @@ Next test: run only `0x3E36DA5B` as the HDR bridge. Investigate a separate UI pa
 
 - Added Debug Mode 4, `RenoDRT Output`, to false-color the result of the actual RenoDRT `ToneMapPass` before DL2's later composite passes.
 - This is intended to compare White Clip values in a fixed scene. It is a curve-response probe, not a final-display luminance measurement.
+
+## 2026-07-25: Preserve controlled auto exposure
+
+- RenoDX modes now apply a global log-space compression to DL2's `t1` exposure (`0.35` strength, clamped to `0.5..2.0`) instead of fully using or fully discarding it.
+- The UI/intermediate reference is fixed at 203 nits in the shader until a true late UI composite pass is identified; the old UI slider was affecting the whole scene because the bridge runs before UI composition.
+- Vanilla mode still uses the original full `t1` path.
