@@ -35,7 +35,13 @@ void main(
   // ignoring it leaves indoor midtones too dark. A global scalar preserves
   // scene consistency and leaves highlight rolloff to RenoDRT.
   const float exposure_log = log2(max(exposure, 0.001));
-  const float preserved_exposure = exp2(clamp(exposure_log * 0.35, -1.0, 1.0));
+  const float exposure_min = min(max(RENODX_AUTO_EXPOSURE_MIN, 0.01),
+                                 max(RENODX_AUTO_EXPOSURE_MAX, 0.01));
+  const float exposure_max = max(max(RENODX_AUTO_EXPOSURE_MIN, 0.01),
+                                 max(RENODX_AUTO_EXPOSURE_MAX, 0.01));
+  const float preserved_exposure = exp2(clamp(
+      exposure_log * saturate(CUSTOM_AUTO_EXPOSURE),
+      log2(exposure_min), log2(exposure_max)));
   const float3 game_exposed = scene_linear * exposure;
   const float3 preserved_exposed = scene_linear * preserved_exposure;
   // The game's final auto-exposure normalizes bright outdoor content to SDR

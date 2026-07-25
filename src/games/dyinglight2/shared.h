@@ -32,6 +32,8 @@ struct ShaderInjectData {
   float swap_chain_encoding_color_space;
   float debug_mode;
   float tone_map_white_clip;
+  float auto_exposure_min;
+  float auto_exposure_max;
 };
 
 #ifndef __cplusplus
@@ -66,6 +68,8 @@ cbuffer shader_injection : register(b13) {
 #define RENODX_SWAP_CHAIN_ENCODING_COLOR_SPACE shader_injection.swap_chain_encoding_color_space
 #define RENODX_RENO_DRT_TONE_MAP_METHOD        renodx::tonemap::renodrt::config::tone_map_method::REINHARD
 #define CUSTOM_AUTO_EXPOSURE                   shader_injection.custom_auto_exposure
+#define RENODX_AUTO_EXPOSURE_MIN               shader_injection.auto_exposure_min
+#define RENODX_AUTO_EXPOSURE_MAX               shader_injection.auto_exposure_max
 #define CUSTOM_LENS_FLARE                      shader_injection.custom_lens_flare
 #define CUSTOM_LUT_SCALING                     shader_injection.custom_lut_scaling
 #define RENODX_DEBUG_MODE                      shader_injection.debug_mode
