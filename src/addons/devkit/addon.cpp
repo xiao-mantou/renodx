@@ -4885,7 +4885,11 @@ bool OnUpdateDescriptorTables(
     reshade::api::device* device,
     uint32_t count,
     const reshade::api::descriptor_table_update* updates) {
-  if (!IsDevkitDeviceTrackingActive(device)) return false;
+  const auto* selected_device_data = GetSelectedDeviceData();
+  if (device != snapshot_device
+      && (selected_device_data == nullptr || selected_device_data->device != device)) {
+    return false;
+  }
   dl2_descriptor_update_count.fetch_add(count, std::memory_order_relaxed);
 
   auto* device_data = renodx::utils::data::Get<DeviceData>(device);
@@ -4913,17 +4917,6 @@ bool OnUpdateDescriptorTables(
     reshade::api::descriptor_heap heap = {0u};
     uint32_t heap_offset = 0u;
     device->get_descriptor_heap_offset(update.table, update.binding, update.array_offset, &heap, &heap_offset);
-    if (device != snapshot_device) {
-      std::shared_lock lock(device_data->mutex);
-      if (!IsDl2ProbeDescriptorRangeTracked(
-              device_data->dl2_probe_descriptor_ranges,
-              heap,
-              heap_offset,
-              update.count)) {
-        continue;
-      }
-    }
-
     std::unique_lock lock(device_data->mutex);
     auto& table_bindings = device_data->descriptor_table_bindings[update.table.handle];
     auto& heap_bindings = device_data->descriptor_heap_bindings[heap.handle];
@@ -4966,7 +4959,14 @@ bool OnCopyDescriptorTables(
     if (copy.source_table.handle == 0u || copy.dest_table.handle == 0u) continue;
 
     if (device != snapshot_device) {
-      const uint32_t inspection_index = dl2_descriptor_copy_inspection_count.fetch_add(1u, std::memory_order_relaxed);
+      uint32_t inspection_index = dl2_descriptor_copy_inspection_count.load(std::memory_order_relaxed);
+      while (inspection_index < DL2_PROBE_DESCRIPTOR_COPY_INSPECTION_LIMIT
+             && !dl2_descriptor_copy_inspection_count.compare_exchange_weak(
+                 inspection_index,
+                 inspection_index + 1u,
+                 std::memory_order_relaxed,
+                 std::memory_order_relaxed)) {
+      }
       if (inspection_index >= DL2_PROBE_DESCRIPTOR_COPY_INSPECTION_LIMIT) {
         dl2_descriptor_copy_inspection_limit_reached.store(true, std::memory_order_relaxed);
         return false;
