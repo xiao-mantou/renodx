@@ -284,3 +284,10 @@ Verification:
 - It remained bounded and smooth: 301 target draws, 301 probe events, and zero descriptor copies or resource writer events.
 - It reached the 64-table candidate cap without finding a persistent copy destination or a `t0` view. DL2 therefore uses short-lived descriptor-table handles; table identity cannot connect target bindings to earlier copy operations across frames.
 - Do not repeat this table-chain test. The next resolver must key candidates by stable descriptor heap plus offset range, with a strict copy-inspection budget, rather than by descriptor-table handle.
+
+### Heap-range and descriptor-seed result
+
+- The heap-range probe confirmed 373 copy operations overlapping the target heap ranges, so the target descriptor path was reached without restoring global writer tracking.
+- A startup descriptor-view seed then recorded 93,845 updates and produced 1,023 valid descriptor matches for the target. `t0` still remained empty.
+- This rules out missing source-view metadata as the blocker. ReShade's public descriptor events do not preserve the command-list association needed to identify the actual SRV bound to this DL2 draw.
+- The startup seed is too expensive to retain during normal play and was removed immediately. Do not add further ReShade-level descriptor cache variants; a future attempt must use a D3D12-native descriptor hook or a different non-DevKit investigation route.
