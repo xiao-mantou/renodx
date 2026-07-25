@@ -266,6 +266,7 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "Lower bound for HDR-highlight exposure after protection is applied.",
         .min = 0.1f,
         .max = 1.f,
+        .format = "%.2f",
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -277,6 +278,7 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "Upper bound for HDR-highlight exposure after protection is applied.",
         .min = 1.f,
         .max = 4.f,
+        .format = "%.2f",
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -288,6 +290,7 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "Raw scene luminance where HDR highlight exposure protection begins.",
         .min = 0.05f,
         .max = 8.f,
+        .format = "%.2f",
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -299,6 +302,7 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "Raw scene luminance where full HDR highlight exposure protection is reached.",
         .min = 0.1f,
         .max = 16.f,
+        .format = "%.2f",
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{

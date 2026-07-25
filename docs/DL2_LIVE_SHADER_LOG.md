@@ -242,3 +242,8 @@ Next test: run only `0x3E36DA5B` as the HDR bridge. Investigate a separate UI pa
 
 - Replaced the logarithmic `t1 ^ strength` high-light control with a linear blend from unexposed HDR (`0`) to clamped game exposure (`100`).
 - This retains the previous endpoints but makes intermediate slider values visually usable in DL2 instead of appearing nearly binary.
+
+## 2026-07-25: Fractional HDR protection controls
+
+- Set the slider display precision for highlight exposure minimum/maximum and HDR protection start/end to two decimals.
+- These settings were already float values in the shader, but the UI's inherited integer display format quantized the slider interaction to whole numbers.
