@@ -63,7 +63,9 @@ void main(
   const float3 untonemapped = scene_linear * adaptive_exposure;
   const float3 neutral_sdr = renodx::tonemap::renodrt::NeutralSDR(untonemapped);
 
-  if (RENODX_DEBUG_MODE > 0.5) {
+  // Mode 5 belongs to the swapchain proxy. Let the scene pass through so it
+  // can prove whether the final HDR output path is actually being executed.
+  if (RENODX_DEBUG_MODE > 0.5 && RENODX_DEBUG_MODE < 4.5) {
     // Mode 4 runs the actual RenoDRT curve first. It verifies Peak and White
     // Clip before the game's later composite passes.
     const float3 renodrt_output = renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr);
