@@ -277,3 +277,10 @@ Verification:
 - Crucially, descriptor-table copies remained at zero and no resource writer history was created. The former unbounded path would have created tens of millions of entries in the same interval.
 - `t0` was still unresolved (`pixelSrvCount: 0`, `t0ResourceHandle: 0`), so no producer hash can yet be inferred. This is a descriptor-cache coverage issue, not evidence that `0x3E36DA5B` is the wrong scene pass.
 - The probe was then stopped through `devkit_set_dl2_probe_target` with `shaderHash: 0`; status confirmed `active: false` and all target/event counters reset.
+
+### Target-table chain result
+
+- The bounded reverse table-chain probe was tested for three seconds against `0x3E36DA5B` / `t0` and then automatically disabled.
+- It remained bounded and smooth: 301 target draws, 301 probe events, and zero descriptor copies or resource writer events.
+- It reached the 64-table candidate cap without finding a persistent copy destination or a `t0` view. DL2 therefore uses short-lived descriptor-table handles; table identity cannot connect target bindings to earlier copy operations across frames.
+- Do not repeat this table-chain test. The next resolver must key candidates by stable descriptor heap plus offset range, with a strict copy-inspection budget, rather than by descriptor-table handle.
