@@ -23,6 +23,14 @@ float3 DebugFalseColor(float value) {
   return lerp(float3(1.0, 0.0, 0.0), float3(1.0, 1.0, 1.0), saturate(log_v - 2.0));
 }
 
+// Exact DL2 SDR curve recovered from the original shader. This is evaluated
+// with the original t1 exposure and passed to RenoDRT as the SDR reference.
+float3 ApplyDL2SDRCurve(float3 color, float4 curve0, float4 curve1) {
+  const float3 a = curve0.xxx * color + curve0.yyy;
+  const float3 b = curve0.zzz * color + curve0.www;
+  return saturate((a * color) / (b * color + curve1.xxx));
+}
+
 void main(
     float4 v0 : SV_POSITION0,
     linear noperspective float2 v1 : TEXCOORD0,
@@ -30,10 +38,12 @@ void main(
   const float4 source = t0.SampleLevel(s0_s, v1.xy, 0);
   const float exposure = t1.SampleLevel(s0_s, float2(0.0, 0.0), 0).x;
   const float3 scene_linear = source.rgb * 0.6;
-  // Keep the game's global exposure direction, but compress its magnitude in
-  // log space. Full t1 multiplication normalizes outdoor HDR back to SDR;
-  // ignoring it leaves indoor midtones too dark. A global scalar preserves
-  // scene consistency and leaves highlight rolloff to RenoDRT.
+  const float3 game_exposed = scene_linear * exposure;
+  const float3 vanilla = ApplyDL2SDRCurve(game_exposed, cb0[0], cb0[1]);
+
+  // Keep DL2's full automatic exposure for shadow and midtone intent. Only
+  // bright raw scene values gradually use a protected exposure, so the
+  // original SDR reference remains intact while HDR headroom survives.
   const float exposure_log = log2(max(exposure, 0.001));
   const float exposure_min = min(max(RENODX_AUTO_EXPOSURE_MIN, 0.01),
                                  max(RENODX_AUTO_EXPOSURE_MAX, 0.01));
@@ -42,25 +52,20 @@ void main(
   const float preserved_exposure = exp2(clamp(
       exposure_log * saturate(CUSTOM_AUTO_EXPOSURE),
       log2(exposure_min), log2(exposure_max)));
-  const float3 game_exposed = scene_linear * exposure;
-  const float3 preserved_exposed = scene_linear * preserved_exposure;
-  // The game's final auto-exposure normalizes bright outdoor content to SDR
-  // before its curve. Preserve the raw scene signal for RenoDX so Peak
-  // Brightness can map that headroom; Vanilla retains the original exposure.
-  const float3 untonemapped = RENODX_TONE_MAP_TYPE == 0.0
-      ? game_exposed
-      : preserved_exposed;
+  const float protection_start = min(max(RENODX_HDR_EXPOSURE_PROTECTION_START, 0.0),
+                                     max(RENODX_HDR_EXPOSURE_PROTECTION_END, 0.001));
+  const float protection_end = max(max(RENODX_HDR_EXPOSURE_PROTECTION_START, 0.0),
+                                   max(RENODX_HDR_EXPOSURE_PROTECTION_END, protection_start + 0.001));
+  const float scene_luminance = renodx::color::y::from::BT709(max(scene_linear, 0.0));
+  const float protection = smoothstep(protection_start, protection_end, scene_luminance);
+  const float adaptive_exposure = lerp(exposure, preserved_exposure, protection);
+  const float3 untonemapped = scene_linear * adaptive_exposure;
   const float3 neutral_sdr = renodx::tonemap::renodrt::NeutralSDR(untonemapped);
-
-  // Preserve the game's original curve for Vanilla mode.
-  const float3 a = cb0[0].xxx * untonemapped + cb0[0].yyy;
-  const float3 b = cb0[0].zzz * untonemapped + cb0[0].www;
-  const float3 vanilla = saturate((a * untonemapped) / (b * untonemapped + cb0[1].xxx));
 
   if (RENODX_DEBUG_MODE > 0.5) {
     // Mode 4 runs the actual RenoDRT curve first. It verifies Peak and White
     // Clip before the game's later composite passes.
-    const float3 renodrt_output = renodx::draw::ToneMapPass(untonemapped, neutral_sdr, neutral_sdr);
+    const float3 renodrt_output = renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr);
     const float3 debug_input = RENODX_DEBUG_MODE < 1.5 ? untonemapped
         : RENODX_DEBUG_MODE < 2.5 ? neutral_sdr
         : RENODX_DEBUG_MODE < 3.5 ? vanilla
@@ -72,12 +77,9 @@ void main(
     return;
   }
 
-  const float3 graded = RENODX_TONE_MAP_TYPE == 0.0
-      ? vanilla
-      : neutral_sdr;
   o0.rgb = RENODX_TONE_MAP_TYPE == 0.0
       ? vanilla
-      : renodx::draw::ToneMapPass(untonemapped, graded, neutral_sdr);
+      : renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr);
   o0.rgb = renodx::draw::RenderIntermediatePass(o0.rgb);
   o0.a = source.a;
 }

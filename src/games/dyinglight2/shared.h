@@ -34,6 +34,8 @@ struct ShaderInjectData {
   float tone_map_white_clip;
   float auto_exposure_min;
   float auto_exposure_max;
+  float hdr_exposure_protection_start;
+  float hdr_exposure_protection_end;
 };
 
 #ifndef __cplusplus
@@ -70,6 +72,8 @@ cbuffer shader_injection : register(b13) {
 #define CUSTOM_AUTO_EXPOSURE                   shader_injection.custom_auto_exposure
 #define RENODX_AUTO_EXPOSURE_MIN               shader_injection.auto_exposure_min
 #define RENODX_AUTO_EXPOSURE_MAX               shader_injection.auto_exposure_max
+#define RENODX_HDR_EXPOSURE_PROTECTION_START   shader_injection.hdr_exposure_protection_start
+#define RENODX_HDR_EXPOSURE_PROTECTION_END     shader_injection.hdr_exposure_protection_end
 #define CUSTOM_LENS_FLARE                      shader_injection.custom_lens_flare
 #define CUSTOM_LUT_SCALING                     shader_injection.custom_lut_scaling
 #define RENODX_DEBUG_MODE                      shader_injection.debug_mode

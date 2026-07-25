@@ -224,3 +224,10 @@ Next test: run only `0x3E36DA5B` as the HDR bridge. Investigate a separate UI pa
 - Added `Auto Exposure Strength` (default 35%) for live tuning of the log-space `t1` retention.
 - Added Advanced-only `Auto Exposure Minimum` (default 0.5) and `Auto Exposure Maximum` (default 2.0).
 - These controls affect RenoDX modes only; Vanilla keeps the original full exposure path.
+
+## 2026-07-25: SDR-reference HDR upgrade
+
+- Refactored the exact reverse-engineered DL2 curve into `ApplyDL2SDRCurve()`. It retains the original `t1` exposure, rational curve parameters, and final `saturate` limit.
+- RenoDRT now receives this exact vanilla SDR result as its graded SDR reference rather than using `NeutralSDR` as both reference inputs.
+- HDR input now keeps full DL2 exposure for shadow and midtone scene values, then transitions to protected exposure only above configurable raw-scene luminance thresholds.
+- Added Advanced-only `HDR Protection Start` (0.75) and `HDR Protection End` (4.0); the existing exposure retention/min/max controls now apply only to the highlighted protected range.
