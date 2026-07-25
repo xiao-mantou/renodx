@@ -44,21 +44,22 @@ void main(
   // Keep DL2's full automatic exposure for shadow and midtone intent. Only
   // bright raw scene values gradually use a protected exposure, so the
   // original SDR reference remains intact while HDR headroom survives.
-  const float exposure_log = log2(max(exposure, 0.001));
   const float exposure_min = min(max(RENODX_AUTO_EXPOSURE_MIN, 0.01),
                                  max(RENODX_AUTO_EXPOSURE_MAX, 0.01));
   const float exposure_max = max(max(RENODX_AUTO_EXPOSURE_MIN, 0.01),
                                  max(RENODX_AUTO_EXPOSURE_MAX, 0.01));
-  const float preserved_exposure = exp2(clamp(
-      exposure_log * saturate(CUSTOM_AUTO_EXPOSURE),
-      log2(exposure_min), log2(exposure_max)));
+  // Use a linear blend between unexposed HDR and clamped game exposure.
+  // The previous logarithmic exponent was mathematically continuous, but
+  // visually collapsed most of the slider into its two endpoints in DL2.
+  const float retained_exposure = clamp(max(exposure, 0.001), exposure_min, exposure_max);
+  const float protected_exposure = lerp(1.0, retained_exposure, saturate(CUSTOM_AUTO_EXPOSURE));
   const float protection_start = min(max(RENODX_HDR_EXPOSURE_PROTECTION_START, 0.0),
                                      max(RENODX_HDR_EXPOSURE_PROTECTION_END, 0.001));
   const float protection_end = max(max(RENODX_HDR_EXPOSURE_PROTECTION_START, 0.0),
                                    max(RENODX_HDR_EXPOSURE_PROTECTION_END, protection_start + 0.001));
   const float scene_luminance = renodx::color::y::from::BT709(max(scene_linear, 0.0));
   const float protection = smoothstep(protection_start, protection_end, scene_luminance);
-  const float adaptive_exposure = lerp(exposure, preserved_exposure, protection);
+  const float adaptive_exposure = lerp(exposure, protected_exposure, protection);
   const float3 untonemapped = scene_linear * adaptive_exposure;
   const float3 neutral_sdr = renodx::tonemap::renodrt::NeutralSDR(untonemapped);
 

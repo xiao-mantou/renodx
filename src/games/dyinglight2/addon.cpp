@@ -252,7 +252,7 @@ renodx::utils::settings::Settings settings = {
         .default_value = 75.f,
         .label = "Highlight Exposure Retention",
         .section = "Tone Mapping",
-        .tooltip = "How much of DL2's automatic exposure is retained in HDR highlights. Midtones always use the full game exposure.",
+        .tooltip = "Linearly blends HDR highlights from unexposed (0) to DL2's game exposure (100). Midtones always use the full game exposure.",
         .max = 100.f,
         .parse = [](float value) { return value * 0.01f; },
         .is_visible = []() { return current_settings_mode >= 1; },

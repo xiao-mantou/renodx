@@ -237,3 +237,8 @@ Next test: run only `0x3E36DA5B` as the HDR bridge. Investigate a separate UI pa
 - Replaced the temporary fixed Reinhard method with a runtime `RenoDRT Curve` selector. `Daniele` is the default; Reinhard, Hermite Spline, and Neutwo remain available for comparison.
 - Added Advanced-only `RenoDRT Scaling`: Luminance (default), Per Channel, and Max Channel.
 - These controls change only the RenoDRT display mapping. The exact DL2 vanilla SDR reference and the adaptive HDR input remain unchanged.
+
+## 2026-07-25: Linearized highlight exposure retention
+
+- Replaced the logarithmic `t1 ^ strength` high-light control with a linear blend from unexposed HDR (`0`) to clamped game exposure (`100`).
+- This retains the previous endpoints but makes intermediate slider values visually usable in DL2 instead of appearing nearly binary.
