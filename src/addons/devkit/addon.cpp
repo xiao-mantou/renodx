@@ -4533,15 +4533,25 @@ void OnDestroyPipeline(
   data->pipeline_blends.erase(pipeline.handle);
 }
 
+[[nodiscard]] bool IsDevkitCommandTrackingActive(reshade::api::command_list* cmd_list) {
+  if (cmd_list->get_device() == snapshot_device) return true;
+  if (!dl2_probe_active.load(std::memory_order_acquire)) return false;
+  const auto* selected_device_data = GetSelectedDeviceData();
+  return selected_device_data != nullptr && selected_device_data->device == cmd_list->get_device();
+}
+
+[[nodiscard]] bool IsDevkitDeviceTrackingActive(reshade::api::device* device) {
+  if (device == snapshot_device) return true;
+  if (!dl2_probe_active.load(std::memory_order_acquire)) return false;
+  const auto* selected_device_data = GetSelectedDeviceData();
+  return selected_device_data != nullptr && selected_device_data->device == device;
+}
+
 void OnBindPipeline(
     reshade::api::command_list* cmd_list,
     reshade::api::pipeline_stage stage,
     reshade::api::pipeline pipeline) {
-  const auto* selected_device_data = GetSelectedDeviceData();
-  if (cmd_list->get_device() != snapshot_device
-      && (selected_device_data == nullptr || selected_device_data->device != cmd_list->get_device())) {
-    return;
-  }
+  if (!IsDevkitCommandTrackingActive(cmd_list)) return;
 
   auto* cmd_list_data = renodx::utils::data::Get<CommandListData>(cmd_list);
   if (cmd_list_data == nullptr) return;
@@ -4795,8 +4805,7 @@ bool OnUpdateDescriptorTables(
     reshade::api::device* device,
     uint32_t count,
     const reshade::api::descriptor_table_update* updates) {
-  const auto* selected_device_data = GetSelectedDeviceData();
-  if (selected_device_data == nullptr || selected_device_data->device != device) return false;
+  if (!IsDevkitDeviceTrackingActive(device)) return false;
   dl2_descriptor_update_count.fetch_add(count, std::memory_order_relaxed);
 
   auto* device_data = renodx::utils::data::Get<DeviceData>(device);
@@ -4856,8 +4865,7 @@ bool OnCopyDescriptorTables(
     reshade::api::device* device,
     uint32_t count,
     const reshade::api::descriptor_table_copy* copies) {
-  const auto* selected_device_data = GetSelectedDeviceData();
-  if (selected_device_data == nullptr || selected_device_data->device != device) return false;
+  if (!IsDevkitDeviceTrackingActive(device)) return false;
 
   auto* device_data = renodx::utils::data::Get<DeviceData>(device);
   if (device_data == nullptr) return false;
@@ -4930,8 +4938,7 @@ void OnBindDescriptorTables(
     uint32_t first,
     uint32_t count,
     const reshade::api::descriptor_table* tables) {
-  const auto* selected_device_data = GetSelectedDeviceData();
-  if (selected_device_data == nullptr || selected_device_data->device != cmd_list->get_device()) return;
+  if (!IsDevkitCommandTrackingActive(cmd_list)) return;
   dl2_descriptor_bind_count.fetch_add(count, std::memory_order_relaxed);
   if (!renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::pixel)) return;
   dl2_descriptor_pixel_bind_count.fetch_add(count, std::memory_order_relaxed);
@@ -5015,11 +5022,7 @@ void OnPushDescriptors(
     reshade::api::pipeline_layout layout,
     uint32_t layout_param,
     const reshade::api::descriptor_table_update& update) {
-  const auto* selected_device_data = GetSelectedDeviceData();
-  if (cmd_list->get_device() != snapshot_device
-      && (selected_device_data == nullptr || selected_device_data->device != cmd_list->get_device())) {
-    return;
-  }
+  if (!IsDevkitCommandTrackingActive(cmd_list)) return;
   auto* data = renodx::utils::data::Get<CommandListData>(cmd_list);
   if (data == nullptr) return;
 
