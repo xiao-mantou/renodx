@@ -173,6 +173,9 @@ std::vector<Dl2ProbeInputObservation> dl2_probe_recent_inputs;
 inline constexpr size_t DL2_PROBE_INPUT_HISTORY_LIMIT = 64u;
 std::atomic_uint32_t dl2_probe_srv_slot = 0u;
 std::atomic_uint32_t dl2_probe_srv_space = 0u;
+// The producer probe can observe every resource write. It must stay dormant
+// until an MCP caller explicitly requests a probe target.
+std::atomic_bool dl2_probe_active = false;
 std::atomic_uint64_t dl2_probe_tracked_resource = 0u;
 std::atomic_uint32_t dl2_probe_submission_count = 0u;
 std::atomic_uint32_t dl2_probe_event_count = 0u;
@@ -3917,6 +3920,7 @@ void ProcessPendingLiveShaderRequests(
         }
         return json{
             {"targetShaderHash", FormatShaderHash(dl2_probe_target_hash.load(std::memory_order_relaxed))},
+            {"active", dl2_probe_active.load(std::memory_order_relaxed)},
             {"targetSrvSlot", dl2_probe_srv_slot.load(std::memory_order_relaxed)},
             {"targetSrvSpace", dl2_probe_srv_space.load(std::memory_order_relaxed)},
             {"trackedResourceHandle", FormatHandle(dl2_probe_tracked_resource.load(std::memory_order_relaxed))},
@@ -4098,6 +4102,7 @@ void ProcessPendingLiveShaderRequests(
 }
 
 [[nodiscard]] ToolResult SetDl2ProbeTargetForMcp(uint32_t shader_hash, uint32_t srv_slot, uint32_t srv_space) {
+  dl2_probe_active.store(false, std::memory_order_release);
   dl2_probe_target_hash.store(shader_hash, std::memory_order_relaxed);
   dl2_probe_srv_slot.store(srv_slot, std::memory_order_relaxed);
   dl2_probe_srv_space.store(srv_space, std::memory_order_relaxed);
@@ -4111,6 +4116,7 @@ void ProcessPendingLiveShaderRequests(
   dl2_tonemapper_writer_source_resource.store(0u, std::memory_order_relaxed);
   {
     std::lock_guard lock(dl2_resource_writer_mutex);
+    dl2_resource_writers.clear();
     dl2_probe_recent_inputs.clear();
   }
   dl2_tonemapper_srv_count.store(0u, std::memory_order_relaxed);
@@ -4119,6 +4125,7 @@ void ProcessPendingLiveShaderRequests(
   dl2_probe_tracked_resource.store(0u, std::memory_order_relaxed);
   dl2_probe_submission_count.store(0u, std::memory_order_relaxed);
   dl2_probe_event_count.store(0u, std::memory_order_relaxed);
+  dl2_probe_active.store(true, std::memory_order_release);
 
   return ToolResult{
       .text = std::format("Set the DL2 resource producer probe target to {} SRV t{},space{}.", FormatShaderHash(shader_hash), srv_slot, srv_space),
@@ -4261,10 +4268,19 @@ void OnDestroyDevice(reshade::api::device* device) {
   if (GetSelectedDeviceData() == device_data) {
     DestroyDeviceProxyOutputWindow();
   }
-  std::unique_lock list_lock(device_data_list_mutex);
-  std::erase(device_data_list, device_data);
-  if (device_data_list.empty()) {
-    devkit_primary_device_api.store(0u, std::memory_order_release);
+  bool was_last_device = false;
+  {
+    std::unique_lock list_lock(device_data_list_mutex);
+    std::erase(device_data_list, device_data);
+    was_last_device = device_data_list.empty();
+    if (was_last_device) {
+      devkit_primary_device_api.store(0u, std::memory_order_release);
+    }
+  }
+  if (was_last_device) {
+    // Stop the pipe worker before DLL_PROCESS_DETACH. Joining it while the
+    // loader lock is held can leave the game process running after exit.
+    devkit_mcp_server_session::Stop(devkit_mcp_session);
   }
   std::unique_lock device_lock(device_data->mutex);
   renodx::utils::data::Delete<DeviceData>(device);
@@ -4611,6 +4627,7 @@ void RecordDl2CopyEvent(
     reshade::api::command_list* cmd_list,
     reshade::api::resource source,
     reshade::api::resource dest) {
+  if (!dl2_probe_active.load(std::memory_order_acquire)) return;
   const auto* selected_device_data = GetSelectedDeviceData();
   if (selected_device_data == nullptr || selected_device_data->device != cmd_list->get_device()) return;
   auto* command_list_data = renodx::utils::data::Get<CommandListData>(cmd_list);
@@ -4625,6 +4642,7 @@ void RecordDl2CopyEvent(
 }
 
 void RecordDl2ClearEvent(reshade::api::command_list* cmd_list, reshade::api::resource_view view) {
+  if (!dl2_probe_active.load(std::memory_order_acquire)) return;
   const auto* selected_device_data = GetSelectedDeviceData();
   if (selected_device_data == nullptr || selected_device_data->device != cmd_list->get_device()) return;
   const auto resource = renodx::utils::resource::GetResourceFromView(cmd_list->get_device(), view);
@@ -5200,6 +5218,7 @@ void OnPushDescriptors(
 }
 
 void TrackDl2TonemapperProducer(reshade::api::command_list* cmd_list, DrawDetails::DrawMethods draw_method) {
+  if (!dl2_probe_active.load(std::memory_order_acquire)) return;
   auto* selected_device_data = GetSelectedDeviceData();
   if (selected_device_data == nullptr || selected_device_data->device != cmd_list->get_device()) return;
 
@@ -5707,6 +5726,7 @@ bool OnDrawOrDispatchIndirect(
 }
 
 void CommitDl2ProbeEvents(reshade::api::command_list* cmd_list) {
+  if (!dl2_probe_active.load(std::memory_order_acquire)) return;
   const auto* selected_device_data = GetSelectedDeviceData();
   if (selected_device_data == nullptr || selected_device_data->device != cmd_list->get_device()) return;
 
