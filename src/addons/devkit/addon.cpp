@@ -3905,7 +3905,7 @@ void ProcessPendingLiveShaderRequests(
         const auto writer_kind = static_cast<Dl2ResourceWriter::Kind>(
             dl2_tonemapper_writer_kind.load(std::memory_order_relaxed));
         size_t descriptor_candidate_tables = 0u;
-        if (const auto* selected_device_data = GetSelectedDeviceData(); selected_device_data != nullptr) {
+        if (auto* selected_device_data = GetSelectedDeviceData(); selected_device_data != nullptr) {
           std::shared_lock lock(selected_device_data->mutex);
           descriptor_candidate_tables = selected_device_data->dl2_probe_descriptor_tables.size();
         }
