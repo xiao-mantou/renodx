@@ -103,11 +103,20 @@ void main(
   o0.xyz = r0.www ? r1.xyz : r0.xyz;
 
   if (RENODX_TONE_MAP_TYPE != 0.0) {
+    // The original SDR LUT can vary its luminance as its dynamic constants
+    // update. That variation is harmless in SDR, but becomes visible flicker
+    // when it is added to HDR highlights. Keep full LUT grading below SDR
+    // white, then preserve the stable HDR luminance while transferring only
+    // its chroma and hue above it.
+    const float3 upgraded_grade = renodx::tonemap::UpgradeToneMap(input_hdr, input_sdr, o0.rgb, 1.0);
+    float3 stable_grade = renodx::color::correct::Chrominance(input_hdr, o0.rgb);
+    stable_grade = renodx::color::correct::Hue(stable_grade, o0.rgb);
+    const float highlight_lut_blend = smoothstep(1.0, 2.0, renodx::color::y::from::BT709(input_hdr));
+
     // The input was decoded above, so this re-encodes rather than applying a
-    // second intermediate transform. Preserve the HDR magnitude while using
-    // the original LUT/color-grade result for hue and saturation.
+    // second intermediate transform.
     o0.rgb = renodx::draw::RenderIntermediatePass(
-        renodx::tonemap::UpgradeToneMap(input_hdr, input_sdr, o0.rgb, 1.0));
+        lerp(upgraded_grade, stable_grade, highlight_lut_blend));
   }
   return;
 }
