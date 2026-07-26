@@ -104,6 +104,8 @@ struct GammaNativeInputAuditState {
   GammaAuditResource output = {};
   uint64_t native_pixel_shader = 0u;
   uint64_t native_rtv = 0u;
+  uint64_t native_command_context = 0u;
+  uint64_t native_immediate_context = 0u;
   bool active = false;
   bool consumed = false;
 };
@@ -244,38 +246,45 @@ inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
   std::scoped_lock lock(downstream_draw_capture_mutex);
   if (gamma_native_input_audit_capture && !gamma_native_input_audit_state.consumed) {
     auto* device = context.cmd_list->get_device();
-    auto* native_context = reinterpret_cast<ID3D11DeviceContext*>(context.cmd_list->get_native());
-    if (device != nullptr && device->get_api() == reshade::api::device_api::d3d11 && native_context != nullptr) {
-      ID3D11PixelShader* native_pixel_shader = nullptr;
-      native_context->PSGetShader(&native_pixel_shader, nullptr, nullptr);
-      gamma_native_input_audit_state.native_pixel_shader = reinterpret_cast<uint64_t>(native_pixel_shader);
-      if (native_pixel_shader != nullptr) native_pixel_shader->Release();
+    gamma_native_input_audit_state.native_command_context = context.cmd_list->get_native();
+    if (device != nullptr && device->get_api() == reshade::api::device_api::d3d11) {
+      auto* native_device = reinterpret_cast<ID3D11Device*>(device->get_native());
+      ID3D11DeviceContext* native_context = nullptr;
+      if (native_device != nullptr) native_device->GetImmediateContext(&native_context);
+      gamma_native_input_audit_state.native_immediate_context = reinterpret_cast<uint64_t>(native_context);
+      if (native_context != nullptr) {
+        ID3D11PixelShader* native_pixel_shader = nullptr;
+        native_context->PSGetShader(&native_pixel_shader, nullptr, nullptr);
+        gamma_native_input_audit_state.native_pixel_shader = reinterpret_cast<uint64_t>(native_pixel_shader);
+        if (native_pixel_shader != nullptr) native_pixel_shader->Release();
 
-      ID3D11RenderTargetView* native_rtv = nullptr;
-      native_context->OMGetRenderTargets(1u, &native_rtv, nullptr);
-      gamma_native_input_audit_state.native_rtv = reinterpret_cast<uint64_t>(native_rtv);
-      if (native_rtv != nullptr) {
-        ID3D11Resource* native_resource = nullptr;
-        native_rtv->GetResource(&native_resource);
-        if (native_resource != nullptr) {
-          gamma_native_input_audit_state.output = DescribeNativeD3D11Resource(device, native_resource);
-          native_resource->Release();
+        ID3D11RenderTargetView* native_rtv = nullptr;
+        native_context->OMGetRenderTargets(1u, &native_rtv, nullptr);
+        gamma_native_input_audit_state.native_rtv = reinterpret_cast<uint64_t>(native_rtv);
+        if (native_rtv != nullptr) {
+          ID3D11Resource* native_resource = nullptr;
+          native_rtv->GetResource(&native_resource);
+          if (native_resource != nullptr) {
+            gamma_native_input_audit_state.output = DescribeNativeD3D11Resource(device, native_resource);
+            native_resource->Release();
+          }
+          native_rtv->Release();
         }
-        native_rtv->Release();
-      }
 
-      std::array<ID3D11ShaderResourceView*, 16> native_views = {};
-      native_context->PSGetShaderResources(0u, static_cast<UINT>(native_views.size()), native_views.data());
-      for (uint32_t index = 0u; index < native_views.size(); ++index) {
-        if (native_views[index] == nullptr) continue;
-        gamma_native_input_audit_state.native_views[index] = reinterpret_cast<uint64_t>(native_views[index]);
-        ID3D11Resource* native_resource = nullptr;
-        native_views[index]->GetResource(&native_resource);
-        if (native_resource != nullptr) {
-          gamma_native_input_audit_state.inputs[index] = DescribeNativeD3D11Resource(device, native_resource);
-          native_resource->Release();
+        std::array<ID3D11ShaderResourceView*, 16> native_views = {};
+        native_context->PSGetShaderResources(0u, static_cast<UINT>(native_views.size()), native_views.data());
+        for (uint32_t index = 0u; index < native_views.size(); ++index) {
+          if (native_views[index] == nullptr) continue;
+          gamma_native_input_audit_state.native_views[index] = reinterpret_cast<uint64_t>(native_views[index]);
+          ID3D11Resource* native_resource = nullptr;
+          native_views[index]->GetResource(&native_resource);
+          if (native_resource != nullptr) {
+            gamma_native_input_audit_state.inputs[index] = DescribeNativeD3D11Resource(device, native_resource);
+            native_resource->Release();
+          }
+          native_views[index]->Release();
         }
-        native_views[index]->Release();
+        native_context->Release();
       }
     }
     gamma_native_input_audit_state.active = true;
@@ -496,7 +505,9 @@ void OnDownstreamDrawCapturePresent(
     std::stringstream stream;
     const auto& output = native_input_audit.output;
     stream << "DL2 Gamma native binding audit: ps(0x" << std::hex << std::uppercase
-           << native_input_audit.native_pixel_shader << ") rtv(0x" << native_input_audit.native_rtv
+           << native_input_audit.native_pixel_shader << ") contexts(command=0x"
+           << native_input_audit.native_command_context << ", immediate=0x"
+           << native_input_audit.native_immediate_context << ") rtv(0x" << native_input_audit.native_rtv
            << ", resource=0x" << output.resource << ", " << static_cast<uint32_t>(output.format)
            << " => 0x" << output.effective << ", " << static_cast<uint32_t>(output.effective_format)
            << ") slots:";
