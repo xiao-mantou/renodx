@@ -35,6 +35,7 @@ float downstream_transfer_capture = 0.f;
 bool gamma_draw_audit_capture = false;
 bool gamma_native_input_audit_capture = false;
 constexpr uint32_t kGammaFrameAuditDrawCount = 8u;
+constexpr size_t kDownstreamInputViewLimit = 64u;
 
 enum class DownstreamTransferType : uint8_t {
   copy_resource,
@@ -196,8 +197,10 @@ void OnGammaAuditPushDescriptors(
     uint32_t layout_param,
     const reshade::api::descriptor_table_update& update) {
   const bool capture_gamma_input = gamma_draw_audit_capture;
-  const bool capture_downstream_inputs = downstream_draw_capture_state.active
-      && !downstream_draw_capture_state.consumed && downstream_draw_capture_state.capture_commands;
+  // Bindings are normally established before the Gamma draw, so start this
+  // bounded cache when the one-shot button is armed rather than afterwards.
+  const bool capture_downstream_inputs = downstream_draw_capture >= 0.5f
+      && !downstream_draw_capture_state.consumed;
   if ((!capture_gamma_input && !capture_downstream_inputs) || update.count == 0u
       || !renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::pixel)) {
     return;
@@ -237,7 +240,13 @@ void OnGammaAuditPushDescriptors(
     const auto view = renodx::utils::descriptor::GetResourceViewFromDescriptorUpdate(update, index);
     std::scoped_lock lock(downstream_draw_capture_mutex);
     if (capture_gamma_input) gamma_audit_t0_views[cmd_list] = view;
-    if (capture_downstream_inputs) downstream_capture_t0_views[cmd_list] = view;
+    if (capture_downstream_inputs) {
+      const auto existing = downstream_capture_t0_views.find(cmd_list);
+      if (existing != downstream_capture_t0_views.end()
+          || downstream_capture_t0_views.size() < kDownstreamInputViewLimit) {
+        downstream_capture_t0_views[cmd_list] = view;
+      }
+    }
     return;
   }
 }
@@ -350,6 +359,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   const bool capture_transfers = downstream_transfer_capture >= 0.5f;
   if (!capture_commands && !capture_transfers) {
     capture = {};
+    downstream_capture_t0_views.clear();
     return {};
   }
   if (capture.consumed) return {};
@@ -367,7 +377,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       capture.transfer_count = 0u;
       capture.targets.fill({});
       capture.inputs.fill({});
-      downstream_capture_t0_views.clear();
+      // Keep t0 bindings collected while the one-shot capture was armed.
       capture.active = true;
       capture.capture_commands = capture_commands;
       capture.capture_transfers = capture_transfers;
