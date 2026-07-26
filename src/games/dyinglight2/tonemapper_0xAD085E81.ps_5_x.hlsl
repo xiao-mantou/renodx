@@ -7,6 +7,20 @@ cbuffer cb0 : register(b0) {
   float4 cb0[1];
 }
 
+float3 DebugFalseColor(float value) {
+  const float log_value = log2(max(0.001, max(0.0, value)));
+  if (log_value < 0.0) {
+    return lerp(float3(0.0, 0.0, 0.2), float3(0.0, 1.0, 0.3), saturate((log_value + 3.0) / 3.0));
+  }
+  if (log_value < 1.0) {
+    return lerp(float3(0.0, 1.0, 0.3), float3(1.0, 1.0, 0.0), log_value);
+  }
+  if (log_value < 2.0) {
+    return lerp(float3(1.0, 1.0, 0.0), float3(1.0, 0.0, 0.0), log_value - 1.0);
+  }
+  return lerp(float3(1.0, 0.0, 0.0), float3(1.0, 1.0, 1.0), saturate(log_value - 2.0));
+}
+
 void main(
     float4 v0 : SV_POSITION0,
     linear noperspective float2 v1 : TEXCOORD0,
@@ -26,6 +40,20 @@ void main(
   // identifiable without resource tracing or shader enumeration.
   if (RENODX_DEBUG_MODE > 13.5 && RENODX_DEBUG_MODE < 14.5) {
     o0 = float4(6.25, 6.25, 6.25, 1.0);
+    return;
+  }
+
+  // These two modes isolate the final game Gamma pass without any resource
+  // inspection or readback. A changing image in mode 16 means its input is
+  // already changing; a changing full-screen color in mode 17 means the
+  // game's power parameter is changing instead.
+  if (RENODX_DEBUG_MODE > 15.5 && RENODX_DEBUG_MODE < 16.5) {
+    const float input_range = max(input_color.r, max(input_color.g, input_color.b));
+    o0 = float4(renodx::draw::RenderIntermediatePass(DebugFalseColor(input_range)), 1.0);
+    return;
+  }
+  if (RENODX_DEBUG_MODE > 16.5 && RENODX_DEBUG_MODE < 17.5) {
+    o0 = float4(renodx::draw::RenderIntermediatePass(DebugFalseColor(abs(cb0[0].x))), 1.0);
     return;
   }
 
