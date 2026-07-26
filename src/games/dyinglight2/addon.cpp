@@ -648,9 +648,6 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     // A visible gamma/power pass after the LUT composite. Its debug branch
     // isolates whether it remaps HDR highlights after the scene bridge.
     CustomDirectXShaders(0xAD085E81),
-    // A single-texture full-screen copy observed after Gamma in the same
-    // Present. It is registered only for the Debug Mode 19 boundary probe.
-    CustomDirectXShaders(0xBFFC45AC),
     // Disabled: guessed hashes caused crashes because the copied tonemapper
     // template shader has mismatched inputs/outputs.
     // CustomDirectXShaders(0x4d2b3f4d),
@@ -952,7 +949,7 @@ renodx::utils::settings::Settings settings = {
         .label = "Debug Mode",
         .section = "Debug",
         .tooltip = "False-color visualization and output probes. Luminance Ladder places four known scene values in the lower-right corner.",
-        .labels = {"Off", "HDR Input Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500-nit red)", "Scene Probe (Peak white)", "Output Luminance Ladder", "Raw Output Ladder", "Late LUT Output Ladder", "Source t0 Range", "Auto Exposure t1", "Bypass Late Gamma (Test)", "LUT Output Constant (500-nit white)", "Gamma Output Constant (500-nit white)", "Final Proxy Constant (500-nit white)", "Gamma Input t0 Range", "Gamma Power cb0", "Stability Probe (4 stages; top bypass, bottom Gamma)", "Late Copy Probe (top input, bottom HDR reference)"},
+        .labels = {"Off", "HDR Input Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500-nit red)", "Scene Probe (Peak white)", "Output Luminance Ladder", "Raw Output Ladder", "Late LUT Output Ladder", "Source t0 Range", "Auto Exposure t1", "Bypass Late Gamma (Test)", "LUT Output Constant (500-nit white)", "Gamma Output Constant (500-nit white)", "Final Proxy Constant (500-nit white)", "Gamma Input t0 Range", "Gamma Power cb0", "Stability Probe (4 stages; top bypass, bottom Gamma)"},
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
