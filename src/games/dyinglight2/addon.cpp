@@ -22,16 +22,18 @@
 namespace {
 
 // Disabled by default. When armed from the Advanced diagnostic setting, this
-// records pixel-shader hashes after the known late Gamma pass, ending at the
-// very next Present.
+// records graphics and compute shader hashes after the known late Gamma pass,
+// ending at the very next Present.
 // It does not inspect resources, descriptor tables, or command history.
 float downstream_draw_capture = 0.f;
 
 struct DownstreamDrawCaptureState {
   reshade::api::command_list* command_list = nullptr;
   std::array<uint32_t, 16> hashes = {};
+  std::array<bool, 16> is_compute = {};
   uint32_t count = 0u;
   bool active = false;
+  bool consumed = false;
 };
 
 DownstreamDrawCaptureState downstream_draw_capture_state = {};
@@ -45,17 +47,17 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
     capture = {};
     return {};
   }
-  // The indirect event also represents dispatches. They cannot be a pixel
-  // shader post-pass, so ignore them before looking at graphics state.
-  if (context.IsDispatch()) return {};
+  if (capture.consumed) return {};
 
   auto* shader_state = renodx::utils::command_action::GetShaderState(&context);
   if (shader_state == nullptr) return {};
-  const uint32_t pixel_shader = renodx::utils::shader::GetCurrentShaderHash(
-      shader_state, renodx::utils::shader::PIXEL_INDEX);
+  const bool is_compute = context.IsDispatch();
+  const uint32_t shader_hash = renodx::utils::shader::GetCurrentShaderHash(
+      shader_state, is_compute ? renodx::utils::shader::COMPUTE_INDEX
+                               : renodx::utils::shader::PIXEL_INDEX);
 
   if (!capture.active) {
-    if (pixel_shader == 0xAD085E81u) {
+    if (!is_compute && shader_hash == 0xAD085E81u) {
       capture.command_list = context.cmd_list;
       capture.count = 0u;
       capture.active = true;
@@ -67,10 +69,12 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   // the exact list where the Gamma draw occurred, so unrelated UI/worker
   // draws cannot pollute the order.
   if (capture.command_list != context.cmd_list) return {};
-  if (pixel_shader == 0u) return {};
+  if (shader_hash == 0u) return {};
 
   if (capture.count < capture.hashes.size()) {
-    capture.hashes[capture.count++] = pixel_shader;
+    capture.hashes[capture.count] = shader_hash;
+    capture.is_compute[capture.count] = is_compute;
+    ++capture.count;
   }
   return {};
 };
@@ -89,14 +93,17 @@ void OnDownstreamDrawCapturePresent(
   std::stringstream stream;
   stream << "DL2 same-frame draw order after 0xAD085E81 (" << capture.count << "):";
   for (uint32_t index = 0u; index < capture.count; ++index) {
-    stream << " 0x" << std::hex << std::uppercase << capture.hashes[index];
+    stream << " " << (capture.is_compute[index] ? "CS" : "PS") << ":0x"
+           << std::hex << std::uppercase << capture.hashes[index];
   }
   reshade::log::message(reshade::log::level::info, stream.str().c_str());
 
   // One capture per manual arm. This leaves no per-frame work afterwards and
   // prevents draw recording from leaking into the next frame's G-buffer.
+  downstream_draw_capture = 0.f;
   renodx::utils::settings::UpdateSetting("CaptureDownstreamDraws", 0.f);
-  capture = {};
+  capture.active = false;
+  capture.consumed = true;
 }
 
 renodx::mods::shader::CustomShaders custom_shaders = {
@@ -417,9 +424,9 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
         .default_value = 0.f,
         .can_reset = false,
-        .label = "Capture Post-Gamma Draw Order",
+        .label = "Capture Post-Gamma Command Order",
         .section = "Debug",
-        .tooltip = "One-shot, records up to 16 pixel shader hashes after 0xAD085E81 until the next Present, then turns itself off. No resource tracing or dumping.",
+        .tooltip = "One-shot, records up to 16 graphics or compute shader hashes after 0xAD085E81 until the next Present, then turns itself off. No resource tracing or dumping.",
         .is_visible = []() { return current_settings_mode >= 2; },
     },
 };
@@ -505,6 +512,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           OnDownstreamDrawCapture,
           {.shader_hash = 0u,
            .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW
+                            | renodx::utils::command_action::COMMAND_TYPE_DIRECT_DISPATCH
                             | renodx::utils::command_action::COMMAND_TYPE_INDIRECT});
       reshade::register_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
 
