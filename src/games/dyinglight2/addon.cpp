@@ -26,13 +26,32 @@ namespace {
 // ending at the very next Present.
 // It does not inspect resources, descriptor tables, or command history.
 float downstream_draw_capture = 0.f;
+float downstream_transfer_capture = 0.f;
+
+enum class DownstreamTransferType : uint8_t {
+  copy_resource,
+  copy_texture_region,
+  resolve_texture_region,
+};
+
+struct DownstreamTransfer {
+  DownstreamTransferType type = DownstreamTransferType::copy_resource;
+  uint64_t source = 0u;
+  uint64_t dest = 0u;
+  reshade::api::format source_format = reshade::api::format::unknown;
+  reshade::api::format dest_format = reshade::api::format::unknown;
+};
 
 struct DownstreamDrawCaptureState {
   std::array<uint32_t, 16> hashes = {};
   std::array<bool, 16> is_compute = {};
+  std::array<DownstreamTransfer, 16> transfers = {};
   uint32_t count = 0u;
+  uint32_t transfer_count = 0u;
   bool active = false;
   bool consumed = false;
+  bool capture_commands = false;
+  bool capture_transfers = false;
 };
 
 DownstreamDrawCaptureState downstream_draw_capture_state = {};
@@ -42,7 +61,9 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
     -> renodx::utils::command_action::CallbackResult<Context> {
   auto& capture = downstream_draw_capture_state;
   std::scoped_lock lock(downstream_draw_capture_mutex);
-  if (downstream_draw_capture < 0.5f) {
+  const bool capture_commands = downstream_draw_capture >= 0.5f;
+  const bool capture_transfers = downstream_transfer_capture >= 0.5f;
+  if (!capture_commands && !capture_transfers) {
     capture = {};
     return {};
   }
@@ -58,11 +79,15 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   if (!capture.active) {
     if (!is_compute && shader_hash == 0xAD085E81u) {
       capture.count = 0u;
+      capture.transfer_count = 0u;
       capture.active = true;
+      capture.capture_commands = capture_commands;
+      capture.capture_transfers = capture_transfers;
     }
     return {};
   }
 
+  if (!capture.capture_commands) return {};
   if (shader_hash == 0u) return {};
 
   // DL2 records late work across multiple command lists. Stay bounded by the
@@ -79,9 +104,78 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   return {};
 };
 
+void RecordDownstreamTransfer(
+    DownstreamTransferType type,
+    reshade::api::command_list* cmd_list,
+    reshade::api::resource source,
+    reshade::api::resource dest) {
+  std::scoped_lock lock(downstream_draw_capture_mutex);
+  auto& capture = downstream_draw_capture_state;
+  if (!capture.active || capture.consumed || !capture.capture_transfers) return;
+  if (capture.transfer_count >= capture.transfers.size()) return;
+
+  auto* device = cmd_list->get_device();
+  if (device == nullptr) return;
+  const auto source_desc = device->get_resource_desc(source);
+  const auto dest_desc = device->get_resource_desc(dest);
+  const DownstreamTransfer transfer = {
+      .type = type,
+      .source = source.handle,
+      .dest = dest.handle,
+      .source_format = source_desc.texture.format,
+      .dest_format = dest_desc.texture.format,
+  };
+
+  for (uint32_t index = 0u; index < capture.transfer_count; ++index) {
+    const auto& existing = capture.transfers[index];
+    if (existing.type == transfer.type && existing.source == transfer.source && existing.dest == transfer.dest) {
+      return;
+    }
+  }
+  if (capture.transfer_count < capture.transfers.size()) {
+    capture.transfers[capture.transfer_count++] = transfer;
+  }
+}
+
+bool OnDownstreamCopyResource(
+    reshade::api::command_list* cmd_list,
+    reshade::api::resource source,
+    reshade::api::resource dest) {
+  RecordDownstreamTransfer(DownstreamTransferType::copy_resource, cmd_list, source, dest);
+  return false;
+}
+
+bool OnDownstreamCopyTextureRegion(
+    reshade::api::command_list* cmd_list,
+    reshade::api::resource source,
+    uint32_t,
+    const reshade::api::subresource_box*,
+    reshade::api::resource dest,
+    uint32_t,
+    const reshade::api::subresource_box*,
+    reshade::api::filter_mode) {
+  RecordDownstreamTransfer(DownstreamTransferType::copy_texture_region, cmd_list, source, dest);
+  return false;
+}
+
+bool OnDownstreamResolveTextureRegion(
+    reshade::api::command_list* cmd_list,
+    reshade::api::resource source,
+    uint32_t,
+    const reshade::api::subresource_box*,
+    reshade::api::resource dest,
+    uint32_t,
+    uint32_t,
+    uint32_t,
+    uint32_t,
+    reshade::api::format) {
+  RecordDownstreamTransfer(DownstreamTransferType::resolve_texture_region, cmd_list, source, dest);
+  return false;
+}
+
 void OnDownstreamDrawCapturePresent(
-    reshade::api::command_queue*,
-    reshade::api::swapchain*,
+    reshade::api::command_queue* queue,
+    reshade::api::swapchain* swapchain,
     const reshade::api::rect*,
     const reshade::api::rect*,
     uint32_t,
@@ -90,18 +184,43 @@ void OnDownstreamDrawCapturePresent(
   auto& capture = downstream_draw_capture_state;
   if (!capture.active) return;
 
-  std::stringstream stream;
-  stream << "DL2 same-Present command candidates after 0xAD085E81 (" << capture.count << "):";
-  for (uint32_t index = 0u; index < capture.count; ++index) {
-    stream << " " << (capture.is_compute[index] ? "CS" : "PS") << ":0x"
-           << std::hex << std::uppercase << capture.hashes[index];
+  if (capture.capture_commands) {
+    std::stringstream stream;
+    stream << "DL2 same-Present command candidates after 0xAD085E81 (" << capture.count << "):";
+    for (uint32_t index = 0u; index < capture.count; ++index) {
+      stream << " " << (capture.is_compute[index] ? "CS" : "PS") << ":0x"
+             << std::hex << std::uppercase << capture.hashes[index];
+    }
+    reshade::log::message(reshade::log::level::info, stream.str().c_str());
   }
-  reshade::log::message(reshade::log::level::info, stream.str().c_str());
+  if (capture.capture_transfers) {
+    std::stringstream stream;
+    stream << "DL2 post-Gamma transfers (" << capture.transfer_count << "):";
+    for (uint32_t index = 0u; index < capture.transfer_count; ++index) {
+      const auto& transfer = capture.transfers[index];
+      const char* type = transfer.type == DownstreamTransferType::copy_resource ? "CopyResource"
+                         : transfer.type == DownstreamTransferType::copy_texture_region ? "CopyTexture"
+                                                                                         : "ResolveTexture";
+      stream << " " << type << "(0x" << std::hex << std::uppercase << transfer.source << ", "
+             << static_cast<uint32_t>(transfer.source_format) << " => 0x" << transfer.dest << ", "
+             << static_cast<uint32_t>(transfer.dest_format) << ")";
+    }
+    if (queue != nullptr && swapchain != nullptr) {
+      const auto back_buffer_desc =
+          queue->get_device()->get_resource_desc(swapchain->get_current_back_buffer());
+      stream << " present_backbuffer(" << std::dec << back_buffer_desc.texture.width << "x"
+             << back_buffer_desc.texture.height << ", "
+             << static_cast<uint32_t>(back_buffer_desc.texture.format) << ")";
+    }
+    reshade::log::message(reshade::log::level::info, stream.str().c_str());
+  }
 
   // One capture per manual arm. This leaves no per-frame work afterwards and
   // prevents draw recording from leaking into the next frame's G-buffer.
   downstream_draw_capture = 0.f;
+  downstream_transfer_capture = 0.f;
   renodx::utils::settings::UpdateSetting("CaptureDownstreamDraws", 0.f);
+  renodx::utils::settings::UpdateSetting("CaptureDownstreamTransfers", 0.f);
   capture.active = false;
   capture.consumed = true;
 }
@@ -429,6 +548,17 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "One-shot, records up to 16 unique graphics or compute shader hashes after 0xAD085E81 until the next Present, then turns itself off. No resource tracing or dumping.",
         .is_visible = []() { return current_settings_mode >= 2; },
     },
+    new renodx::utils::settings::Setting{
+        .key = "CaptureDownstreamTransfers",
+        .binding = &downstream_transfer_capture,
+        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "Capture Post-Gamma Transfers",
+        .section = "Debug",
+        .tooltip = "One-shot, records up to 16 unique copy or resolve operations after 0xAD085E81 until the next Present. It records only resource handles and formats, with no readback or interception.",
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
 };
 
 void OnPresetOff() {
@@ -460,6 +590,7 @@ void OnPresetOff() {
       {"SwapChainEncoding", 4.f},
       {"DebugMode", 0.f},
       {"CaptureDownstreamDraws", 0.f},
+      {"CaptureDownstreamTransfers", 0.f},
   });
 }
 
@@ -514,7 +645,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
            .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW
                             | renodx::utils::command_action::COMMAND_TYPE_DIRECT_DISPATCH
                             | renodx::utils::command_action::COMMAND_TYPE_INDIRECT});
-      reshade::register_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
+      reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
+      reshade::register_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
+      reshade::register_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
 
       // Shader hook config (applies to both D3D11 and D3D12 custom shaders)
       // DL2 shared.h uses register(b13, space50) for SM5.1+ (D3D12) and
@@ -581,6 +714,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     case DLL_PROCESS_DETACH:
       renodx::utils::command_action::Unregister(OnDownstreamDrawCapture);
       reshade::unregister_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
+      reshade::unregister_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
+      reshade::unregister_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
+      reshade::unregister_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
       reshade::unregister_addon(h_module);
       break;
@@ -589,6 +725,12 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
   renodx::mods::swapchain::Use(fdw_reason, &shader_injection);
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
+
+  // Register after the swapchain proxy so the one-shot capture includes any
+  // proxy copy/resolve work issued from its own Present callback.
+  if (fdw_reason == DLL_PROCESS_ATTACH) {
+    reshade::register_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
+  }
 
   return TRUE;
 }
