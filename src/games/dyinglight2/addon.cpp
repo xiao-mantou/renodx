@@ -266,6 +266,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
           capture.gamma_target = resource.handle;
           capture.gamma_target_format = desc.texture.format;
           capture.gamma_target_view = target->second.handle;
+          renodx::utils::resource::upgrade::ArmCopyResourceAudit(resource);
           renodx::utils::resource::GetResourceInfo(resource, [&capture](const renodx::utils::resource::ResourceInfo& info) {
             capture.gamma_target_clone = info.clone.handle;
             capture.gamma_target_clone_format = info.clone_desc.texture.format;
@@ -445,6 +446,7 @@ void OnDownstreamDrawCapturePresent(
              << static_cast<uint32_t>(back_buffer_desc.texture.format) << ")";
     }
     if (capture.gamma_target != 0u) {
+      const auto effective_copy = renodx::utils::resource::upgrade::GetCopyResourceAudit();
       bool copied_from_gamma_target = false;
       bool copied_from_gamma_clone = false;
       bool copied_from_effective_target = false;
@@ -465,7 +467,12 @@ void OnDownstreamDrawCapturePresent(
              << (capture.gamma_target_clone_view_enabled ? "yes" : "no") << ")"
              << " effective_rtv(0x" << capture.gamma_target_effective << ", "
              << static_cast<uint32_t>(capture.gamma_target_effective_format) << ", copied="
-             << (copied_from_effective_target ? "yes" : "no") << ")";
+             << (copied_from_effective_target ? "yes" : "no") << ")"
+             << " effective_copy(" << (effective_copy.matched ? "matched" : "missing")
+             << ",0x" << effective_copy.effective_source << ", "
+             << static_cast<uint32_t>(effective_copy.effective_source_format)
+             << " => 0x" << effective_copy.effective_dest << ", "
+             << static_cast<uint32_t>(effective_copy.effective_dest_format) << ")";
     } else {
       stream << " gamma_target(unavailable)";
     }

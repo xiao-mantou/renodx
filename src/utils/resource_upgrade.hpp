@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <include/reshade.hpp>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <shared_mutex>
@@ -97,6 +98,33 @@ static thread_local std::optional<reshade::api::swapchain_desc> upgraded_swapcha
 static thread_local std::optional<reshade::api::resource> local_original_resource;
 static thread_local std::optional<reshade::api::resource_desc> local_original_resource_desc;
 static thread_local std::optional<reshade::api::resource_view_desc> local_original_resource_view_desc;
+
+// A narrow, opt-in diagnostic for validating an effective CopyResource pair
+// after clone replacement. It never changes the copy and disarms on the first
+// matching source resource.
+struct CopyResourceAudit {
+  uint64_t source_filter = 0u;
+  uint64_t effective_source = 0u;
+  uint64_t effective_dest = 0u;
+  reshade::api::format effective_source_format = reshade::api::format::unknown;
+  reshade::api::format effective_dest_format = reshade::api::format::unknown;
+  bool matched = false;
+};
+
+static std::mutex copy_resource_audit_mutex;
+static std::atomic<uint64_t> copy_resource_audit_source_filter = 0u;
+static CopyResourceAudit copy_resource_audit = {};
+
+inline void ArmCopyResourceAudit(reshade::api::resource source) {
+  std::scoped_lock lock(copy_resource_audit_mutex);
+  copy_resource_audit = {.source_filter = source.handle};
+  copy_resource_audit_source_filter.store(source.handle, std::memory_order_release);
+}
+
+inline CopyResourceAudit GetCopyResourceAudit() {
+  std::scoped_lock lock(copy_resource_audit_mutex);
+  return copy_resource_audit;
+}
 
 
 static thread_local std::optional<ResourceViewInfo> pending_dx12_clone_resource_view_info;
@@ -1997,6 +2025,17 @@ inline bool OnCopyResource(
   // }
 
   if (can_be_copied) {
+    if (copy_resource_audit_source_filter.load(std::memory_order_acquire) == source.handle) {
+      std::scoped_lock lock(copy_resource_audit_mutex);
+      if (copy_resource_audit.source_filter == source.handle && !copy_resource_audit.matched) {
+        copy_resource_audit.effective_source = source_new.handle;
+        copy_resource_audit.effective_dest = dest_new.handle;
+        copy_resource_audit.effective_source_format = source_desc_new.texture.format;
+        copy_resource_audit.effective_dest_format = dest_desc_new.texture.format;
+        copy_resource_audit.matched = true;
+        copy_resource_audit_source_filter.store(0u, std::memory_order_release);
+      }
+    }
     cmd_list->copy_resource(source_new, dest_new);
     return true;
   }
