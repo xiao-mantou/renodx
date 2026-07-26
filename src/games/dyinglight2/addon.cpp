@@ -99,8 +99,11 @@ struct GammaDrawAuditState {
 };
 
 struct GammaNativeInputAuditState {
-  GammaAuditResource input = {};
-  uint64_t native_view = 0u;
+  std::array<GammaAuditResource, 16> inputs = {};
+  std::array<uint64_t, 16> native_views = {};
+  GammaAuditResource output = {};
+  uint64_t native_pixel_shader = 0u;
+  uint64_t native_rtv = 0u;
   bool active = false;
   bool consumed = false;
 };
@@ -140,6 +143,32 @@ GammaAuditResource DescribeGammaAuditView(
     const auto effective_desc = device->get_resource_desc(effective_resource);
     result.effective = effective_resource.handle;
     result.effective_format = effective_desc.texture.format;
+  });
+  return result;
+}
+
+GammaAuditResource DescribeNativeD3D11Resource(
+    reshade::api::device* device,
+    ID3D11Resource* native_resource) {
+  GammaAuditResource result = {};
+  if (device == nullptr || native_resource == nullptr) return result;
+
+  const reshade::api::resource resource = {reinterpret_cast<uint64_t>(native_resource)};
+  const auto desc = device->get_resource_desc(resource);
+  result.resource = resource.handle;
+  result.effective = resource.handle;
+  result.format = desc.texture.format;
+  result.effective_format = desc.texture.format;
+  result.width = desc.texture.width;
+  result.height = desc.texture.height;
+  renodx::utils::resource::GetResourceInfo(resource, [&result](const renodx::utils::resource::ResourceInfo& info) {
+    result.clone = info.clone.handle;
+    result.clone_format = info.clone_desc.texture.format;
+    result.clone_enabled = info.clone_enabled;
+    if (info.clone_enabled && info.clone.handle != 0u) {
+      result.effective = info.clone.handle;
+      result.effective_format = info.clone_desc.texture.format;
+    }
   });
   return result;
 }
@@ -217,34 +246,36 @@ inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
     auto* device = context.cmd_list->get_device();
     auto* native_context = reinterpret_cast<ID3D11DeviceContext*>(context.cmd_list->get_native());
     if (device != nullptr && device->get_api() == reshade::api::device_api::d3d11 && native_context != nullptr) {
-      ID3D11ShaderResourceView* native_view = nullptr;
-      native_context->PSGetShaderResources(0u, 1u, &native_view);
-      if (native_view != nullptr) {
-        gamma_native_input_audit_state.native_view = reinterpret_cast<uint64_t>(native_view);
+      ID3D11PixelShader* native_pixel_shader = nullptr;
+      native_context->PSGetShader(&native_pixel_shader, nullptr, nullptr);
+      gamma_native_input_audit_state.native_pixel_shader = reinterpret_cast<uint64_t>(native_pixel_shader);
+      if (native_pixel_shader != nullptr) native_pixel_shader->Release();
+
+      ID3D11RenderTargetView* native_rtv = nullptr;
+      native_context->OMGetRenderTargets(1u, &native_rtv, nullptr);
+      gamma_native_input_audit_state.native_rtv = reinterpret_cast<uint64_t>(native_rtv);
+      if (native_rtv != nullptr) {
         ID3D11Resource* native_resource = nullptr;
-        native_view->GetResource(&native_resource);
+        native_rtv->GetResource(&native_resource);
         if (native_resource != nullptr) {
-          const reshade::api::resource resource = {reinterpret_cast<uint64_t>(native_resource)};
-          const auto desc = device->get_resource_desc(resource);
-          auto& input = gamma_native_input_audit_state.input;
-          input.resource = resource.handle;
-          input.effective = resource.handle;
-          input.format = desc.texture.format;
-          input.effective_format = desc.texture.format;
-          input.width = desc.texture.width;
-          input.height = desc.texture.height;
-          renodx::utils::resource::GetResourceInfo(resource, [&input](const renodx::utils::resource::ResourceInfo& info) {
-            input.clone = info.clone.handle;
-            input.clone_format = info.clone_desc.texture.format;
-            input.clone_enabled = info.clone_enabled;
-            if (info.clone_enabled && info.clone.handle != 0u) {
-              input.effective = info.clone.handle;
-              input.effective_format = info.clone_desc.texture.format;
-            }
-          });
+          gamma_native_input_audit_state.output = DescribeNativeD3D11Resource(device, native_resource);
           native_resource->Release();
         }
-        native_view->Release();
+        native_rtv->Release();
+      }
+
+      std::array<ID3D11ShaderResourceView*, 16> native_views = {};
+      native_context->PSGetShaderResources(0u, static_cast<UINT>(native_views.size()), native_views.data());
+      for (uint32_t index = 0u; index < native_views.size(); ++index) {
+        if (native_views[index] == nullptr) continue;
+        gamma_native_input_audit_state.native_views[index] = reinterpret_cast<uint64_t>(native_views[index]);
+        ID3D11Resource* native_resource = nullptr;
+        native_views[index]->GetResource(&native_resource);
+        if (native_resource != nullptr) {
+          gamma_native_input_audit_state.inputs[index] = DescribeNativeD3D11Resource(device, native_resource);
+          native_resource->Release();
+        }
+        native_views[index]->Release();
       }
     }
     gamma_native_input_audit_state.active = true;
@@ -462,15 +493,26 @@ void OnDownstreamDrawCapturePresent(
   }
   auto& native_input_audit = gamma_native_input_audit_state;
   if (native_input_audit.active) {
-    const auto& input = native_input_audit.input;
     std::stringstream stream;
-    stream << "DL2 Gamma native t0 audit: srv(0x" << std::hex << std::uppercase
-           << native_input_audit.native_view << ") resource(0x" << input.resource << ", "
-           << static_cast<uint32_t>(input.format) << " => 0x" << input.effective << ", "
-           << static_cast<uint32_t>(input.effective_format) << ", rclone=0x" << input.clone
-           << ", " << static_cast<uint32_t>(input.clone_format) << ", clone="
-           << (input.clone_enabled ? "on" : "off") << ", " << std::dec << input.width << "x"
-           << input.height << ")";
+    const auto& output = native_input_audit.output;
+    stream << "DL2 Gamma native binding audit: ps(0x" << std::hex << std::uppercase
+           << native_input_audit.native_pixel_shader << ") rtv(0x" << native_input_audit.native_rtv
+           << ", resource=0x" << output.resource << ", " << static_cast<uint32_t>(output.format)
+           << " => 0x" << output.effective << ", " << static_cast<uint32_t>(output.effective_format)
+           << ") slots:";
+    bool found_input = false;
+    for (uint32_t index = 0u; index < native_input_audit.inputs.size(); ++index) {
+      const auto& input = native_input_audit.inputs[index];
+      if (native_input_audit.native_views[index] == 0u) continue;
+      found_input = true;
+      stream << " t" << std::dec << index << "(srv=0x" << std::hex << native_input_audit.native_views[index]
+             << ", resource=0x" << input.resource << ", " << static_cast<uint32_t>(input.format)
+             << " => 0x" << input.effective << ", " << static_cast<uint32_t>(input.effective_format)
+             << ", rclone=0x" << input.clone << ", " << static_cast<uint32_t>(input.clone_format)
+             << ", clone=" << (input.clone_enabled ? "on" : "off") << ", " << std::dec
+             << input.width << "x" << input.height << ")";
+    }
+    if (!found_input) stream << " none";
     reshade::log::message(reshade::log::level::info, stream.str().c_str());
     gamma_native_input_audit_capture = false;
     native_input_audit.active = false;
@@ -900,9 +942,9 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
-        .label = "Capture Gamma t0 (D3D11)",
+        .label = "Capture Gamma Bindings (D3D11)",
         .section = "Debug",
-        .tooltip = "One-shot D3D11-only audit. Reads the bound pixel-SRV t0 for 0xAD085E81 once, records only its resource, format, size, and clone state, then stops at Present. No texture readback or resource interception.",
+        .tooltip = "One-shot D3D11-only audit. Reads the bound pixel shader, first RTV, and non-null pixel-SRV slots t0-t15 for 0xAD085E81 once, then stops at Present. Records only handles, formats, sizes, and clone state; no texture readback or resource interception.",
         .on_click = []() {
           gamma_native_input_audit_capture = true;
           gamma_native_input_audit_state = {};
