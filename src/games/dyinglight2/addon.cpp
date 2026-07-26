@@ -5,6 +5,9 @@
 
 #define ImTextureID ImU64
 
+#include <array>
+#include <sstream>
+
 #include <embed/shaders.h>
 
 #include <deps/imgui/imgui.h>
@@ -16,6 +19,64 @@
 #include "./shared.h"
 
 namespace {
+
+// Disabled by default. When armed from the Advanced diagnostic setting, this
+// records just twelve pixel-shader hashes after the known late Gamma pass.
+// It does not inspect resources, descriptor tables, or command history.
+float downstream_draw_capture = 0.f;
+
+struct DownstreamDrawCaptureState {
+  reshade::api::command_list* command_list = nullptr;
+  std::array<uint32_t, 12> hashes = {};
+  uint32_t count = 0u;
+  bool active = false;
+};
+
+thread_local DownstreamDrawCaptureState downstream_draw_capture_state = {};
+
+inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& context)
+    -> renodx::utils::command_action::CallbackResult<Context> {
+  auto& capture = downstream_draw_capture_state;
+  if (downstream_draw_capture < 0.5f) {
+    capture = {};
+    return {};
+  }
+
+  auto* shader_state = renodx::utils::command_action::GetShaderState(&context);
+  if (shader_state == nullptr) return {};
+  const uint32_t pixel_shader = renodx::utils::shader::GetCurrentShaderHash(
+      shader_state, renodx::utils::shader::PIXEL_INDEX);
+
+  if (!capture.active) {
+    if (pixel_shader == 0xAD085E81u) {
+      capture.command_list = context.cmd_list;
+      capture.count = 0u;
+      capture.active = true;
+    }
+    return {};
+  }
+
+  // Command lists may be recorded on several threads. Keep the capture on
+  // the exact list where the Gamma draw occurred, so unrelated UI/worker
+  // draws cannot pollute the order.
+  if (capture.command_list != context.cmd_list) return {};
+  if (pixel_shader == 0u) return {};
+
+  capture.hashes[capture.count++] = pixel_shader;
+  if (capture.count < capture.hashes.size()) return {};
+
+  std::stringstream stream;
+  stream << "DL2 downstream draw order after 0xAD085E81:";
+  for (const uint32_t hash : capture.hashes) {
+    stream << " 0x" << std::hex << std::uppercase << hash;
+  }
+  reshade::log::message(reshade::log::level::info, stream.str().c_str());
+
+  // One capture per manual arm. This leaves no per-frame work afterwards.
+  downstream_draw_capture = 0.f;
+  capture = {};
+  return {};
+};
 
 renodx::mods::shader::CustomShaders custom_shaders = {
     CustomDirectXShaders(0x3E36DA5B),
@@ -329,6 +390,17 @@ renodx::utils::settings::Settings settings = {
         .labels = {"Off", "HDR Input Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500-nit red)", "Scene Probe (Peak white)", "Output Luminance Ladder", "Raw Output Ladder", "Late LUT Output Ladder", "Source t0 Range", "Auto Exposure t1", "Bypass Late Gamma (Test)", "LUT Output Constant (500-nit white)", "Gamma Output Constant (500-nit white)", "Final Proxy Constant (500-nit white)"},
         .is_visible = []() { return current_settings_mode >= 2; },
     },
+    new renodx::utils::settings::Setting{
+        .key = "CaptureDownstreamDraws",
+        .binding = &downstream_draw_capture,
+        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "Capture Post-Gamma Draw Order",
+        .section = "Debug",
+        .tooltip = "One-shot, records 12 pixel shader hashes after 0xAD085E81 and then turns itself off. No resource tracing or dumping.",
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
 };
 
 void OnPresetOff() {
@@ -359,6 +431,7 @@ void OnPresetOff() {
       {"FxLensFlare", 100.f},
       {"SwapChainEncoding", 4.f},
       {"DebugMode", 0.f},
+      {"CaptureDownstreamDraws", 0.f},
   });
 }
 
@@ -406,6 +479,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   switch (fdw_reason) {
     case DLL_PROCESS_ATTACH:
       if (!reshade::register_addon(h_module)) return FALSE;
+
+      renodx::utils::command_action::Register(
+          OnDownstreamDrawCapture,
+          {.shader_hash = 0u, .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
 
       // Shader hook config (applies to both D3D11 and D3D12 custom shaders)
       // DL2 shared.h uses register(b13, space50) for SM5.1+ (D3D12) and
@@ -470,6 +547,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
       break;
     case DLL_PROCESS_DETACH:
+      renodx::utils::command_action::Unregister(OnDownstreamDrawCapture);
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
       reshade::unregister_addon(h_module);
       break;
