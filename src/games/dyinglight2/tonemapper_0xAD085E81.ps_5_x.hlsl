@@ -57,6 +57,13 @@ void main(
     return;
   }
 
+  if (RENODX_DEBUG_MODE > 17.5 && RENODX_DEBUG_MODE < 18.5) {
+    const float3 gamma_output = exp2(cb0[0].xxx * log2(abs(input_color.rgb)));
+    o0.rgb = v1.y < 0.5 ? input_color.rgb : gamma_output;
+    o0.a = 1.0;
+    return;
+  }
+
   o0.rgb = exp2(cb0[0].xxx * log2(abs(input_color.rgb)));
   o0.a = input_color.a;
 }

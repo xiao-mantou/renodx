@@ -93,6 +93,27 @@ void main(
     return;
   }
 
+  // Stability probe: aim the suspected flickering highlight at screen center.
+  // Each column samples one scalar stage from the same center pixel; the top
+  // row bypasses the late Gamma pass and the lower row runs through it. The
+  // last column is a fixed HDR reference that exposes any later instability.
+  if (RENODX_DEBUG_MODE > 17.5 && RENODX_DEBUG_MODE < 18.5) {
+    const float2 probe_uv = float2(0.5, 0.5);
+    const float4 probe_source = t0.SampleLevel(s0_s, probe_uv, 0);
+    const float probe_exposure = t1.SampleLevel(s0_s, float2(0.0, 0.0), 0).x;
+    const float3 probe_scene = probe_source.rgb * 0.6;
+    const float probe_raw_range = max(probe_scene.r, max(probe_scene.g, probe_scene.b));
+    const float probe_exposed_range = max(probe_scene.r * probe_exposure,
+                                           max(probe_scene.g * probe_exposure, probe_scene.b * probe_exposure));
+    const uint column = min((uint)(v1.x * 4.0), 3u);
+    const float3 probe_output = column == 0u ? DebugFalseColor(probe_raw_range)
+        : column == 1u ? DebugFalseColor(probe_exposure)
+        : column == 2u ? DebugFalseColor(probe_exposed_range)
+        : float3(6.25, 6.25, 6.25);
+    o0 = float4(renodx::draw::RenderIntermediatePass(probe_output), 1.0);
+    return;
+  }
+
   // Four known linear values travel through every later DL2 composite pass.
   // With Game Brightness at 203 nits, their expected unclipped output is
   // approximately 51, 203, 812, and 3248 nits respectively.
