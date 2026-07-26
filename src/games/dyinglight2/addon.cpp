@@ -31,7 +31,7 @@ namespace {
 // It does not inspect resources, descriptor tables, or command history.
 float downstream_draw_capture = 0.f;
 float downstream_transfer_capture = 0.f;
-float gamma_draw_audit_capture = 0.f;
+bool gamma_draw_audit_capture = false;
 
 enum class DownstreamTransferType : uint8_t {
   copy_resource,
@@ -140,12 +140,8 @@ void OnGammaAuditPushDescriptors(
     reshade::api::pipeline_layout layout,
     uint32_t layout_param,
     const reshade::api::descriptor_table_update& update) {
-  if (update.count == 0u
+  if (!gamma_draw_audit_capture || update.count == 0u
       || !renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::pixel)) {
-    return;
-  }
-  auto* shader_state = renodx::utils::shader::GetCurrentState(cmd_list);
-  if (shader_state == nullptr || renodx::utils::shader::GetCurrentPixelShaderHash(shader_state) != 0xAD085E81u) {
     return;
   }
   switch (update.type) {
@@ -194,7 +190,7 @@ void OnDownstreamBindRenderTargets(
   reshade::api::resource_view) {
   std::scoped_lock lock(downstream_draw_capture_mutex);
   if ((downstream_draw_capture_state.consumed && downstream_transfer_capture >= 0.5f)
-      || (downstream_transfer_capture < 0.5f && gamma_draw_audit_capture < 0.5f)
+      || (downstream_transfer_capture < 0.5f && !gamma_draw_audit_capture)
       || count == 0u || rtvs == nullptr) {
     downstream_capture_rtvs.erase(cmd_list);
     return;
@@ -204,12 +200,7 @@ void OnDownstreamBindRenderTargets(
 
 inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
     -> renodx::utils::command_action::CallbackResult<Context> {
-  if (context.IsDispatch()) return {};
-  if (gamma_draw_audit_capture < 0.5f) {
-    std::scoped_lock lock(downstream_draw_capture_mutex);
-    if (gamma_draw_audit_state.consumed) gamma_draw_audit_state = {};
-    return {};
-  }
+  if (context.IsDispatch() || !gamma_draw_audit_capture) return {};
 
   std::scoped_lock lock(downstream_draw_capture_mutex);
   auto& audit = gamma_draw_audit_state;
@@ -418,8 +409,7 @@ void OnDownstreamDrawCapturePresent(
       if (draw.output_used_by_later_draw) stream << " output_used_later";
     }
     reshade::log::message(reshade::log::level::info, stream.str().c_str());
-    gamma_draw_audit_capture = 0.f;
-    renodx::utils::settings::UpdateSetting("CaptureGammaPassBindings", 0.f);
+    gamma_draw_audit_capture = false;
     gamma_audit.active = false;
     gamma_audit.consumed = true;
   }
@@ -828,14 +818,15 @@ renodx::utils::settings::Settings settings = {
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
-        .key = "CaptureGammaPassBindings",
-        .binding = &gamma_draw_audit_capture,
-        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
-        .default_value = 0.f,
-        .can_reset = false,
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture Gamma Pass Bindings",
         .section = "Debug",
         .tooltip = "One-shot, records up to 16 0xAD085E81 draws with pixel t0 and RTV original/effective resources, formats, sizes, and clone state. No readback or resource dump.",
+        .on_click = []() {
+          gamma_draw_audit_capture = true;
+          gamma_draw_audit_state = {};
+          return false;
+        },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
 };
@@ -870,7 +861,6 @@ void OnPresetOff() {
       {"DebugMode", 0.f},
       {"CaptureDownstreamDraws", 0.f},
       {"CaptureDownstreamTransfers", 0.f},
-      {"CaptureGammaPassBindings", 0.f},
   });
 }
 
