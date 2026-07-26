@@ -22,6 +22,9 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     // A later LUT/color-grade composite. Its normal path below remains the
     // original game code; it is registered only to expose a late-output probe.
     CustomDirectXShaders(0x268BAB6D),
+    // A visible gamma/power pass after the LUT composite. Its debug branch
+    // isolates whether it remaps HDR highlights after the scene bridge.
+    CustomDirectXShaders(0xAD085E81),
     // Disabled: guessed hashes caused crashes because the copied tonemapper
     // template shader has mismatched inputs/outputs.
     // CustomDirectXShaders(0x4d2b3f4d),
@@ -323,7 +326,7 @@ renodx::utils::settings::Settings settings = {
         .label = "Debug Mode",
         .section = "Debug",
         .tooltip = "False-color visualization and output probes. Luminance Ladder places four known scene values in the lower-right corner.",
-        .labels = {"Off", "HDR Input Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500-nit red)", "Scene Probe (Peak white)", "Output Luminance Ladder", "Raw Output Ladder", "Late LUT Output Ladder", "Source t0 Range", "Auto Exposure t1"},
+        .labels = {"Off", "HDR Input Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500-nit red)", "Scene Probe (Peak white)", "Output Luminance Ladder", "Raw Output Ladder", "Late LUT Output Ladder", "Source t0 Range", "Auto Exposure t1", "Bypass Late Gamma (Test)"},
         .is_visible = []() { return current_settings_mode >= 2; },
     },
 };
