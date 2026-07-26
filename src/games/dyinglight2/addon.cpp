@@ -34,6 +34,7 @@ float downstream_draw_capture = 0.f;
 float downstream_transfer_capture = 0.f;
 bool gamma_draw_audit_capture = false;
 bool gamma_native_input_audit_capture = false;
+constexpr uint32_t kGammaFrameAuditDrawCount = 8u;
 
 enum class DownstreamTransferType : uint8_t {
   copy_resource,
@@ -470,9 +471,9 @@ void OnDownstreamDrawCapturePresent(
     const reshade::api::rect*) {
   std::scoped_lock lock(downstream_draw_capture_mutex);
   auto& gamma_audit = gamma_draw_audit_state;
-  if (gamma_audit.active) {
+  if (gamma_audit.active && gamma_audit.count >= kGammaFrameAuditDrawCount) {
     std::stringstream stream;
-    stream << "DL2 Gamma draw audit (" << gamma_audit.count << "):";
+    stream << "DL2 Gamma frame audit (" << gamma_audit.count << "):";
     for (uint32_t index = 0u; index < gamma_audit.count; ++index) {
       const auto& draw = gamma_audit.draws[index];
       stream << " #" << std::dec << (index + 1u)
@@ -941,9 +942,9 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
-        .label = "Capture Gamma Pass Bindings",
+        .label = "Capture Gamma Targets (8 frames)",
         .section = "Debug",
-        .tooltip = "One-shot, records up to 16 0xAD085E81 draws with pixel t0 and RTV original/effective resources, formats, sizes, and clone state. No readback or resource dump.",
+        .tooltip = "One-shot, records eight consecutive 0xAD085E81 draws before emitting one report. Use it to detect per-frame render-target or clone alternation behind highlight flicker. No readback or resource dump.",
         .on_click = []() {
           gamma_draw_audit_capture = true;
           gamma_draw_audit_state = {};
