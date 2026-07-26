@@ -45,6 +45,9 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
     capture = {};
     return {};
   }
+  // The indirect event also represents dispatches. They cannot be a pixel
+  // shader post-pass, so ignore them before looking at graphics state.
+  if (context.IsDispatch()) return {};
 
   auto* shader_state = renodx::utils::command_action::GetShaderState(&context);
   if (shader_state == nullptr) return {};
@@ -92,7 +95,7 @@ void OnDownstreamDrawCapturePresent(
 
   // One capture per manual arm. This leaves no per-frame work afterwards and
   // prevents draw recording from leaking into the next frame's G-buffer.
-  downstream_draw_capture = 0.f;
+  renodx::utils::settings::UpdateSetting("CaptureDownstreamDraws", 0.f);
   capture = {};
 }
 
@@ -500,7 +503,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
       renodx::utils::command_action::Register(
           OnDownstreamDrawCapture,
-          {.shader_hash = 0u, .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+          {.shader_hash = 0u,
+           .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW
+                            | renodx::utils::command_action::COMMAND_TYPE_INDIRECT});
       reshade::register_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
 
       // Shader hook config (applies to both D3D11 and D3D12 custom shaders)
