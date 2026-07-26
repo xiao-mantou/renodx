@@ -6,6 +6,7 @@
 #define ImTextureID ImU64
 
 #include <array>
+#include <mutex>
 #include <sstream>
 
 #include <embed/shaders.h>
@@ -21,22 +22,25 @@
 namespace {
 
 // Disabled by default. When armed from the Advanced diagnostic setting, this
-// records just twelve pixel-shader hashes after the known late Gamma pass.
+// records pixel-shader hashes after the known late Gamma pass, ending at the
+// very next Present.
 // It does not inspect resources, descriptor tables, or command history.
 float downstream_draw_capture = 0.f;
 
 struct DownstreamDrawCaptureState {
   reshade::api::command_list* command_list = nullptr;
-  std::array<uint32_t, 12> hashes = {};
+  std::array<uint32_t, 16> hashes = {};
   uint32_t count = 0u;
   bool active = false;
 };
 
-thread_local DownstreamDrawCaptureState downstream_draw_capture_state = {};
+DownstreamDrawCaptureState downstream_draw_capture_state = {};
+std::mutex downstream_draw_capture_mutex;
 
 inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& context)
     -> renodx::utils::command_action::CallbackResult<Context> {
   auto& capture = downstream_draw_capture_state;
+  std::scoped_lock lock(downstream_draw_capture_mutex);
   if (downstream_draw_capture < 0.5f) {
     capture = {};
     return {};
@@ -62,21 +66,35 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   if (capture.command_list != context.cmd_list) return {};
   if (pixel_shader == 0u) return {};
 
-  capture.hashes[capture.count++] = pixel_shader;
-  if (capture.count < capture.hashes.size()) return {};
+  if (capture.count < capture.hashes.size()) {
+    capture.hashes[capture.count++] = pixel_shader;
+  }
+  return {};
+};
+
+void OnDownstreamDrawCapturePresent(
+    reshade::api::command_queue*,
+    reshade::api::swapchain*,
+    const reshade::api::rect*,
+    const reshade::api::rect*,
+    uint32_t,
+    const reshade::api::rect*) {
+  std::scoped_lock lock(downstream_draw_capture_mutex);
+  auto& capture = downstream_draw_capture_state;
+  if (!capture.active) return;
 
   std::stringstream stream;
-  stream << "DL2 downstream draw order after 0xAD085E81:";
-  for (const uint32_t hash : capture.hashes) {
-    stream << " 0x" << std::hex << std::uppercase << hash;
+  stream << "DL2 same-frame draw order after 0xAD085E81 (" << capture.count << "):";
+  for (uint32_t index = 0u; index < capture.count; ++index) {
+    stream << " 0x" << std::hex << std::uppercase << capture.hashes[index];
   }
   reshade::log::message(reshade::log::level::info, stream.str().c_str());
 
-  // One capture per manual arm. This leaves no per-frame work afterwards.
+  // One capture per manual arm. This leaves no per-frame work afterwards and
+  // prevents draw recording from leaking into the next frame's G-buffer.
   downstream_draw_capture = 0.f;
   capture = {};
-  return {};
-};
+}
 
 renodx::mods::shader::CustomShaders custom_shaders = {
     CustomDirectXShaders(0x3E36DA5B),
@@ -398,7 +416,7 @@ renodx::utils::settings::Settings settings = {
         .can_reset = false,
         .label = "Capture Post-Gamma Draw Order",
         .section = "Debug",
-        .tooltip = "One-shot, records 12 pixel shader hashes after 0xAD085E81 and then turns itself off. No resource tracing or dumping.",
+        .tooltip = "One-shot, records up to 16 pixel shader hashes after 0xAD085E81 until the next Present, then turns itself off. No resource tracing or dumping.",
         .is_visible = []() { return current_settings_mode >= 2; },
     },
 };
@@ -483,6 +501,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::utils::command_action::Register(
           OnDownstreamDrawCapture,
           {.shader_hash = 0u, .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+      reshade::register_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
 
       // Shader hook config (applies to both D3D11 and D3D12 custom shaders)
       // DL2 shared.h uses register(b13, space50) for SM5.1+ (D3D12) and
@@ -548,6 +567,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       break;
     case DLL_PROCESS_DETACH:
       renodx::utils::command_action::Unregister(OnDownstreamDrawCapture);
+      reshade::unregister_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
       reshade::unregister_addon(h_module);
       break;
