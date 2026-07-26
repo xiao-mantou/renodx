@@ -64,6 +64,7 @@ struct DownstreamDrawCaptureState {
   std::array<uint32_t, 16> hashes = {};
   std::array<bool, 16> is_compute = {};
   std::array<DownstreamTarget, 16> targets = {};
+  std::array<DownstreamTarget, 16> inputs = {};
   std::array<DownstreamTransfer, 16> transfers = {};
   uint32_t count = 0u;
   uint32_t transfer_count = 0u;
@@ -127,6 +128,7 @@ GammaDrawAuditState gamma_draw_audit_state = {};
 GammaNativeInputAuditState gamma_native_input_audit_state = {};
 std::mutex downstream_draw_capture_mutex;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> downstream_capture_rtvs;
+std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> downstream_capture_t0_views;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> gamma_audit_t0_views;
 
 GammaAuditResource DescribeGammaAuditView(
@@ -193,7 +195,10 @@ void OnGammaAuditPushDescriptors(
     reshade::api::pipeline_layout layout,
     uint32_t layout_param,
     const reshade::api::descriptor_table_update& update) {
-  if (!gamma_draw_audit_capture || update.count == 0u
+  const bool capture_gamma_input = gamma_draw_audit_capture;
+  const bool capture_downstream_inputs = downstream_draw_capture_state.active
+      && !downstream_draw_capture_state.consumed && downstream_draw_capture_state.capture_commands;
+  if ((!capture_gamma_input && !capture_downstream_inputs) || update.count == 0u
       || !renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::pixel)) {
     return;
   }
@@ -231,7 +236,8 @@ void OnGammaAuditPushDescriptors(
     if (register_index + update.binding + index != 0u) continue;
     const auto view = renodx::utils::descriptor::GetResourceViewFromDescriptorUpdate(update, index);
     std::scoped_lock lock(downstream_draw_capture_mutex);
-    gamma_audit_t0_views[cmd_list] = view;
+    if (capture_gamma_input) gamma_audit_t0_views[cmd_list] = view;
+    if (capture_downstream_inputs) downstream_capture_t0_views[cmd_list] = view;
     return;
   }
 }
@@ -359,10 +365,13 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
     if (!is_compute && shader_hash == 0xAD085E81u) {
       capture.count = 0u;
       capture.transfer_count = 0u;
+      capture.targets.fill({});
+      capture.inputs.fill({});
+      downstream_capture_t0_views.clear();
       capture.active = true;
       capture.capture_commands = capture_commands;
       capture.capture_transfers = capture_transfers;
-      if (capture_transfers) {
+      if (capture_commands || capture_transfers) {
         const auto target = downstream_capture_rtvs.find(context.cmd_list);
         if (target != downstream_capture_rtvs.end()) {
           auto* device = context.cmd_list->get_device();
@@ -371,7 +380,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
           capture.gamma_target = resource.handle;
           capture.gamma_target_format = desc.texture.format;
           capture.gamma_target_view = target->second.handle;
-          renodx::utils::resource::upgrade::ArmCopyResourceAudit(resource);
+          if (capture_transfers) renodx::utils::resource::upgrade::ArmCopyResourceAudit(resource);
           renodx::utils::resource::GetResourceInfo(resource, [&capture](const renodx::utils::resource::ResourceInfo& info) {
             capture.gamma_target_clone = info.clone.handle;
             capture.gamma_target_clone_format = info.clone_desc.texture.format;
@@ -411,6 +420,19 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       if (target != downstream_capture_rtvs.end()) {
         const auto resource = DescribeGammaAuditView(context.cmd_list->get_device(), target->second);
         capture.targets[capture.count] = {
+            .resource = resource.resource,
+            .effective = resource.effective,
+            .format = resource.format,
+            .effective_format = resource.effective_format,
+            .width = resource.width,
+            .height = resource.height,
+            .clone_enabled = resource.view_clone_enabled,
+        };
+      }
+      const auto input = downstream_capture_t0_views.find(context.cmd_list);
+      if (input != downstream_capture_t0_views.end()) {
+        const auto resource = DescribeGammaAuditView(context.cmd_list->get_device(), input->second);
+        capture.inputs[capture.count] = {
             .resource = resource.resource,
             .effective = resource.effective,
             .format = resource.format,
@@ -580,6 +602,18 @@ void OnDownstreamDrawCapturePresent(
                << (target.clone_enabled ? "on" : "off") << ", " << std::dec
                << target.width << "x" << target.height << ")";
       }
+      const auto& input = capture.inputs[index];
+      if (input.resource != 0u) {
+        const bool reads_gamma = input.resource == capture.gamma_target
+            || input.resource == capture.gamma_target_clone
+            || input.resource == capture.gamma_target_effective
+            || input.effective == capture.gamma_target
+            || input.effective == capture.gamma_target_clone
+            || input.effective == capture.gamma_target_effective;
+        stream << "<-t0(0x" << input.resource << ", " << static_cast<uint32_t>(input.format)
+               << "=>0x" << input.effective << ", " << static_cast<uint32_t>(input.effective_format)
+               << ", gamma=" << (reads_gamma ? "yes" : "no") << ")";
+      }
     }
     reshade::log::message(reshade::log::level::info, stream.str().c_str());
   }
@@ -645,6 +679,7 @@ void OnDownstreamDrawCapturePresent(
   capture.active = false;
   capture.consumed = true;
   downstream_capture_rtvs.clear();
+  downstream_capture_t0_views.clear();
 }
 
 renodx::mods::shader::CustomShaders custom_shaders = {
