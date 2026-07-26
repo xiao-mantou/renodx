@@ -50,9 +50,20 @@ struct DownstreamTransfer {
   reshade::api::format dest_format = reshade::api::format::unknown;
 };
 
+struct DownstreamTarget {
+  uint64_t resource = 0u;
+  uint64_t effective = 0u;
+  reshade::api::format format = reshade::api::format::unknown;
+  reshade::api::format effective_format = reshade::api::format::unknown;
+  uint32_t width = 0u;
+  uint32_t height = 0u;
+  bool clone_enabled = false;
+};
+
 struct DownstreamDrawCaptureState {
   std::array<uint32_t, 16> hashes = {};
   std::array<bool, 16> is_compute = {};
+  std::array<DownstreamTarget, 16> targets = {};
   std::array<DownstreamTransfer, 16> transfers = {};
   uint32_t count = 0u;
   uint32_t transfer_count = 0u;
@@ -388,6 +399,21 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   if (capture.count < capture.hashes.size()) {
     capture.hashes[capture.count] = shader_hash;
     capture.is_compute[capture.count] = is_compute;
+    if (!is_compute) {
+      const auto target = downstream_capture_rtvs.find(context.cmd_list);
+      if (target != downstream_capture_rtvs.end()) {
+        const auto resource = DescribeGammaAuditView(context.cmd_list->get_device(), target->second);
+        capture.targets[capture.count] = {
+            .resource = resource.resource,
+            .effective = resource.effective,
+            .format = resource.format,
+            .effective_format = resource.effective_format,
+            .width = resource.width,
+            .height = resource.height,
+            .clone_enabled = resource.view_clone_enabled,
+        };
+      }
+    }
     ++capture.count;
   }
   return {};
@@ -539,6 +565,14 @@ void OnDownstreamDrawCapturePresent(
     for (uint32_t index = 0u; index < capture.count; ++index) {
       stream << " " << (capture.is_compute[index] ? "CS" : "PS") << ":0x"
              << std::hex << std::uppercase << capture.hashes[index];
+      const auto& target = capture.targets[index];
+      if (target.resource != 0u) {
+        stream << "->rtv(0x" << target.resource << ", "
+               << static_cast<uint32_t>(target.format) << "=>0x" << target.effective << ", "
+               << static_cast<uint32_t>(target.effective_format) << ", clone="
+               << (target.clone_enabled ? "on" : "off") << ", " << std::dec
+               << target.width << "x" << target.height << ")";
+      }
     }
     reshade::log::message(reshade::log::level::info, stream.str().c_str());
   }
