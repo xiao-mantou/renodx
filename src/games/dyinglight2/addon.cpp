@@ -140,8 +140,12 @@ void OnGammaAuditPushDescriptors(
     reshade::api::pipeline_layout layout,
     uint32_t layout_param,
     const reshade::api::descriptor_table_update& update) {
-  if (gamma_draw_audit_capture < 0.5f || update.count == 0u
+  if (update.count == 0u
       || !renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::pixel)) {
+    return;
+  }
+  auto* shader_state = renodx::utils::shader::GetCurrentState(cmd_list);
+  if (shader_state == nullptr || renodx::utils::shader::GetCurrentPixelShaderHash(shader_state) != 0xAD085E81u) {
     return;
   }
   switch (update.type) {
@@ -203,8 +207,7 @@ inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
   if (context.IsDispatch()) return {};
   if (gamma_draw_audit_capture < 0.5f) {
     std::scoped_lock lock(downstream_draw_capture_mutex);
-    gamma_draw_audit_state = {};
-    gamma_audit_t0_views.clear();
+    if (gamma_draw_audit_state.consumed) gamma_draw_audit_state = {};
     return {};
   }
 
