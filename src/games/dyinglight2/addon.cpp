@@ -6,6 +6,7 @@
 #define ImTextureID ImU64
 
 #include <array>
+#include <d3d11.h>
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
@@ -32,6 +33,7 @@ namespace {
 float downstream_draw_capture = 0.f;
 float downstream_transfer_capture = 0.f;
 bool gamma_draw_audit_capture = false;
+bool gamma_native_input_audit_capture = false;
 
 enum class DownstreamTransferType : uint8_t {
   copy_resource,
@@ -96,8 +98,16 @@ struct GammaDrawAuditState {
   bool consumed = false;
 };
 
+struct GammaNativeInputAuditState {
+  GammaAuditResource input = {};
+  uint64_t native_view = 0u;
+  bool active = false;
+  bool consumed = false;
+};
+
 DownstreamDrawCaptureState downstream_draw_capture_state = {};
 GammaDrawAuditState gamma_draw_audit_state = {};
+GammaNativeInputAuditState gamma_native_input_audit_state = {};
 std::mutex downstream_draw_capture_mutex;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> downstream_capture_rtvs;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> gamma_audit_t0_views;
@@ -200,9 +210,45 @@ void OnDownstreamBindRenderTargets(
 
 inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
     -> renodx::utils::command_action::CallbackResult<Context> {
-  if (context.IsDispatch() || !gamma_draw_audit_capture) return {};
+  if (context.IsDispatch() || (!gamma_draw_audit_capture && !gamma_native_input_audit_capture)) return {};
 
   std::scoped_lock lock(downstream_draw_capture_mutex);
+  if (gamma_native_input_audit_capture && !gamma_native_input_audit_state.consumed) {
+    auto* device = context.cmd_list->get_device();
+    auto* native_context = reinterpret_cast<ID3D11DeviceContext*>(context.cmd_list->get_native());
+    if (device != nullptr && device->get_api() == reshade::api::device_api::d3d11 && native_context != nullptr) {
+      ID3D11ShaderResourceView* native_view = nullptr;
+      native_context->PSGetShaderResources(0u, 1u, &native_view);
+      if (native_view != nullptr) {
+        gamma_native_input_audit_state.native_view = reinterpret_cast<uint64_t>(native_view);
+        ID3D11Resource* native_resource = nullptr;
+        native_view->GetResource(&native_resource);
+        if (native_resource != nullptr) {
+          const reshade::api::resource resource = {reinterpret_cast<uint64_t>(native_resource)};
+          const auto desc = device->get_resource_desc(resource);
+          auto& input = gamma_native_input_audit_state.input;
+          input.resource = resource.handle;
+          input.effective = resource.handle;
+          input.format = desc.texture.format;
+          input.effective_format = desc.texture.format;
+          input.width = desc.texture.width;
+          input.height = desc.texture.height;
+          renodx::utils::resource::GetResourceInfo(resource, [&input](const renodx::utils::resource::ResourceInfo& info) {
+            input.clone = info.clone.handle;
+            input.clone_format = info.clone_desc.texture.format;
+            input.clone_enabled = info.clone_enabled;
+            if (info.clone_enabled && info.clone.handle != 0u) {
+              input.effective = info.clone.handle;
+              input.effective_format = info.clone_desc.texture.format;
+            }
+          });
+          native_resource->Release();
+        }
+        native_view->Release();
+      }
+    }
+    gamma_native_input_audit_state.active = true;
+  }
   auto& audit = gamma_draw_audit_state;
   if (audit.consumed || audit.count >= audit.draws.size()) return {};
 
@@ -413,6 +459,22 @@ void OnDownstreamDrawCapturePresent(
     gamma_draw_audit_capture = false;
     gamma_audit.active = false;
     gamma_audit.consumed = true;
+  }
+  auto& native_input_audit = gamma_native_input_audit_state;
+  if (native_input_audit.active) {
+    const auto& input = native_input_audit.input;
+    std::stringstream stream;
+    stream << "DL2 Gamma native t0 audit: srv(0x" << std::hex << std::uppercase
+           << native_input_audit.native_view << ") resource(0x" << input.resource << ", "
+           << static_cast<uint32_t>(input.format) << " => 0x" << input.effective << ", "
+           << static_cast<uint32_t>(input.effective_format) << ", rclone=0x" << input.clone
+           << ", " << static_cast<uint32_t>(input.clone_format) << ", clone="
+           << (input.clone_enabled ? "on" : "off") << ", " << std::dec << input.width << "x"
+           << input.height << ")";
+    reshade::log::message(reshade::log::level::info, stream.str().c_str());
+    gamma_native_input_audit_capture = false;
+    native_input_audit.active = false;
+    native_input_audit.consumed = true;
   }
   auto& capture = downstream_draw_capture_state;
   if (!capture.active) return;
@@ -832,6 +894,18 @@ renodx::utils::settings::Settings settings = {
         .on_click = []() {
           gamma_draw_audit_capture = true;
           gamma_draw_audit_state = {};
+          return false;
+        },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture Gamma t0 (D3D11)",
+        .section = "Debug",
+        .tooltip = "One-shot D3D11-only audit. Reads the bound pixel-SRV t0 for 0xAD085E81 once, records only its resource, format, size, and clone state, then stops at Present. No texture readback or resource interception.",
+        .on_click = []() {
+          gamma_native_input_audit_capture = true;
+          gamma_native_input_audit_state = {};
           return false;
         },
         .is_visible = []() { return current_settings_mode >= 2; },
