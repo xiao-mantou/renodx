@@ -1182,6 +1182,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .use_resource_view_cloning = true,
           .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::BACK_BUFFER,
           .usage_include = reshade::api::resource_usage::render_target,
+          .usage_exclude = reshade::api::resource_usage::copy_dest,
       });
 
       renodx::mods::swapchain::resource_upgrade_infos.push_back({
@@ -1191,6 +1192,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .use_resource_view_cloning = true,
           .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
           .usage_include = reshade::api::resource_usage::render_target,
+          .usage_exclude = reshade::api::resource_usage::copy_dest,
       });
 
       // DL2's SDR scene composite may use the sRGB view format. Promote it
@@ -1203,6 +1205,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .use_resource_view_cloning = true,
           .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
           .usage_include = reshade::api::resource_usage::render_target,
+          .usage_exclude = reshade::api::resource_usage::copy_dest,
       });
 
       reshade::register_event<reshade::addon_event::init_device>(OnInitDevice);
