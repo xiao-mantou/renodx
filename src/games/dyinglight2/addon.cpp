@@ -28,7 +28,6 @@ namespace {
 float downstream_draw_capture = 0.f;
 
 struct DownstreamDrawCaptureState {
-  reshade::api::command_list* command_list = nullptr;
   std::array<uint32_t, 16> hashes = {};
   std::array<bool, 16> is_compute = {};
   uint32_t count = 0u;
@@ -58,19 +57,20 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
 
   if (!capture.active) {
     if (!is_compute && shader_hash == 0xAD085E81u) {
-      capture.command_list = context.cmd_list;
       capture.count = 0u;
       capture.active = true;
     }
     return {};
   }
 
-  // Command lists may be recorded on several threads. Keep the capture on
-  // the exact list where the Gamma draw occurred, so unrelated UI/worker
-  // draws cannot pollute the order.
-  if (capture.command_list != context.cmd_list) return {};
   if (shader_hash == 0u) return {};
 
+  // DL2 records late work across multiple command lists. Stay bounded by the
+  // next Present, but keep a small unique candidate set rather than assuming
+  // CPU command-list recording order is the GPU compositing order.
+  for (uint32_t index = 0u; index < capture.count; ++index) {
+    if (capture.hashes[index] == shader_hash && capture.is_compute[index] == is_compute) return {};
+  }
   if (capture.count < capture.hashes.size()) {
     capture.hashes[capture.count] = shader_hash;
     capture.is_compute[capture.count] = is_compute;
@@ -91,7 +91,7 @@ void OnDownstreamDrawCapturePresent(
   if (!capture.active) return;
 
   std::stringstream stream;
-  stream << "DL2 same-frame draw order after 0xAD085E81 (" << capture.count << "):";
+  stream << "DL2 same-Present command candidates after 0xAD085E81 (" << capture.count << "):";
   for (uint32_t index = 0u; index < capture.count; ++index) {
     stream << " " << (capture.is_compute[index] ? "CS" : "PS") << ":0x"
            << std::hex << std::uppercase << capture.hashes[index];
@@ -424,9 +424,9 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
         .default_value = 0.f,
         .can_reset = false,
-        .label = "Capture Post-Gamma Command Order",
+        .label = "Capture Post-Gamma Command Candidates",
         .section = "Debug",
-        .tooltip = "One-shot, records up to 16 graphics or compute shader hashes after 0xAD085E81 until the next Present, then turns itself off. No resource tracing or dumping.",
+        .tooltip = "One-shot, records up to 16 unique graphics or compute shader hashes after 0xAD085E81 until the next Present, then turns itself off. No resource tracing or dumping.",
         .is_visible = []() { return current_settings_mode >= 2; },
     },
 };
