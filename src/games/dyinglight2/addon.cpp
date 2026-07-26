@@ -8,6 +8,7 @@
 #include <array>
 #include <mutex>
 #include <sstream>
+#include <unordered_map>
 
 #include <embed/shaders.h>
 
@@ -52,10 +53,26 @@ struct DownstreamDrawCaptureState {
   bool consumed = false;
   bool capture_commands = false;
   bool capture_transfers = false;
+  uint64_t gamma_target = 0u;
+  reshade::api::format gamma_target_format = reshade::api::format::unknown;
 };
 
 DownstreamDrawCaptureState downstream_draw_capture_state = {};
 std::mutex downstream_draw_capture_mutex;
+std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> downstream_capture_rtvs;
+
+void OnDownstreamBindRenderTargets(
+    reshade::api::command_list* cmd_list,
+    uint32_t count,
+    const reshade::api::resource_view* rtvs,
+  reshade::api::resource_view) {
+  std::scoped_lock lock(downstream_draw_capture_mutex);
+  if (downstream_draw_capture_state.consumed || downstream_transfer_capture < 0.5f || count == 0u || rtvs == nullptr) {
+    downstream_capture_rtvs.erase(cmd_list);
+    return;
+  }
+  downstream_capture_rtvs[cmd_list] = rtvs[0];
+}
 
 inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& context)
     -> renodx::utils::command_action::CallbackResult<Context> {
@@ -83,6 +100,16 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       capture.active = true;
       capture.capture_commands = capture_commands;
       capture.capture_transfers = capture_transfers;
+      if (capture_transfers) {
+        const auto target = downstream_capture_rtvs.find(context.cmd_list);
+        if (target != downstream_capture_rtvs.end()) {
+          auto* device = context.cmd_list->get_device();
+          const auto resource = device->get_resource_from_view(target->second);
+          const auto desc = device->get_resource_desc(resource);
+          capture.gamma_target = resource.handle;
+          capture.gamma_target_format = desc.texture.format;
+        }
+      }
     }
     return {};
   }
@@ -212,6 +239,17 @@ void OnDownstreamDrawCapturePresent(
              << back_buffer_desc.texture.height << ", "
              << static_cast<uint32_t>(back_buffer_desc.texture.format) << ")";
     }
+    if (capture.gamma_target != 0u) {
+      bool copied_from_gamma_target = false;
+      for (uint32_t index = 0u; index < capture.transfer_count; ++index) {
+        copied_from_gamma_target |= capture.transfers[index].source == capture.gamma_target;
+      }
+      stream << " gamma_target(0x" << std::hex << std::uppercase << capture.gamma_target << ", "
+             << static_cast<uint32_t>(capture.gamma_target_format) << ", copied="
+             << (copied_from_gamma_target ? "yes" : "no") << ")";
+    } else {
+      stream << " gamma_target(unavailable)";
+    }
     reshade::log::message(reshade::log::level::info, stream.str().c_str());
   }
 
@@ -223,6 +261,7 @@ void OnDownstreamDrawCapturePresent(
   renodx::utils::settings::UpdateSetting("CaptureDownstreamTransfers", 0.f);
   capture.active = false;
   capture.consumed = true;
+  downstream_capture_rtvs.clear();
 }
 
 renodx::mods::shader::CustomShaders custom_shaders = {
@@ -648,6 +687,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
       reshade::register_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
       reshade::register_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
+      reshade::register_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
 
       // Shader hook config (applies to both D3D11 and D3D12 custom shaders)
       // DL2 shared.h uses register(b13, space50) for SM5.1+ (D3D12) and
@@ -717,6 +757,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
       reshade::unregister_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
       reshade::unregister_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
+      reshade::unregister_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
       reshade::unregister_addon(h_module);
       break;
