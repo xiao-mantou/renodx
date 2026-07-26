@@ -242,9 +242,16 @@ void OnDownstreamBindRenderTargets(
     const reshade::api::resource_view* rtvs,
   reshade::api::resource_view) {
   std::scoped_lock lock(downstream_draw_capture_mutex);
-  if ((downstream_draw_capture_state.consumed && downstream_transfer_capture >= 0.5f)
-      || (downstream_transfer_capture < 0.5f && !gamma_draw_audit_capture)
-      || count == 0u || rtvs == nullptr) {
+  // Keep the current target while any one-shot diagnostic is armed. The
+  // command-candidate capture previously omitted downstream_draw_capture
+  // here, so it could report post-Gamma shader hashes but had already erased
+  // every target binding before those draws executed.
+  const bool keep_target_binding = downstream_draw_capture >= 0.5f
+      || downstream_transfer_capture >= 0.5f
+      || gamma_draw_audit_capture
+      || gamma_native_input_audit_capture
+      || (downstream_draw_capture_state.active && !downstream_draw_capture_state.consumed);
+  if (!keep_target_binding || count == 0u || rtvs == nullptr) {
     downstream_capture_rtvs.erase(cmd_list);
     return;
   }
