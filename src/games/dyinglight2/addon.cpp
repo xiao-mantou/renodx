@@ -93,6 +93,7 @@ struct GammaDrawAuditState {
   std::array<GammaDrawAudit, 16> draws = {};
   uint32_t count = 0u;
   bool active = false;
+  bool consumed = false;
 };
 
 DownstreamDrawCaptureState downstream_draw_capture_state = {};
@@ -166,6 +167,11 @@ void OnGammaAuditPushDescriptors(
       found_register_index = true;
     }
   });
+  // DL2 uses the D3D11 immediate-context path, which can omit the ReShade
+  // layout metadata even though update.binding is the native shader register.
+  if (!found_register_index && cmd_list->get_device()->get_api() == reshade::api::device_api::d3d11) {
+    found_register_index = true;
+  }
   if (!found_register_index) return;
 
   for (uint32_t index = 0u; index < update.count; ++index) {
@@ -194,11 +200,17 @@ void OnDownstreamBindRenderTargets(
 
 inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
     -> renodx::utils::command_action::CallbackResult<Context> {
-  if (gamma_draw_audit_capture < 0.5f || context.IsDispatch()) return {};
+  if (context.IsDispatch()) return {};
+  if (gamma_draw_audit_capture < 0.5f) {
+    std::scoped_lock lock(downstream_draw_capture_mutex);
+    gamma_draw_audit_state = {};
+    gamma_audit_t0_views.clear();
+    return {};
+  }
 
   std::scoped_lock lock(downstream_draw_capture_mutex);
   auto& audit = gamma_draw_audit_state;
-  if (audit.count >= audit.draws.size()) return {};
+  if (audit.consumed || audit.count >= audit.draws.size()) return {};
 
   auto* device = context.cmd_list->get_device();
   if (device == nullptr) return {};
@@ -405,8 +417,8 @@ void OnDownstreamDrawCapturePresent(
     reshade::log::message(reshade::log::level::info, stream.str().c_str());
     gamma_draw_audit_capture = 0.f;
     renodx::utils::settings::UpdateSetting("CaptureGammaPassBindings", 0.f);
-    gamma_draw_audit_state = {};
-    gamma_audit_t0_views.clear();
+    gamma_audit.active = false;
+    gamma_audit.consumed = true;
   }
   auto& capture = downstream_draw_capture_state;
   if (!capture.active) return;
