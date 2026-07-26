@@ -36,6 +36,15 @@ void main(
     return;
   }
 
+  // A fixed HDR-white value injected after this LUT. Comparing this mode
+  // against the matching Gamma and final-proxy probes pinpoints whether the
+  // static-highlight flicker originates in this pass, the later Gamma pass,
+  // or beyond the game shader chain.
+  if (RENODX_DEBUG_MODE > 12.5 && RENODX_DEBUG_MODE < 13.5) {
+    o0 = float4(6.25, 6.25, 6.25, 1.0);
+    return;
+  }
+
   // Original DL2 LUT/color-grade shader, retained verbatim below.
   float4 r0, r1, r2, r3;
   r0.x = -1000 + cb0[1].y;

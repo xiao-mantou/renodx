@@ -17,5 +17,12 @@ float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
     return float4(6.25, 0.0, 0.0, 1.0);
   }
 
+  // This is the last shader controlled by the addon before Present. A white
+  // (rather than red) 500-nit value distinguishes a game-pass issue from an
+  // external HDR/output-layer issue at the same luminance as modes 13 and 14.
+  if (RENODX_DEBUG_MODE > 14.5 && RENODX_DEBUG_MODE < 15.5) {
+    return float4(6.25, 6.25, 6.25, 1.0);
+  }
+
   return float4(renodx::draw::SwapChainPass(t0.Sample(s0, uv).rgb, uv, config).rgb, 1.f);
 }

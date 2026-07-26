@@ -21,6 +21,14 @@ void main(
     return;
   }
 
+  // The same fixed HDR-white value, but after the gamma/power operation.
+  // Together with modes 13 and 15 this makes the final flicker boundary
+  // identifiable without resource tracing or shader enumeration.
+  if (RENODX_DEBUG_MODE > 13.5 && RENODX_DEBUG_MODE < 14.5) {
+    o0 = float4(6.25, 6.25, 6.25, 1.0);
+    return;
+  }
+
   o0.rgb = exp2(cb0[0].xxx * log2(abs(input_color.rgb)));
   o0.a = input_color.a;
 }
