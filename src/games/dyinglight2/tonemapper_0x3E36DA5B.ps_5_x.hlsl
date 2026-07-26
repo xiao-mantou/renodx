@@ -80,6 +80,19 @@ void main(
     return;
   }
 
+  // These modes separate the game's source scene buffer from its scalar
+  // auto exposure. They deliberately precede the 0.6 scene calibration and
+  // every RenoDX exposure/highlight operation.
+  if (RENODX_DEBUG_MODE > 9.5 && RENODX_DEBUG_MODE < 10.5) {
+    const float source_range = max(source.r, max(source.g, source.b));
+    o0 = float4(renodx::draw::RenderIntermediatePass(DebugFalseColor(source_range)), 1.0);
+    return;
+  }
+  if (RENODX_DEBUG_MODE > 10.5 && RENODX_DEBUG_MODE < 11.5) {
+    o0 = float4(renodx::draw::RenderIntermediatePass(DebugFalseColor(exposure)), 1.0);
+    return;
+  }
+
   // Four known linear values travel through every later DL2 composite pass.
   // With Game Brightness at 203 nits, their expected unclipped output is
   // approximately 51, 203, 812, and 3248 nits respectively.

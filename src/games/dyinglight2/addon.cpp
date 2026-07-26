@@ -323,7 +323,7 @@ renodx::utils::settings::Settings settings = {
         .label = "Debug Mode",
         .section = "Debug",
         .tooltip = "False-color visualization and output probes. Luminance Ladder places four known scene values in the lower-right corner.",
-        .labels = {"Off", "t0 HDR Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500-nit red)", "Scene Probe (Peak white)", "Output Luminance Ladder", "Raw Output Ladder", "Late LUT Output Ladder"},
+        .labels = {"Off", "HDR Input Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500-nit red)", "Scene Probe (Peak white)", "Output Luminance Ladder", "Raw Output Ladder", "Late LUT Output Ladder", "Source t0 Range", "Auto Exposure t1"},
         .is_visible = []() { return current_settings_mode >= 2; },
     },
 };
