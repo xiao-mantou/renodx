@@ -59,6 +59,11 @@ struct DownstreamDrawCaptureState {
   uint64_t gamma_target_clone = 0u;
   reshade::api::format gamma_target_clone_format = reshade::api::format::unknown;
   bool gamma_target_clone_enabled = false;
+  uint64_t gamma_target_view = 0u;
+  uint64_t gamma_target_clone_view = 0u;
+  bool gamma_target_clone_view_enabled = false;
+  uint64_t gamma_target_effective = 0u;
+  reshade::api::format gamma_target_effective_format = reshade::api::format::unknown;
 };
 
 DownstreamDrawCaptureState downstream_draw_capture_state = {};
@@ -112,11 +117,23 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
           const auto desc = device->get_resource_desc(resource);
           capture.gamma_target = resource.handle;
           capture.gamma_target_format = desc.texture.format;
+          capture.gamma_target_view = target->second.handle;
           renodx::utils::resource::GetResourceInfo(resource, [&capture](const renodx::utils::resource::ResourceInfo& info) {
             capture.gamma_target_clone = info.clone.handle;
             capture.gamma_target_clone_format = info.clone_desc.texture.format;
             capture.gamma_target_clone_enabled = info.clone_enabled;
           });
+          renodx::utils::resource::GetResourceViewInfo(
+              target->second,
+              [&capture, device](const renodx::utils::resource::ResourceViewInfo& info) {
+                capture.gamma_target_clone_view = info.clone.handle;
+                capture.gamma_target_clone_view_enabled = info.clone_enabled;
+                if (!info.clone_enabled || info.clone.handle == 0u) return;
+                const auto effective_resource = device->get_resource_from_view(info.clone);
+                const auto effective_desc = device->get_resource_desc(effective_resource);
+                capture.gamma_target_effective = effective_resource.handle;
+                capture.gamma_target_effective_format = effective_desc.texture.format;
+              });
         }
       }
     }
@@ -251,9 +268,11 @@ void OnDownstreamDrawCapturePresent(
     if (capture.gamma_target != 0u) {
       bool copied_from_gamma_target = false;
       bool copied_from_gamma_clone = false;
+      bool copied_from_effective_target = false;
       for (uint32_t index = 0u; index < capture.transfer_count; ++index) {
         copied_from_gamma_target |= capture.transfers[index].source == capture.gamma_target;
         copied_from_gamma_clone |= capture.transfers[index].source == capture.gamma_target_clone;
+        copied_from_effective_target |= capture.transfers[index].source == capture.gamma_target_effective;
       }
       stream << " gamma_target(0x" << std::hex << std::uppercase << capture.gamma_target << ", "
              << static_cast<uint32_t>(capture.gamma_target_format) << ", copied="
@@ -261,7 +280,13 @@ void OnDownstreamDrawCapturePresent(
              << " gamma_clone(0x" << capture.gamma_target_clone << ", "
              << static_cast<uint32_t>(capture.gamma_target_clone_format) << ", enabled="
              << (capture.gamma_target_clone_enabled ? "yes" : "no") << ", copied="
-             << (copied_from_gamma_clone ? "yes" : "no") << ")";
+             << (copied_from_gamma_clone ? "yes" : "no") << ")"
+             << " gamma_rtv(0x" << capture.gamma_target_view << " => 0x"
+             << capture.gamma_target_clone_view << ", enabled="
+             << (capture.gamma_target_clone_view_enabled ? "yes" : "no") << ")"
+             << " effective_rtv(0x" << capture.gamma_target_effective << ", "
+             << static_cast<uint32_t>(capture.gamma_target_effective_format) << ", copied="
+             << (copied_from_effective_target ? "yes" : "no") << ")";
     } else {
       stream << " gamma_target(unavailable)";
     }
