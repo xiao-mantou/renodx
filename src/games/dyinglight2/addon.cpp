@@ -50,6 +50,8 @@ const char* GetStreamlineTagName(sl::BufferType type) {
       return "Backbuffer";
     case sl::kBufferTypeScalingOutputColor:
       return "ScalingOutputColor";
+    case sl::kBufferTypeUIColorAndAlpha:
+      return "UIColorAndAlpha";
     case sl::kBufferTypeHUDLessColor:
       return "HUDLessColor";
     case sl::kBufferTypeScalingInputColor:
@@ -93,13 +95,16 @@ struct RoutedStreamlineTags {
   std::vector<sl::Resource> resources_storage = {};
 };
 
-RoutedStreamlineTags RouteStreamlineBackbufferTag(const sl::ResourceTag* tags, uint32_t num_tags) {
+RoutedStreamlineTags RouteStreamlineColorTags(const sl::ResourceTag* tags, uint32_t num_tags) {
   RoutedStreamlineTags routed = {.tags = tags, .count = num_tags};
   if (dlss_fg_tag_clone < 0.5f || tags == nullptr || num_tags == 0u) return routed;
 
   for (uint32_t index = 0u; index < num_tags; ++index) {
     const auto& tag = tags[index];
-    if (tag.type != sl::kBufferTypeBackbuffer || tag.resource == nullptr || tag.resource->native == nullptr) continue;
+    if ((tag.type != sl::kBufferTypeHUDLessColor && tag.type != sl::kBufferTypeUIColorAndAlpha)
+        || tag.resource == nullptr || tag.resource->native == nullptr) {
+      continue;
+    }
 
     const auto resource = reshade::api::resource{reinterpret_cast<uintptr_t>(tag.resource->native)};
     const auto* resource_info = renodx::utils::resource::GetResourceInfo(resource);
@@ -122,7 +127,9 @@ RoutedStreamlineTags RouteStreamlineBackbufferTag(const sl::ResourceTag* tags, u
     if (!dlss_fg_tag_clone_logged) {
       dlss_fg_tag_clone_logged = true;
       renodx::utils::log::i(
-          "DL2 DLSS FG: redirected Streamline Backbuffer tag ",
+          "DL2 DLSS FG: redirected Streamline ",
+          GetStreamlineTagName(tag.type),
+          " tag ",
           renodx::utils::log::AsPtr(resource.handle),
           " => RenoDX clone ",
           renodx::utils::log::AsPtr(resource_info->clone.handle),
@@ -139,7 +146,7 @@ sl::Result HookedSlSetTag(
     uint32_t num_tags,
     sl::CommandBuffer* cmd_buffer) {
   CaptureStreamlineTags("slSetTag", tags, num_tags);
-  const auto routed = RouteStreamlineBackbufferTag(tags, num_tags);
+  const auto routed = RouteStreamlineColorTags(tags, num_tags);
   return real_sl_set_tag(viewport, routed.tags, routed.count, cmd_buffer);
 }
 
@@ -150,7 +157,7 @@ sl::Result HookedSlSetTagForFrame(
     uint32_t num_tags,
     sl::CommandBuffer* cmd_buffer) {
   CaptureStreamlineTags("slSetTagForFrame", tags, num_tags);
-  const auto routed = RouteStreamlineBackbufferTag(tags, num_tags);
+  const auto routed = RouteStreamlineColorTags(tags, num_tags);
   return real_sl_set_tag_for_frame(frame, viewport, routed.tags, routed.count, cmd_buffer);
 }
 
@@ -1245,9 +1252,9 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
         .default_value = 0.f,
         .can_reset = false,
-        .label = "DLSS FG Use RenoDX Tagged Clone",
+        .label = "DLSS FG Use RenoDX Color Clone",
         .section = "Compatibility",
-        .tooltip = "Experimental. Only redirects a Streamline Backbuffer tag when it is a RenoDX clone-enabled swapchain resource. Leave off unless testing DLSS Frame Generation highlight flicker.",
+        .tooltip = "Experimental. Redirects only the captured Streamline HUDLessColor and UIColorAndAlpha tags when their resource has a RenoDX clone. Leave off unless testing DLSS Frame Generation highlight flicker.",
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
