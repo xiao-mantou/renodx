@@ -320,3 +320,26 @@ Verification:
 - The same guide requires RGB10/HDR10/BT.2100 PQ for DLSS-G HDR and explicitly excludes FP16/scRGB output. DL2 was presenting with `R16G16B16A16_FLOAT` plus `extended_srgb_linear`, matching the unsupported combination and the observed real/generated-frame highlight instability.
 - A previous HDR10 attempt changed the swapchain container without changing the final proxy encoding, so scRGB values were written into an HDR10/PQ swapchain. That invalid mixed configuration explains the color explosion/black output and must not be used as evidence against HDR10.
 - The HDR10 compatibility change now keeps all working resources/clones in FP16 but uses `SetUseHDR10()` for the final swapchain and `SwapChainPass` HDR10/PQ output preset for the final proxy, including final-output debug probes. Test only with a Windows HDR-enabled HDR10 display and DLSS Frame Generation enabled.
+
+### Follow-up: corrected swapchain module version mismatch
+
+The initial HDR10 commit accidentally called `swapchain::v1::SetUseHDR10()` while
+`src/mods/swapchain.hpp` selects v2 by default. The runtime creation callbacks
+therefore continued reading v2's default FP16/scRGB state, even though the final
+proxy had already been changed to PQ. This created a PQ-to-scRGB encoding mismatch:
+the proxy shader outputs BT.2100 PQ values, but they are written into an
+`extended_srgb_linear` swapchain, resulting in washed-out, low-contrast visuals.
+
+The DL2 addon now calls `swapchain::SetUseHDR10()` through the active module
+alias. This configures v2's `target_format` to `r10g10b10a2_unorm` and its
+`target_color_space` to `hdr10_st2084`. The next runtime log must show both
+values in OnCreateSwapchain and OnInitEffectRuntime before any visual judgement
+of HDR10/PQ output is meaningful.
+
+Verification: next game session log should report:
+
+```text
+swap: r8g8b8a8_unorm => r10g10b10a2_unorm
+format: r10g10b10a2_unorm
+colorspace: hdr10_st2084
+```

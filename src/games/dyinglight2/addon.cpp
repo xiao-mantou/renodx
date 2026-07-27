@@ -1947,7 +1947,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // DLSS Frame Generation requires an HDR10/PQ final presentation path.
       // Keep intermediate resource upgrades in FP16, then encode only the
       // final proxy output into RGB10/BT.2100 PQ for Streamline and DXGI.
-      renodx::mods::swapchain::v1::SetUseHDR10();
+      renodx::mods::swapchain::SetUseHDR10();
       renodx::mods::swapchain::swapchain_proxy_compatibility_mode = false;
       renodx::mods::swapchain::force_borderless = false;
       renodx::mods::swapchain::use_resource_cloning = true;
