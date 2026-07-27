@@ -6,6 +6,7 @@
 #define ImTextureID ImU64
 
 #include <array>
+#include <atomic>
 #include <d3d11.h>
 #include <mutex>
 #include <sstream>
@@ -32,6 +33,8 @@ namespace {
 
 float dlss_fg_tag_clone = 0.f;
 bool dlss_fg_tag_capture = false;
+bool dlss_fg_present_cadence_capture = false;
+std::atomic_uint32_t dlss_fg_color_tag_serial = 0u;
 bool dlss_fg_hook_installed = false;
 bool dlss_fg_waiting_for_streamline_logged = false;
 bool dlss_fg_tag_clone_logged = false;
@@ -61,6 +64,16 @@ const char* GetStreamlineTagName(sl::BufferType type) {
   }
 }
 
+void MarkStreamlineColorTagSubmission(const sl::ResourceTag* tags, uint32_t num_tags) {
+  if (tags == nullptr) return;
+  for (uint32_t index = 0u; index < num_tags; ++index) {
+    const auto type = tags[index].type;
+    if (type == sl::kBufferTypeHUDLessColor || type == sl::kBufferTypeUIColorAndAlpha) {
+      dlss_fg_color_tag_serial.fetch_add(1u, std::memory_order_relaxed);
+      return;
+    }
+  }
+}
 void CaptureStreamlineTags(const char* call_name, const sl::ResourceTag* tags, uint32_t num_tags) {
   if (!dlss_fg_tag_capture || tags == nullptr) return;
 
@@ -168,6 +181,7 @@ sl::Result HookedSlSetTag(
     const sl::ResourceTag* tags,
     uint32_t num_tags,
     sl::CommandBuffer* cmd_buffer) {
+  MarkStreamlineColorTagSubmission(tags, num_tags);
   CaptureStreamlineTags("slSetTag", tags, num_tags);
   const auto routed = RouteStreamlineColorTags(tags, num_tags);
   return real_sl_set_tag(viewport, routed.tags, routed.count, cmd_buffer);
@@ -179,6 +193,7 @@ sl::Result HookedSlSetTagForFrame(
     const sl::ResourceTag* tags,
     uint32_t num_tags,
     sl::CommandBuffer* cmd_buffer) {
+  MarkStreamlineColorTagSubmission(tags, num_tags);
   CaptureStreamlineTags("slSetTagForFrame", tags, num_tags);
   const auto routed = RouteStreamlineColorTags(tags, num_tags);
   return real_sl_set_tag_for_frame(frame, viewport, routed.tags, routed.count, cmd_buffer);
@@ -780,6 +795,27 @@ void OnDownstreamDrawCapturePresent(
     const reshade::api::rect*) {
   TryInstallStreamlineHook();
   std::scoped_lock lock(downstream_draw_capture_mutex);
+  if (dlss_fg_present_cadence_capture) {
+    static std::array<uint32_t, 16> tag_serials = {};
+    static std::array<uint64_t, 16> back_buffers = {};
+    static uint32_t present_count = 0u;
+
+    tag_serials[present_count] = dlss_fg_color_tag_serial.load(std::memory_order_relaxed);
+    back_buffers[present_count] = swapchain->get_current_back_buffer().handle;
+    ++present_count;
+
+    if (present_count >= tag_serials.size()) {
+      std::stringstream stream;
+      stream << "DL2 DLSS FG present cadence (" << present_count << "):";
+      for (uint32_t index = 0u; index < present_count; ++index) {
+        stream << " #" << std::dec << (index + 1u) << " tag=" << tag_serials[index]
+               << " backbuffer=0x" << std::hex << std::uppercase << back_buffers[index];
+      }
+      reshade::log::message(reshade::log::level::info, stream.str().c_str());
+      dlss_fg_present_cadence_capture = false;
+      present_count = 0u;
+    }
+  }
   auto& gamma_audit = gamma_draw_audit_state;
   if (gamma_audit.active && gamma_audit.count >= kGammaFrameAuditDrawCount) {
     std::stringstream stream;
@@ -1287,6 +1323,17 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "One-shot: logs the next Streamline slSetTag/slSetTagForFrame resource tags, including native handles and RenoDX clone state. No dumping, readback, or resource interception.",
         .on_click = []() {
           dlss_fg_tag_capture = true;
+          return false;
+        },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture DLSS FG Present Cadence (16)",
+        .section = "Debug",
+        .tooltip = "One-shot: records 16 Present events as color-tag serial plus current backbuffer handle. It does not capture draws, descriptors, resources, or GPU data.",
+        .on_click = []() {
+          dlss_fg_present_cadence_capture = true;
           return false;
         },
         .is_visible = []() { return current_settings_mode >= 2; },
