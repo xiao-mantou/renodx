@@ -10,22 +10,192 @@
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
+#include <vector>
 
 #include <embed/shaders.h>
 
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>
+#include <sl_core_api.h>
 
 #include "../../mods/shader.hpp"
 #include "../../mods/swapchain.hpp"
 #include "../../utils/descriptor.hpp"
+#include "../../utils/log.hpp"
 #include "../../utils/pipeline_layout.hpp"
 #include "../../utils/resource.hpp"
 #include "../../utils/settings.hpp"
+#include "../../utils/vtable.hpp"
 #include "./shared.h"
 
 namespace {
 
+float dlss_fg_tag_clone = 0.f;
+bool dlss_fg_tag_capture = false;
+bool dlss_fg_hook_installed = false;
+bool dlss_fg_waiting_for_streamline_logged = false;
+bool dlss_fg_tag_clone_logged = false;
+
+sl::Result (*real_sl_set_tag)(
+    const sl::ViewportHandle& viewport,
+    const sl::ResourceTag* tags,
+    uint32_t num_tags,
+    sl::CommandBuffer* cmd_buffer) = nullptr;
+
+decltype(&slSetTagForFrame) real_sl_set_tag_for_frame = nullptr;
+
+const char* GetStreamlineTagName(sl::BufferType type) {
+  switch (type) {
+    case sl::kBufferTypeBackbuffer:
+      return "Backbuffer";
+    case sl::kBufferTypeScalingOutputColor:
+      return "ScalingOutputColor";
+    case sl::kBufferTypeHUDLessColor:
+      return "HUDLessColor";
+    case sl::kBufferTypeScalingInputColor:
+      return "ScalingInputColor";
+    default:
+      return "Other";
+  }
+}
+
+void CaptureStreamlineTags(const char* call_name, const sl::ResourceTag* tags, uint32_t num_tags) {
+  if (!dlss_fg_tag_capture || tags == nullptr) return;
+
+  dlss_fg_tag_capture = false;
+  std::stringstream stream;
+  stream << "DL2 Streamline tags (" << call_name << ", " << num_tags << "):";
+  const uint32_t count = num_tags > 32u ? 32u : num_tags;
+  for (uint32_t index = 0u; index < count; ++index) {
+    const auto& tag = tags[index];
+    const uint64_t native = tag.resource == nullptr ? 0u : reinterpret_cast<uint64_t>(tag.resource->native);
+    stream << " #" << std::dec << index << " " << GetStreamlineTagName(tag.type) << "(" << tag.type << ")"
+           << " native=0x" << std::hex << std::uppercase << native;
+
+    if (native == 0u) continue;
+    const auto resource = reshade::api::resource{static_cast<uintptr_t>(native)};
+    const auto* resource_info = renodx::utils::resource::GetResourceInfo(resource);
+    if (resource_info == nullptr) continue;
+
+    stream << " format=" << static_cast<uint32_t>(resource_info->desc.texture.format)
+           << " swapchain=" << (resource_info->is_swap_chain ? "yes" : "no")
+           << " clone_enabled=" << (resource_info->clone_enabled ? "yes" : "no")
+           << " clone=0x" << resource_info->clone.handle;
+  }
+  if (num_tags > count) stream << " (truncated)";
+  reshade::log::message(reshade::log::level::info, stream.str().c_str());
+}
+
+struct RoutedStreamlineTags {
+  const sl::ResourceTag* tags = nullptr;
+  uint32_t count = 0u;
+  std::vector<sl::ResourceTag> tags_storage = {};
+  std::vector<sl::Resource> resources_storage = {};
+};
+
+RoutedStreamlineTags RouteStreamlineBackbufferTag(const sl::ResourceTag* tags, uint32_t num_tags) {
+  RoutedStreamlineTags routed = {.tags = tags, .count = num_tags};
+  if (dlss_fg_tag_clone < 0.5f || tags == nullptr || num_tags == 0u) return routed;
+
+  for (uint32_t index = 0u; index < num_tags; ++index) {
+    const auto& tag = tags[index];
+    if (tag.type != sl::kBufferTypeBackbuffer || tag.resource == nullptr || tag.resource->native == nullptr) continue;
+
+    const auto resource = reshade::api::resource{reinterpret_cast<uintptr_t>(tag.resource->native)};
+    const auto* resource_info = renodx::utils::resource::GetResourceInfo(resource);
+    if (resource_info == nullptr || !resource_info->is_swap_chain || !resource_info->clone_enabled
+        || resource_info->clone.handle == 0u) {
+      continue;
+    }
+
+    if (routed.tags_storage.empty()) {
+      routed.tags_storage.assign(tags, tags + num_tags);
+      routed.resources_storage.reserve(num_tags);
+      routed.tags = routed.tags_storage.data();
+    }
+
+    routed.resources_storage.push_back(*tag.resource);
+    auto& clone_resource = routed.resources_storage.back();
+    clone_resource.native = reinterpret_cast<void*>(resource_info->clone.handle);
+    routed.tags_storage[index].resource = &clone_resource;
+
+    if (!dlss_fg_tag_clone_logged) {
+      dlss_fg_tag_clone_logged = true;
+      renodx::utils::log::i(
+          "DL2 DLSS FG: redirected Streamline Backbuffer tag ",
+          renodx::utils::log::AsPtr(resource.handle),
+          " => RenoDX clone ",
+          renodx::utils::log::AsPtr(resource_info->clone.handle),
+          ".");
+    }
+  }
+
+  return routed;
+}
+
+sl::Result HookedSlSetTag(
+    const sl::ViewportHandle& viewport,
+    const sl::ResourceTag* tags,
+    uint32_t num_tags,
+    sl::CommandBuffer* cmd_buffer) {
+  CaptureStreamlineTags("slSetTag", tags, num_tags);
+  const auto routed = RouteStreamlineBackbufferTag(tags, num_tags);
+  return real_sl_set_tag(viewport, routed.tags, routed.count, cmd_buffer);
+}
+
+sl::Result HookedSlSetTagForFrame(
+    const sl::FrameToken& frame,
+    const sl::ViewportHandle& viewport,
+    const sl::ResourceTag* tags,
+    uint32_t num_tags,
+    sl::CommandBuffer* cmd_buffer) {
+  CaptureStreamlineTags("slSetTagForFrame", tags, num_tags);
+  const auto routed = RouteStreamlineBackbufferTag(tags, num_tags);
+  return real_sl_set_tag_for_frame(frame, viewport, routed.tags, routed.count, cmd_buffer);
+}
+
+const auto& GetStreamlineHooks() {
+  static const std::array<renodx::utils::vtable::HookItem, 2> hooks = {
+      renodx::utils::vtable::HookItem{
+          "slSetTag",
+          reinterpret_cast<void**>(&real_sl_set_tag),
+          reinterpret_cast<void*>(&HookedSlSetTag),
+      },
+      renodx::utils::vtable::HookItem{
+          "slSetTagForFrame",
+          reinterpret_cast<void**>(&real_sl_set_tag_for_frame),
+          reinterpret_cast<void*>(&HookedSlSetTagForFrame),
+      },
+  };
+  return hooks;
+}
+
+void TryInstallStreamlineHook() {
+  if (dlss_fg_hook_installed) return;
+
+  auto* module = GetModuleHandleA("sl.interposer.dll");
+  if (module == nullptr) {
+    if (!dlss_fg_waiting_for_streamline_logged) {
+      dlss_fg_waiting_for_streamline_logged = true;
+      renodx::utils::log::w("DL2 DLSS FG: sl.interposer.dll is not loaded yet; tag hook will retry at Present.");
+    }
+    return;
+  }
+
+  if (renodx::utils::vtable::Hook(module, GetStreamlineHooks())) {
+    dlss_fg_hook_installed = true;
+    renodx::utils::log::i("DL2 DLSS FG: Streamline tag capture hook installed.");
+  } else {
+    renodx::utils::log::w("DL2 DLSS FG: Streamline tag hook was not installed.");
+  }
+}
+
+void RemoveStreamlineHook() {
+  if (!dlss_fg_hook_installed) return;
+  auto* module = GetModuleHandleA("sl.interposer.dll");
+  if (module != nullptr) renodx::utils::vtable::Unhook(module, GetStreamlineHooks());
+  dlss_fg_hook_installed = false;
+}
 // Disabled by default. When armed from the Advanced diagnostic setting, this
 // records graphics and compute shader hashes after the known late Gamma pass,
 // ending at the very next Present.
@@ -578,6 +748,7 @@ void OnDownstreamDrawCapturePresent(
     const reshade::api::rect*,
     uint32_t,
     const reshade::api::rect*) {
+  TryInstallStreamlineHook();
   std::scoped_lock lock(downstream_draw_capture_mutex);
   auto& gamma_audit = gamma_draw_audit_state;
   if (gamma_audit.active && gamma_audit.count >= kGammaFrameAuditDrawCount) {
@@ -1069,6 +1240,28 @@ renodx::utils::settings::Settings settings = {
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
+        .key = "DLSSFGUseTaggedClone",
+        .binding = &dlss_fg_tag_clone,
+        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "DLSS FG Use RenoDX Tagged Clone",
+        .section = "Compatibility",
+        .tooltip = "Experimental. Only redirects a Streamline Backbuffer tag when it is a RenoDX clone-enabled swapchain resource. Leave off unless testing DLSS Frame Generation highlight flicker.",
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture DLSS FG Streamline Tags",
+        .section = "Debug",
+        .tooltip = "One-shot: logs the next Streamline slSetTag/slSetTagForFrame resource tags, including native handles and RenoDX clone state. No dumping, readback, or resource interception.",
+        .on_click = []() {
+          dlss_fg_tag_capture = true;
+          return false;
+        },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
         .key = "DebugMode",
         .binding = &shader_injection.debug_mode,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
@@ -1156,6 +1349,7 @@ void OnPresetOff() {
       {"FxLensFlare", 100.f},
       {"SwapChainEncoding", 4.f},
       {"FrameGenerationCompatibility", 0.f},
+      {"DLSSFGUseTaggedClone", 0.f},
       {"DebugMode", 0.f},
       {"CaptureDownstreamDraws", 0.f},
       {"CaptureDownstreamTransfers", 0.f},
@@ -1195,6 +1389,8 @@ void OnInitDevice(reshade::api::device* device) {
     renodx::mods::swapchain::swap_chain_proxy_vertex_shader = __swap_chain_proxy_vertex_shader_dx12;
     renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx12;
   }
+
+  TryInstallStreamlineHook();
 }
 
 }  // namespace
@@ -1294,6 +1490,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
       reshade::unregister_event<reshade::addon_event::push_descriptors>(OnGammaAuditPushDescriptors);
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
+      RemoveStreamlineHook();
       reshade::unregister_addon(h_module);
       break;
   }
