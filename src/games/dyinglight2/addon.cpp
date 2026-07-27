@@ -32,9 +32,11 @@
 namespace {
 
 float dlss_fg_tag_clone = 0.f;
+float dlss_fg_skip_generated_proxy = 0.f;
 bool dlss_fg_tag_capture = false;
 bool dlss_fg_present_cadence_capture = false;
 std::atomic_uint32_t dlss_fg_color_tag_serial = 0u;
+uint32_t dlss_fg_last_present_tag_serial = 0u;
 bool dlss_fg_hook_installed = false;
 bool dlss_fg_waiting_for_streamline_logged = false;
 bool dlss_fg_tag_clone_logged = false;
@@ -794,6 +796,18 @@ void OnDownstreamDrawCapturePresent(
     uint32_t,
     const reshade::api::rect*) {
   TryInstallStreamlineHook();
+
+  if (dlss_fg_skip_generated_proxy >= 0.5f) {
+    const uint32_t tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_acquire);
+    if (tag_serial != 0u && tag_serial != dlss_fg_last_present_tag_serial) {
+      dlss_fg_last_present_tag_serial = tag_serial;
+      renodx::mods::swapchain::v1::skip_next_proxy_draw.store(true, std::memory_order_release);
+    }
+  } else {
+    dlss_fg_last_present_tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_relaxed);
+    renodx::mods::swapchain::v1::skip_next_proxy_draw.store(false, std::memory_order_release);
+  }
+
   std::scoped_lock lock(downstream_draw_capture_mutex);
   if (dlss_fg_present_cadence_capture) {
     static std::array<uint32_t, 16> tag_serials = {};
@@ -1317,6 +1331,17 @@ renodx::utils::settings::Settings settings = {
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
+        .key = "DLSSFGSkipGeneratedProxy",
+        .binding = &dlss_fg_skip_generated_proxy,
+        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "DLSS FG Skip Generated Proxy",
+        .section = "Compatibility",
+        .tooltip = "Experimental. After a new Streamline HUDLessColor tag, skips RenoDX's final proxy draw once for the immediately following DLSS-generated Present. Resource upgrades and all other Present work remain active.",
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture DLSS FG Streamline Tags",
         .section = "Debug",
@@ -1427,6 +1452,7 @@ void OnPresetOff() {
       {"SwapChainEncoding", 4.f},
       {"FrameGenerationCompatibility", 0.f},
       {"DLSSFGUseTaggedClone", 0.f},
+      {"DLSSFGSkipGeneratedProxy", 0.f},
       {"DebugMode", 0.f},
       {"CaptureDownstreamDraws", 0.f},
       {"CaptureDownstreamTransfers", 0.f},

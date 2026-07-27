@@ -12,6 +12,7 @@
 #include <dxgi1_6.h>
 #include <windef.h>
 
+#include <atomic>
 #include <frozen/unordered_map.h>
 #include <cstddef>
 #include <cstdint>
@@ -142,6 +143,11 @@ static bool swapchain_proxy_compatibility_mode = true;
 // resource, then synchronize it to the RenoDX proxy clone immediately before
 // the proxy draw. Defaults to off to preserve established clone behavior.
 static float copy_swapchain_back_buffer_before_proxy = 0.f;
+// Game-specific compatibility callbacks can arm this after a real Present to
+// leave the immediately following generated frame untouched. It intentionally
+// skips only DrawSwapChainProxy; all resource upgrade and Present plumbing
+// still runs normally.
+static std::atomic_bool skip_next_proxy_draw = false;
 static bool swapchain_proxy_revert_state = false;
 static bool use_device_proxy = false;
 static void* last_device_proxy_shared_handle = nullptr;
@@ -3610,7 +3616,9 @@ inline void OnPresent(
     // last_device_proxy_shared_handle = nullptr;
     // last_device_proxy_shared_resource = {0u};
   } else {
-    DrawSwapChainProxy(swapchain, queue);
+    if (!skip_next_proxy_draw.exchange(false, std::memory_order_acq_rel)) {
+      DrawSwapChainProxy(swapchain, queue);
+    }
   }
 }
 

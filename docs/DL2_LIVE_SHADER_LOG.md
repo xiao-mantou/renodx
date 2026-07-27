@@ -291,3 +291,11 @@ Verification:
 - A startup descriptor-view seed then recorded 93,845 updates and produced 1,023 valid descriptor matches for the target. `t0` still remained empty.
 - This rules out missing source-view metadata as the blocker. ReShade's public descriptor events do not preserve the command-list association needed to identify the actual SRV bound to this DL2 draw.
 - The startup seed is too expensive to retain during normal play and was removed immediately. Do not add further ReShade-level descriptor cache variants; a future attempt must use a D3D12-native descriptor hook or a different non-DevKit investigation route.
+
+## 2026-07-27: DLSS Frame Generation Present cadence
+
+- With DLSS Super Resolution enabled, the HDR path is stable when Frame Generation is off; high-light flicker returns only when Frame Generation is enabled.
+- The bounded 16-Present probe recorded one Streamline HUDLessColor/UI tag serial for exactly two consecutive Present callbacks, with four backbuffers alternating as two pairs. This identifies a real rendered frame followed by a DLSS-generated frame without draw/resource dumping or GPU readback.
+- The strongest current hypothesis is that RenoDX runs its final swapchain proxy on both Presents while the scene/proxy source is refreshed only for the rendered frame. Reprocessing the generated frame can therefore cause the alternating high-light result.
+- Added a default-off Compatibility A/B, `DLSS FG Skip Generated Proxy`: after a new color tag has been observed on the rendered-frame Present, it arms a one-shot skip of only the immediately following `DrawSwapChainProxy`. Resource upgrades, clone state, game Present handling, and all shader replacements remain active.
+- Test only with DLSS Frame Generation enabled. If flicker disappears without a black frame, this confirms the Present-cadence handoff as the next fix target. If it persists unchanged, turn the switch back off and continue at the tagged resource/Frame Generation handoff rather than changing the scene HDR shader.
