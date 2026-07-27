@@ -299,3 +299,10 @@ Verification:
 - The strongest current hypothesis is that RenoDX runs its final swapchain proxy on both Presents while the scene/proxy source is refreshed only for the rendered frame. Reprocessing the generated frame can therefore cause the alternating high-light result.
 - Added a default-off Compatibility A/B, `DLSS FG Skip Generated Proxy`: after a new color tag has been observed on the rendered-frame Present, it arms a one-shot skip of only the immediately following `DrawSwapChainProxy`. Resource upgrades, clone state, game Present handling, and all shader replacements remain active.
 - Test only with DLSS Frame Generation enabled. If flicker disappears without a black frame, this confirms the Present-cadence handoff as the next fix target. If it persists unchanged, turn the switch back off and continue at the tagged resource/Frame Generation handoff rather than changing the scene HDR shader.
+
+## 2026-07-27: DLSS Frame Generation color handoff
+
+- A Streamline handoff audit proved that `slSetTagForFrame` accepts the RenoDX FP16 clone when explicitly routed (`result=0`, submitted resource equals the clone).
+- A matching one-frame transfer audit proved the normal display path is `0xAD085E81` Gamma FP16 clone -> FP16 intermediate -> FP16 swapchain backbuffer.
+- In the same resource lifetime, the DLSS FG tag original/clone was distinct from the Gamma clone, intermediate, and swapchain resources. DLSS FG therefore uses a separate color producer rather than the already proven Gamma-to-Present HDR chain.
+- Do not treat the successful FP16 tag route as proof that this separate producer contains HDR scene values. The next bounded diagnostic records only pixel-shader hashes that write the tagged resource during one frame.

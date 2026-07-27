@@ -36,6 +36,8 @@ float dlss_fg_skip_generated_proxy = 0.f;
 bool dlss_fg_tag_capture = false;
 bool dlss_fg_present_cadence_capture = false;
 std::atomic_uint32_t dlss_fg_color_tag_serial = 0u;
+std::atomic_uint64_t dlss_fg_latest_color_original = 0u;
+std::atomic_uint64_t dlss_fg_latest_color_clone = 0u;
 uint32_t dlss_fg_last_present_tag_serial = 0u;
 bool dlss_fg_hook_installed = false;
 bool dlss_fg_waiting_for_streamline_logged = false;
@@ -93,6 +95,18 @@ void MarkStreamlineColorTagSubmission(const sl::ResourceTag* tags, uint32_t num_
   for (uint32_t index = 0u; index < num_tags; ++index) {
     const auto type = tags[index].type;
     if (type == sl::kBufferTypeHUDLessColor || type == sl::kBufferTypeUIColorAndAlpha) {
+      if (tags[index].resource != nullptr && tags[index].resource->native != nullptr) {
+        const auto resource = reshade::api::resource{reinterpret_cast<uintptr_t>(tags[index].resource->native)};
+        const uint64_t previous_resource = dlss_fg_latest_color_original.load(std::memory_order_relaxed);
+        const uint64_t previous_clone = dlss_fg_latest_color_clone.load(std::memory_order_relaxed);
+        if (previous_resource != resource.handle || previous_clone == 0u) {
+          dlss_fg_latest_color_original.store(resource.handle, std::memory_order_relaxed);
+          const auto* resource_info = renodx::utils::resource::GetResourceInfo(resource);
+          dlss_fg_latest_color_clone.store(
+              resource_info == nullptr ? 0u : resource_info->clone.handle,
+              std::memory_order_relaxed);
+        }
+      }
       dlss_fg_color_tag_serial.fetch_add(1u, std::memory_order_relaxed);
       return;
     }
@@ -462,9 +476,18 @@ struct GammaNativeInputAuditState {
   bool consumed = false;
 };
 
+struct DlssFgProducerAuditState {
+  std::array<uint32_t, 16> pixel_shader_hashes = {};
+  uint64_t original_resource = 0u;
+  uint64_t clone_resource = 0u;
+  uint32_t count = 0u;
+  bool active = false;
+};
+
 DownstreamDrawCaptureState downstream_draw_capture_state = {};
 GammaDrawAuditState gamma_draw_audit_state = {};
 GammaNativeInputAuditState gamma_native_input_audit_state = {};
+DlssFgProducerAuditState dlss_fg_producer_audit_state = {};
 std::mutex downstream_draw_capture_mutex;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> downstream_capture_rtvs;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> downstream_capture_t0_views;
@@ -601,6 +624,7 @@ void OnDownstreamBindRenderTargets(
   // every target binding before those draws executed.
   const bool keep_target_binding = downstream_draw_capture >= 0.5f
       || downstream_transfer_capture >= 0.5f
+      || dlss_fg_producer_audit_state.active
       || gamma_draw_audit_capture
       || gamma_native_input_audit_capture
       || (downstream_draw_capture_state.active && !downstream_draw_capture_state.consumed);
@@ -695,12 +719,14 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   std::scoped_lock lock(downstream_draw_capture_mutex);
   const bool capture_commands = downstream_draw_capture >= 0.5f;
   const bool capture_transfers = downstream_transfer_capture >= 0.5f;
-  if (!capture_commands && !capture_transfers) {
+  auto& fg_producer_audit = dlss_fg_producer_audit_state;
+  const bool capture_fg_producer = fg_producer_audit.active;
+  if (!capture_commands && !capture_transfers && !capture_fg_producer) {
     capture = {};
     downstream_capture_t0_views.clear();
     return {};
   }
-  if (capture.consumed) return {};
+  if (capture.consumed && !capture_fg_producer) return {};
 
   auto* shader_state = renodx::utils::command_action::GetShaderState(&context);
   if (shader_state == nullptr) return {};
@@ -708,6 +734,23 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   const uint32_t shader_hash = renodx::utils::shader::GetCurrentShaderHash(
       shader_state, is_compute ? renodx::utils::shader::COMPUTE_INDEX
                                : renodx::utils::shader::PIXEL_INDEX);
+
+  if (capture_fg_producer && !is_compute && shader_hash != 0u) {
+    const auto target = downstream_capture_rtvs.find(context.cmd_list);
+    if (target != downstream_capture_rtvs.end()) {
+      const auto output = DescribeGammaAuditView(context.cmd_list->get_device(), target->second);
+      if (output.resource == fg_producer_audit.original_resource
+          || output.effective == fg_producer_audit.clone_resource) {
+        bool known_shader = false;
+        for (uint32_t index = 0u; index < fg_producer_audit.count; ++index) {
+          if (fg_producer_audit.pixel_shader_hashes[index] == shader_hash) { known_shader = true; break; }
+        }
+        if (!known_shader && fg_producer_audit.count < fg_producer_audit.pixel_shader_hashes.size()) {
+          fg_producer_audit.pixel_shader_hashes[fg_producer_audit.count++] = shader_hash;
+        }
+      }
+    }
+  }
 
   if (!capture.active) {
     if (!is_compute && shader_hash == 0xAD085E81u) {
@@ -927,6 +970,19 @@ void OnDownstreamDrawCapturePresent(
   }
 
   std::scoped_lock lock(downstream_draw_capture_mutex);
+  if (dlss_fg_producer_audit_state.active) {
+    const auto& audit = dlss_fg_producer_audit_state;
+    std::stringstream stream;
+    stream << "DL2 DLSS FG tag graphics writers: original=0x"
+           << std::hex << std::uppercase << audit.original_resource
+           << " clone=0x" << audit.clone_resource
+           << " count=" << std::dec << audit.count;
+    for (uint32_t index = 0u; index < audit.count; ++index) {
+      stream << " ps=0x" << std::hex << std::uppercase << audit.pixel_shader_hashes[index];
+    }
+    reshade::log::message(reshade::log::level::info, stream.str().c_str());
+    dlss_fg_producer_audit_state = {};
+  }
   if (dlss_fg_present_cadence_capture) {
     static std::array<uint32_t, 16> tag_serials = {};
     static std::array<uint64_t, 16> back_buffers = {};
@@ -1457,6 +1513,22 @@ renodx::utils::settings::Settings settings = {
         .label = "DLSS FG Skip Generated Proxy",
         .section = "Compatibility",
         .tooltip = "Experimental. After a new Streamline HUDLessColor tag, skips RenoDX's final proxy draw once for the immediately following DLSS-generated Present. Resource upgrades and all other Present work remain active.",
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture DLSS FG Tag Writers (1 frame)",
+        .section = "Debug",
+        .tooltip = "One-shot: records up to 16 pixel-shader hashes that write the most recently tagged DLSS FG color resource during the next frame. It records only hashes and handles; no dump, readback, copy, or resource redirection.",
+        .on_click = []() {
+          std::scoped_lock lock(downstream_draw_capture_mutex);
+          dlss_fg_producer_audit_state = {
+              .original_resource = dlss_fg_latest_color_original.load(std::memory_order_relaxed),
+              .clone_resource = dlss_fg_latest_color_clone.load(std::memory_order_relaxed),
+              .active = true,
+          };
+          return false;
+        },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
