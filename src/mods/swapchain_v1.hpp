@@ -137,6 +137,11 @@ static bool prevent_full_screen = true;
 static bool force_borderless = true;
 static bool force_screen_tearing = true;
 static bool swapchain_proxy_compatibility_mode = true;
+// Opt-in for games where a frame-generation runtime consumes the real
+// swapchain backbuffer before Present. Keep the game's final copy on that
+// resource, then synchronize it to the RenoDX proxy clone immediately before
+// the proxy draw. Defaults to off to preserve established clone behavior.
+static float copy_swapchain_back_buffer_before_proxy = 0.f;
 static bool swapchain_proxy_revert_state = false;
 static bool use_device_proxy = false;
 static void* last_device_proxy_shared_handle = nullptr;
@@ -1148,7 +1153,7 @@ inline void DrawSwapChainProxy(reshade::api::swapchain* swapchain, reshade::api:
     }
     swapchain_clone = data->proxy_device_resource;
 
-  } else if (UsingSwapchainCompatibilityMode()) {
+  } else if (UsingSwapchainCompatibilityMode() || copy_swapchain_back_buffer_before_proxy >= 0.5f) {
     auto& resource_clone = resource_info->clone;
     if (resource_clone.handle == 0u) {
       CloneResource(resource_info);
@@ -2564,6 +2569,14 @@ inline bool OnCopyResource(
   if (use_resource_cloning) {
     auto source_clone = GetResourceClone(source_info);
     auto dest_clone = GetResourceClone(destination_info);
+
+    // A frame-generation runtime may consume the real current backbuffer
+    // before Present. Do not redirect the game's final handoff exclusively to
+    // the proxy clone in the opt-in compatibility mode. DrawSwapChainProxy
+    // synchronizes original -> clone immediately before applying the proxy.
+    if (copy_swapchain_back_buffer_before_proxy >= 0.5f && destination_info->is_swap_chain) {
+      dest_clone = {0u};
+    }
 
     if (source_clone.handle != 0u) {
       source_desc_new = source_info->clone_desc;

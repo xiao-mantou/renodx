@@ -1058,6 +1058,17 @@ renodx::utils::settings::Settings settings = {
         .parse = [](float value) { return value * 0.01f; },
     },
     new renodx::utils::settings::Setting{
+        .key = "FrameGenerationCompatibility",
+        .binding = &renodx::mods::swapchain::copy_swapchain_back_buffer_before_proxy,
+        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "DLSS Frame Generation Compatibility",
+        .section = "Compatibility",
+        .tooltip = "For DLSS Frame Generation only. Keeps DL2's final FP16 handoff on the real current backbuffer, then synchronizes it to the RenoDX proxy clone immediately before Present. This is a runtime A/B switch; it does not enable dumping or tracing.",
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
         .key = "DebugMode",
         .binding = &shader_injection.debug_mode,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
@@ -1144,6 +1155,7 @@ void OnPresetOff() {
       {"ColorGradeLUTScaling", 100.f},
       {"FxLensFlare", 100.f},
       {"SwapChainEncoding", 4.f},
+      {"FrameGenerationCompatibility", 0.f},
       {"DebugMode", 0.f},
       {"CaptureDownstreamDraws", 0.f},
       {"CaptureDownstreamTransfers", 0.f},
@@ -1238,8 +1250,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::swapchain::expected_constant_buffer_index = 13;
       renodx::mods::swapchain::expected_constant_buffer_space = 50;
 
-      // Upgrade targets: R8G8B8A8 -> R16G16B16A16_FLOAT (exclude copy_dest
-      // per project convention to avoid matching D3D12 frame generation textures)
+      // Upgrade targets: R8G8B8A8 -> R16G16B16A16_FLOAT.
       renodx::mods::swapchain::resource_upgrade_infos.push_back({
           .old_format = reshade::api::format::r8g8b8a8_typeless,
           .new_format = reshade::api::format::r16g16b16a16_float,
