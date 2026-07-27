@@ -343,3 +343,26 @@ swap: r8g8b8a8_unorm => r10g10b10a2_unorm
 format: r10g10b10a2_unorm
 colorspace: hdr10_st2084
 ```
+
+### Revert: remove SetUseHDR10, keep FP16 swapchain with PQ proxy encoding
+
+The HDR10 container (R10G10B10A2) caused black screen because the game's scene
+pipeline still renders SDR [0,1] at early stages. A 10-bit container immediately
+clips those values. The correct flow is:
+
+```
+Game early passes [0,1] SDR
+→ 0x3E36DA5B injects HDR >1.0 (proven by red debug at 6.0+)
+→ R8→R16F clones preserve HDR losslessly
+→ 0xAD Gamma FP16 output
+→ FP16 swapchain backbuffer (linear HDR)
+→ Proxy shader: FP16 input → RenoDRT/Peak → PQ encode
+→ Windows HDR display
+```
+
+Removed `SetUseHDR10()`. The swapchain now stays `r16g16b16a16_float` with
+`extended_srgb_linear`, matching DL1 and most RenoDX games. The proxy shader
+already uses `SWAP_CHAIN_OUTPUT_PRESET_HDR10` to encode PQ correctly.
+
+This is the standard RenoDX pattern: FP16 intermediate pipeline + final PQ
+encoding in the proxy, not a 10-bit container from swapchain creation.

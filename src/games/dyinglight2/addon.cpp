@@ -1944,10 +1944,12 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::shader::allow_multiple_push_constants = true;
       renodx::mods::shader::force_pipeline_cloning = true;
 
-      // DLSS Frame Generation requires an HDR10/PQ final presentation path.
-      // Keep intermediate resource upgrades in FP16, then encode only the
-      // final proxy output into RGB10/BT.2100 PQ for Streamline and DXGI.
-      renodx::mods::swapchain::SetUseHDR10();
+      // DLSS Frame Generation HDR output: keep the swapchain container as FP16
+      // to preserve the game's HDR pipeline (scene renders SDR [0,1], then
+      // 0x3E36DA5B injects HDR >1.0, clones/gamma pass it losslessly in FP16).
+      // The proxy shader encodes the final FP16 linear HDR into BT.2100 PQ for
+      // Windows HDR display. Do not use SetUseHDR10(): the game's early passes
+      // still write [0,1] and would be clipped by a 10-bit container.
       renodx::mods::swapchain::swapchain_proxy_compatibility_mode = false;
       renodx::mods::swapchain::force_borderless = false;
       renodx::mods::swapchain::use_resource_cloning = true;
