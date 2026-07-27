@@ -41,6 +41,28 @@ bool dlss_fg_hook_installed = false;
 bool dlss_fg_waiting_for_streamline_logged = false;
 bool dlss_fg_tag_clone_logged = false;
 
+struct DlssFgHandoffAudit {
+  bool armed = false;
+  bool submitted = false;
+  bool result_received = false;
+  bool set_tag_for_frame = false;
+  bool submitted_clone = false;
+  uint32_t tag_serial = 0u;
+  uint32_t color_tag_count = 0u;
+  uint64_t original_resource = 0u;
+  uint32_t original_format = 0u;
+  uint64_t clone_resource = 0u;
+  uint32_t clone_format = 0u;
+  uint64_t submitted_resource = 0u;
+  uint32_t submitted_format = 0u;
+  int32_t result = 0;
+  std::array<uint64_t, 2> back_buffers = {};
+  uint32_t present_count = 0u;
+};
+
+std::mutex dlss_fg_handoff_audit_mutex;
+DlssFgHandoffAudit dlss_fg_handoff_audit = {};
+
 sl::Result (*real_sl_set_tag)(
     const sl::ViewportHandle& viewport,
     const sl::ResourceTag* tags,
@@ -178,6 +200,79 @@ RoutedStreamlineTags RouteStreamlineColorTags(const sl::ResourceTag* tags, uint3
 
   return routed;
 }
+
+void BeginDlssFgHandoffAudit(
+    bool set_tag_for_frame,
+    const sl::ResourceTag* original_tags,
+    const RoutedStreamlineTags& routed) {
+  if (original_tags == nullptr || routed.tags == nullptr) return;
+
+  std::scoped_lock lock(dlss_fg_handoff_audit_mutex);
+  auto& audit = dlss_fg_handoff_audit;
+  if (!audit.armed || audit.submitted) return;
+
+  for (uint32_t index = 0u; index < routed.count; ++index) {
+    const auto type = original_tags[index].type;
+    if (type != sl::kBufferTypeHUDLessColor && type != sl::kBufferTypeUIColorAndAlpha) continue;
+
+    ++audit.color_tag_count;
+    if (audit.original_resource != 0u || original_tags[index].resource == nullptr
+        || routed.tags[index].resource == nullptr) {
+      continue;
+    }
+
+    const auto* original_resource = original_tags[index].resource;
+    const auto* submitted_resource = routed.tags[index].resource;
+    audit.original_resource = reinterpret_cast<uint64_t>(original_resource->native);
+    audit.original_format = original_resource->nativeFormat;
+    audit.submitted_resource = reinterpret_cast<uint64_t>(submitted_resource->native);
+    audit.submitted_format = submitted_resource->nativeFormat;
+    audit.submitted_clone = audit.original_resource != audit.submitted_resource;
+
+    if (audit.original_resource == 0u) continue;
+    const auto* resource_info = renodx::utils::resource::GetResourceInfo(
+        reshade::api::resource{static_cast<uintptr_t>(audit.original_resource)});
+    if (resource_info == nullptr) continue;
+
+    audit.clone_resource = resource_info->clone.handle;
+    audit.clone_format = static_cast<uint32_t>(resource_info->clone_desc.texture.format);
+  }
+
+  if (audit.color_tag_count == 0u || audit.original_resource == 0u) return;
+  audit.armed = false;
+  audit.submitted = true;
+  audit.set_tag_for_frame = set_tag_for_frame;
+  audit.tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_relaxed);
+}
+
+void CompleteDlssFgHandoffAudit(sl::Result result) {
+  std::scoped_lock lock(dlss_fg_handoff_audit_mutex);
+  auto& audit = dlss_fg_handoff_audit;
+  if (!audit.submitted || audit.result_received) return;
+  audit.result = static_cast<int32_t>(result);
+  audit.result_received = true;
+}
+
+void LogDlssFgHandoffAudit(const DlssFgHandoffAudit& audit) {
+  std::stringstream stream;
+  stream << "DL2 DLSS FG handoff audit ("
+         << (audit.set_tag_for_frame ? "slSetTagForFrame" : "slSetTag")
+         << "): color_tags=" << audit.color_tag_count
+         << " route=" << (audit.submitted_clone ? "clone" : "original")
+         << " result=" << audit.result
+         << " original=0x" << std::hex << std::uppercase << audit.original_resource
+         << "," << audit.original_format
+         << " clone=0x" << audit.clone_resource
+         << "," << audit.clone_format
+         << " submitted=0x" << audit.submitted_resource
+         << "," << audit.submitted_format
+         << " presents=" << std::dec << audit.present_count;
+  for (uint32_t index = 0u; index < audit.present_count; ++index) {
+    stream << " #" << (index + 1u) << "=0x" << std::hex << std::uppercase << audit.back_buffers[index];
+  }
+  reshade::log::message(reshade::log::level::info, stream.str().c_str());
+}
+
 sl::Result HookedSlSetTag(
     const sl::ViewportHandle& viewport,
     const sl::ResourceTag* tags,
@@ -186,7 +281,10 @@ sl::Result HookedSlSetTag(
   MarkStreamlineColorTagSubmission(tags, num_tags);
   CaptureStreamlineTags("slSetTag", tags, num_tags);
   const auto routed = RouteStreamlineColorTags(tags, num_tags);
-  return real_sl_set_tag(viewport, routed.tags, routed.count, cmd_buffer);
+  BeginDlssFgHandoffAudit(false, tags, routed);
+  const auto result = real_sl_set_tag(viewport, routed.tags, routed.count, cmd_buffer);
+  CompleteDlssFgHandoffAudit(result);
+  return result;
 }
 
 sl::Result HookedSlSetTagForFrame(
@@ -198,7 +296,10 @@ sl::Result HookedSlSetTagForFrame(
   MarkStreamlineColorTagSubmission(tags, num_tags);
   CaptureStreamlineTags("slSetTagForFrame", tags, num_tags);
   const auto routed = RouteStreamlineColorTags(tags, num_tags);
-  return real_sl_set_tag_for_frame(frame, viewport, routed.tags, routed.count, cmd_buffer);
+  BeginDlssFgHandoffAudit(true, tags, routed);
+  const auto result = real_sl_set_tag_for_frame(frame, viewport, routed.tags, routed.count, cmd_buffer);
+  CompleteDlssFgHandoffAudit(result);
+  return result;
 }
 
 const auto& GetStreamlineHooks() {
@@ -797,6 +898,23 @@ void OnDownstreamDrawCapturePresent(
     const reshade::api::rect*) {
   TryInstallStreamlineHook();
 
+  {
+    std::scoped_lock lock(dlss_fg_handoff_audit_mutex);
+    auto& audit = dlss_fg_handoff_audit;
+    const uint32_t tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_relaxed);
+    if (audit.submitted && audit.result_received && tag_serial == audit.tag_serial
+        && audit.present_count < audit.back_buffers.size()) {
+      audit.back_buffers[audit.present_count++] = swapchain->get_current_back_buffer().handle;
+      if (audit.present_count == audit.back_buffers.size()) {
+        LogDlssFgHandoffAudit(audit);
+        audit = {};
+      }
+    } else if (audit.submitted && audit.result_received && tag_serial != audit.tag_serial) {
+      LogDlssFgHandoffAudit(audit);
+      audit = {};
+    }
+  }
+
   if (dlss_fg_skip_generated_proxy >= 0.5f) {
     const uint32_t tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_acquire);
     if (tag_serial != 0u && tag_serial != dlss_fg_last_present_tag_serial) {
@@ -1339,6 +1457,18 @@ renodx::utils::settings::Settings settings = {
         .label = "DLSS FG Skip Generated Proxy",
         .section = "Compatibility",
         .tooltip = "Experimental. After a new Streamline HUDLessColor tag, skips RenoDX's final proxy draw once for the immediately following DLSS-generated Present. Resource upgrades and all other Present work remain active.",
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture DLSS FG Handoff (2 Presents)",
+        .section = "Debug",
+        .tooltip = "One-shot: logs the color resource submitted to Streamline, its RenoDX FP16 clone, the Streamline result, and the two matching Present backbuffers. It performs no GPU readback, dump, copy, or resource redirection.",
+        .on_click = []() {
+          std::scoped_lock lock(dlss_fg_handoff_audit_mutex);
+          dlss_fg_handoff_audit = {.armed = true};
+          return false;
+        },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
