@@ -1886,25 +1886,10 @@ void OnPresetOff() {
   });
 }
 
-// TEST L (DL1-style without SetUseHDR10):
-// test-J 日志分析显示：
-//   1. SetUseHDR10(true) 把 swapchain 格式改成 R10G10B10A2 (HDR10 PQ)
-//   2. 但 upgrade_targets 是 R8G8B8A8 -> R16G16B16A16_FLOAT，不匹配 R10G10B10A2
-//   3. back buffer 的 has_upgrade_target: false，只有 clone_target
-//   4. 游戏把 SDR 内容 [0,1] 渲染到 R10G10B10A2 (HDR10 PQ) back buffer
-//   5. SDR 数值被错误解释为 PQ 编码 → 颜色炸裂
-//   6. 进入游戏后某些渲染路径导致完全黑屏
-//
-// 正确做法（参考 DL1）：
-//   - 不用 SetUseHDR10，target_format 保持默认 R16G16B16A16_FLOAT (scRGB)
-//   - swapchain 升级为 R16G16B16A16_FLOAT，游戏渲染 [0,1] SDR 内容到 float16
-//   - swapchain proxy shader 把 R16G16B16A16_FLOAT 转换为 HDR 输出
-//   - 用 OnInitDevice 动态切换 DX11/DX12 shader（保留 test-J 的做法）
-//   - 不用 swapchain_proxy_compatibility_mode=false（用默认 true）
-//   - upgrade_targets 去掉 copy_dest（参考 DL1）
-//
-// test-J 日志证明 D3D12 swapchain 可以被修改（没有循环创建/销毁），
-// 之前的"循环"结论是基于 shared state bug 修复前的测试，不可靠。
+// Historical scRGB experiments are superseded for DLSS Frame Generation.
+// The final presentation must be RGB10/HDR10 PQ, while intermediate scene
+// resources continue using FP16 clones to preserve the game's HDR signal.
+
 void OnInitDevice(reshade::api::device* device) {
   if (device->get_api() == reshade::api::device_api::d3d11) {
     renodx::mods::shader::expected_constant_buffer_space = 0;
@@ -1959,17 +1944,13 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::shader::allow_multiple_push_constants = true;
       renodx::mods::shader::force_pipeline_cloning = true;
 
-      // TEST M (test-L + compatibility_mode=false):
-      // test-L 出现白色亮块+残影症状（打开 ReShade 面板关闭后留下白色方块，
-      // 鼠标留下残影），像是 compatibility mode 下 D3D12 swapchain 渲染异常。
-      // 原代码设置了 compatibility_mode=false，这里加上试试。
-      // 不调用 SetUseHDR10 → target_format 保持默认 R16G16B16A16_FLOAT (scRGB)
-      // 不用 ignored_device_apis → D3D12 swapchain 也被修改为 R16G16B16A16_FLOAT
-      // OnInitDevice 动态切换 DX11/DX12 shader 和 cbuffer space
+      // DLSS Frame Generation requires an HDR10/PQ final presentation path.
+      // Keep intermediate resource upgrades in FP16, then encode only the
+      // final proxy output into RGB10/BT.2100 PQ for Streamline and DXGI.
+      renodx::mods::swapchain::v1::SetUseHDR10();
       renodx::mods::swapchain::swapchain_proxy_compatibility_mode = false;
       renodx::mods::swapchain::force_borderless = false;
       renodx::mods::swapchain::use_resource_cloning = true;
-
       // 初始用 DX11 shader，OnInitDevice 会根据 device API 动态切换
       renodx::mods::swapchain::swap_chain_proxy_vertex_shader = __swap_chain_proxy_vertex_shader_dx11;
       renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx11;
