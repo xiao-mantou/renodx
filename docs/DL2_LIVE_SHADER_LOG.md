@@ -366,3 +366,36 @@ already uses `SWAP_CHAIN_OUTPUT_PRESET_HDR10` to encode PQ correctly.
 
 This is the standard RenoDX pattern: FP16 intermediate pipeline + final PQ
 encoding in the proxy, not a 10-bit container from swapchain creation.
+
+### Critical fix: set HDR10 colorspace metadata on FP16 swapchain
+
+The previous revert kept `target_format = R16G16B16A16_FLOAT` (correct) but
+left `target_color_space = extended_srgb_linear` (incorrect). This caused
+Windows to interpret the proxy's PQ-encoded output as linear scRGB, resulting
+in washed-out, low-contrast visuals identical to the earlier HDR10 mismatch.
+
+**Root cause:**  
+The proxy shader outputs BT.2100 PQ non-linear values `[0,1]`, but Windows saw
+the `extended_srgb_linear` colorspace tag and treated them as linear scRGB.
+
+**Solution:**  
+Explicitly set `target_color_space = hdr10_st2084` while keeping the FP16
+container. The swapchain module's `ChangeColorSpace()` will call
+`IDXGISwapChain3::SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)`,
+signaling Windows that the content is HDR10/PQ.
+
+**This is the correct hybrid configuration for DLSS-G HDR:**
+
+- Container: `R16G16B16A16_FLOAT` (preserves game's HDR pipeline)
+- Colorspace metadata: `hdr10_st2084` (tells Windows it's PQ)
+- Proxy encoding: `ENCODING_PQ` + `HDR10_PRESET` (already correct)
+
+Next log should show:
+
+```text
+format: r16g16b16a16_float
+colorspace: hdr10_st2084
+```
+
+This matches reports from other games (Metro Exodus, Exodus 33) where DLSS-G
+requires PQ colorspace signaling but the underlying container can stay FP16.
