@@ -6,7 +6,11 @@ SamplerState s0 : register(s0);
 float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
     : SV_TARGET {
   renodx::draw::Config config = renodx::draw::BuildConfig();
-  config.swap_chain_scaling_nits = RENODX_GRAPHICS_WHITE_NITS;
+  // Test progressive scaling values to find "no-flicker" threshold
+  // 203 = severe overexposure but no flicker (proven)
+  // 80 = correct brightness but flickers
+  // Try: 150, 120, 100 to find sweet spot
+  config.swap_chain_scaling_nits = 150.f;  // TEST: adjust this value
   config.swap_chain_encoding = renodx::draw::ENCODING_PQ;
   config.swap_chain_output_preset = renodx::draw::SWAP_CHAIN_OUTPUT_PRESET_HDR10;
 
