@@ -10,7 +10,6 @@
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
-#include <vector>
 
 #include <embed/shaders.h>
 
@@ -30,11 +29,9 @@
 
 namespace {
 
-float dlss_fg_tag_clone = 0.f;
 bool dlss_fg_tag_capture = false;
 bool dlss_fg_hook_installed = false;
 bool dlss_fg_waiting_for_streamline_logged = false;
-bool dlss_fg_tag_clone_logged = false;
 
 sl::Result (*real_sl_set_tag)(
     const sl::ViewportHandle& viewport,
@@ -88,66 +85,13 @@ void CaptureStreamlineTags(const char* call_name, const sl::ResourceTag* tags, u
   reshade::log::message(reshade::log::level::info, stream.str().c_str());
 }
 
-struct RoutedStreamlineTags {
-  const sl::ResourceTag* tags = nullptr;
-  uint32_t count = 0u;
-  std::vector<sl::ResourceTag> tags_storage = {};
-  std::vector<sl::Resource> resources_storage = {};
-};
-
-RoutedStreamlineTags RouteStreamlineColorTags(const sl::ResourceTag* tags, uint32_t num_tags) {
-  RoutedStreamlineTags routed = {.tags = tags, .count = num_tags};
-  if (dlss_fg_tag_clone < 0.5f || tags == nullptr || num_tags == 0u) return routed;
-
-  for (uint32_t index = 0u; index < num_tags; ++index) {
-    const auto& tag = tags[index];
-    if ((tag.type != sl::kBufferTypeHUDLessColor && tag.type != sl::kBufferTypeUIColorAndAlpha)
-        || tag.resource == nullptr || tag.resource->native == nullptr) {
-      continue;
-    }
-
-    const auto resource = reshade::api::resource{reinterpret_cast<uintptr_t>(tag.resource->native)};
-    const auto* resource_info = renodx::utils::resource::GetResourceInfo(resource);
-    if (resource_info == nullptr || !resource_info->is_swap_chain || !resource_info->clone_enabled
-        || resource_info->clone.handle == 0u) {
-      continue;
-    }
-
-    if (routed.tags_storage.empty()) {
-      routed.tags_storage.assign(tags, tags + num_tags);
-      routed.resources_storage.reserve(num_tags);
-      routed.tags = routed.tags_storage.data();
-    }
-
-    routed.resources_storage.push_back(*tag.resource);
-    auto& clone_resource = routed.resources_storage.back();
-    clone_resource.native = reinterpret_cast<void*>(resource_info->clone.handle);
-    routed.tags_storage[index].resource = &clone_resource;
-
-    if (!dlss_fg_tag_clone_logged) {
-      dlss_fg_tag_clone_logged = true;
-      renodx::utils::log::i(
-          "DL2 DLSS FG: redirected Streamline ",
-          GetStreamlineTagName(tag.type),
-          " tag ",
-          renodx::utils::log::AsPtr(resource.handle),
-          " => RenoDX clone ",
-          renodx::utils::log::AsPtr(resource_info->clone.handle),
-          ".");
-    }
-  }
-
-  return routed;
-}
-
 sl::Result HookedSlSetTag(
     const sl::ViewportHandle& viewport,
     const sl::ResourceTag* tags,
     uint32_t num_tags,
     sl::CommandBuffer* cmd_buffer) {
   CaptureStreamlineTags("slSetTag", tags, num_tags);
-  const auto routed = RouteStreamlineColorTags(tags, num_tags);
-  return real_sl_set_tag(viewport, routed.tags, routed.count, cmd_buffer);
+  return real_sl_set_tag(viewport, tags, num_tags, cmd_buffer);
 }
 
 sl::Result HookedSlSetTagForFrame(
@@ -157,8 +101,7 @@ sl::Result HookedSlSetTagForFrame(
     uint32_t num_tags,
     sl::CommandBuffer* cmd_buffer) {
   CaptureStreamlineTags("slSetTagForFrame", tags, num_tags);
-  const auto routed = RouteStreamlineColorTags(tags, num_tags);
-  return real_sl_set_tag_for_frame(frame, viewport, routed.tags, routed.count, cmd_buffer);
+  return real_sl_set_tag_for_frame(frame, viewport, tags, num_tags, cmd_buffer);
 }
 
 const auto& GetStreamlineHooks() {
@@ -1247,17 +1190,6 @@ renodx::utils::settings::Settings settings = {
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
-        .key = "DLSSFGUseTaggedClone",
-        .binding = &dlss_fg_tag_clone,
-        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
-        .default_value = 0.f,
-        .can_reset = false,
-        .label = "DLSS FG Use RenoDX Color Clone",
-        .section = "Compatibility",
-        .tooltip = "Experimental. Redirects only the captured Streamline HUDLessColor and UIColorAndAlpha tags when their resource has a RenoDX clone. Leave off unless testing DLSS Frame Generation highlight flicker.",
-        .is_visible = []() { return current_settings_mode >= 2; },
-    },
-    new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture DLSS FG Streamline Tags",
         .section = "Debug",
@@ -1356,7 +1288,6 @@ void OnPresetOff() {
       {"FxLensFlare", 100.f},
       {"SwapChainEncoding", 4.f},
       {"FrameGenerationCompatibility", 0.f},
-      {"DLSSFGUseTaggedClone", 0.f},
       {"DebugMode", 0.f},
       {"CaptureDownstreamDraws", 0.f},
       {"CaptureDownstreamTransfers", 0.f},
