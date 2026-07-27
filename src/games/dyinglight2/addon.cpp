@@ -61,6 +61,14 @@ struct DownstreamTransfer {
   bool dest_clone_enabled = false;
   bool source_shared = false;
   bool dest_shared = false;
+  bool source_is_swapchain = false;
+  bool dest_is_swapchain = false;
+  bool source_is_clone = false;
+  bool dest_is_clone = false;
+  uint32_t source_clone_usage = 0u;
+  uint32_t dest_clone_usage = 0u;
+  uint32_t source_clone_flags = 0u;
+  uint32_t dest_clone_flags = 0u;
 };
 
 struct DownstreamTarget {
@@ -500,12 +508,20 @@ void RecordDownstreamTransfer(
     transfer.source_proxy = info.proxy_resource.handle;
     transfer.source_clone_enabled = info.clone_enabled;
     transfer.source_shared = info.shared_handle != nullptr;
+    transfer.source_is_swapchain = info.is_swap_chain;
+    transfer.source_is_clone = info.is_clone;
+    transfer.source_clone_usage = static_cast<uint32_t>(info.clone_desc.usage);
+    transfer.source_clone_flags = static_cast<uint32_t>(info.clone_desc.flags);
   });
   renodx::utils::resource::GetResourceInfo(dest, [&transfer](const renodx::utils::resource::ResourceInfo& info) {
     transfer.dest_clone = info.clone.handle;
     transfer.dest_proxy = info.proxy_resource.handle;
     transfer.dest_clone_enabled = info.clone_enabled;
     transfer.dest_shared = info.shared_handle != nullptr;
+    transfer.dest_is_swapchain = info.is_swap_chain;
+    transfer.dest_is_clone = info.is_clone;
+    transfer.dest_clone_usage = static_cast<uint32_t>(info.clone_desc.usage);
+    transfer.dest_clone_flags = static_cast<uint32_t>(info.clone_desc.flags);
   });
 
   for (uint32_t index = 0u; index < capture.transfer_count; ++index) {
@@ -677,12 +693,21 @@ void OnDownstreamDrawCapturePresent(
              << ", src_clone_enabled=" << (transfer.source_clone_enabled ? "yes" : "no")
              << ", dst_clone_enabled=" << (transfer.dest_clone_enabled ? "yes" : "no")
              << ", src_shared=" << (transfer.source_shared ? "yes" : "no")
-             << ", dst_shared=" << (transfer.dest_shared ? "yes" : "no") << ")";
+             << ", dst_shared=" << (transfer.dest_shared ? "yes" : "no")
+             << ", src_swapchain=" << (transfer.source_is_swapchain ? "yes" : "no")
+             << ", dst_swapchain=" << (transfer.dest_is_swapchain ? "yes" : "no")
+             << ", src_is_clone=" << (transfer.source_is_clone ? "yes" : "no")
+             << ", dst_is_clone=" << (transfer.dest_is_clone ? "yes" : "no")
+             << ", src_clone_usage=0x" << transfer.source_clone_usage
+             << ", dst_clone_usage=0x" << transfer.dest_clone_usage
+             << ", src_clone_flags=0x" << transfer.source_clone_flags
+             << ", dst_clone_flags=0x" << transfer.dest_clone_flags << ")";
     }
     if (queue != nullptr && swapchain != nullptr) {
-      const auto back_buffer_desc =
-          queue->get_device()->get_resource_desc(swapchain->get_current_back_buffer());
-      stream << " present_backbuffer(" << std::dec << back_buffer_desc.texture.width << "x"
+      const auto back_buffer = swapchain->get_current_back_buffer();
+      const auto back_buffer_desc = queue->get_device()->get_resource_desc(back_buffer);
+      stream << " present_backbuffer(0x" << std::hex << std::uppercase << back_buffer.handle
+             << ", " << std::dec << back_buffer_desc.texture.width << "x"
              << back_buffer_desc.texture.height << ", "
              << static_cast<uint32_t>(back_buffer_desc.texture.format) << ")";
     }
