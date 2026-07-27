@@ -1059,7 +1059,7 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .key = "FrameGenerationCompatibility",
-        .binding = &renodx::mods::swapchain::copy_swapchain_back_buffer_before_proxy,
+        .binding = &renodx::mods::swapchain::v1::copy_swapchain_back_buffer_before_proxy,
         .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
         .default_value = 0.f,
         .can_reset = false,
