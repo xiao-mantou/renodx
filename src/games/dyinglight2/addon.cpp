@@ -77,9 +77,20 @@ void CaptureStreamlineTags(const char* call_name, const sl::ResourceTag* tags, u
     if (resource_info == nullptr) continue;
 
     stream << " format=" << static_cast<uint32_t>(resource_info->desc.texture.format)
+           << " usage=0x" << std::hex << static_cast<uint32_t>(resource_info->desc.usage)
            << " swapchain=" << (resource_info->is_swap_chain ? "yes" : "no")
            << " clone_enabled=" << (resource_info->clone_enabled ? "yes" : "no")
-           << " clone=0x" << resource_info->clone.handle;
+           << " clone_target=" << (resource_info->clone_target != nullptr ? "yes" : "no")
+           << " views=" << std::dec << resource_info->resource_view_handles.size()
+           << " clone=0x" << std::hex << resource_info->clone.handle;
+
+    if (resource_info->clone.handle == 0u) continue;
+    const auto* clone_info = renodx::utils::resource::GetResourceInfo(resource_info->clone);
+    if (clone_info == nullptr) continue;
+
+    stream << " clone_format=" << static_cast<uint32_t>(clone_info->desc.texture.format)
+           << " clone_usage=0x" << static_cast<uint32_t>(clone_info->desc.usage)
+           << " clone_is_clone=" << (clone_info->is_clone ? "yes" : "no");
   }
   if (num_tags > count) stream << " (truncated)";
   reshade::log::message(reshade::log::level::info, stream.str().c_str());
