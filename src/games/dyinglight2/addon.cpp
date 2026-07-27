@@ -38,6 +38,7 @@ bool dlss_fg_present_cadence_capture = false;
 std::atomic_uint32_t dlss_fg_color_tag_serial = 0u;
 std::atomic_uint64_t dlss_fg_latest_color_original = 0u;
 std::atomic_uint64_t dlss_fg_latest_color_clone = 0u;
+std::atomic_bool dlss_fg_tag_transfer_capture_active = false;
 uint32_t dlss_fg_last_present_tag_serial = 0u;
 bool dlss_fg_hook_installed = false;
 bool dlss_fg_waiting_for_streamline_logged = false;
@@ -484,10 +485,19 @@ struct DlssFgProducerAuditState {
   bool active = false;
 };
 
+struct DlssFgTagTransferAuditState {
+  std::array<DownstreamTransfer, 8> transfers = {};
+  uint64_t original_resource = 0u;
+  uint64_t clone_resource = 0u;
+  uint32_t count = 0u;
+  bool active = false;
+};
+
 DownstreamDrawCaptureState downstream_draw_capture_state = {};
 GammaDrawAuditState gamma_draw_audit_state = {};
 GammaNativeInputAuditState gamma_native_input_audit_state = {};
 DlssFgProducerAuditState dlss_fg_producer_audit_state = {};
+DlssFgTagTransferAuditState dlss_fg_tag_transfer_audit_state = {};
 std::mutex downstream_draw_capture_mutex;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> downstream_capture_rtvs;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> downstream_capture_t0_views;
@@ -839,18 +849,16 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   return {};
 };
 
-void RecordDownstreamTransfer(
+bool DescribeDownstreamTransfer(
     DownstreamTransferType type,
     reshade::api::command_list* cmd_list,
     reshade::api::resource source,
-    reshade::api::resource dest) {
-  std::scoped_lock lock(downstream_draw_capture_mutex);
-  auto& capture = downstream_draw_capture_state;
-  if (!capture.active || capture.consumed || !capture.capture_transfers) return;
-  if (capture.transfer_count >= capture.transfers.size()) return;
-
+    reshade::api::resource dest,
+    DownstreamTransfer* output) {
+  if (cmd_list == nullptr || output == nullptr) return false;
   auto* device = cmd_list->get_device();
-  if (device == nullptr) return;
+  if (device == nullptr) return false;
+
   const auto source_desc = device->get_resource_desc(source);
   const auto dest_desc = device->get_resource_desc(dest);
   DownstreamTransfer transfer = {
@@ -884,22 +892,58 @@ void RecordDownstreamTransfer(
     transfer.dest_clone_usage = static_cast<uint32_t>(info.clone_desc.usage);
     transfer.dest_clone_flags = static_cast<uint32_t>(info.clone_desc.flags);
   });
+  *output = transfer;
+  return true;
+}
 
+void RecordDownstreamTransfer(
+    DownstreamTransferType type,
+    reshade::api::command_list* cmd_list,
+    reshade::api::resource source,
+    reshade::api::resource dest) {
+  std::scoped_lock lock(downstream_draw_capture_mutex);
+  auto& capture = downstream_draw_capture_state;
+  if (!capture.active || capture.consumed || !capture.capture_transfers) return;
+  if (capture.transfer_count >= capture.transfers.size()) return;
+
+  DownstreamTransfer transfer = {};
+  if (!DescribeDownstreamTransfer(type, cmd_list, source, dest, &transfer)) return;
   for (uint32_t index = 0u; index < capture.transfer_count; ++index) {
     const auto& existing = capture.transfers[index];
-    if (existing.type == transfer.type && existing.source == transfer.source && existing.dest == transfer.dest) {
-      return;
-    }
+    if (existing.type == transfer.type && existing.source == transfer.source && existing.dest == transfer.dest) return;
   }
-  if (capture.transfer_count < capture.transfers.size()) {
-    capture.transfers[capture.transfer_count++] = transfer;
+  capture.transfers[capture.transfer_count++] = transfer;
+}
+
+void RecordDlssFgTagTransfer(
+    DownstreamTransferType type,
+    reshade::api::command_list* cmd_list,
+    reshade::api::resource source,
+    reshade::api::resource dest) {
+  if (!dlss_fg_tag_transfer_capture_active.load(std::memory_order_relaxed)) return;
+
+  std::scoped_lock lock(downstream_draw_capture_mutex);
+  auto& audit = dlss_fg_tag_transfer_audit_state;
+  if (!audit.active || audit.count >= audit.transfers.size()) return;
+  if (source.handle != audit.original_resource && source.handle != audit.clone_resource
+      && dest.handle != audit.original_resource && dest.handle != audit.clone_resource) {
+    return;
   }
+
+  DownstreamTransfer transfer = {};
+  if (!DescribeDownstreamTransfer(type, cmd_list, source, dest, &transfer)) return;
+  for (uint32_t index = 0u; index < audit.count; ++index) {
+    const auto& existing = audit.transfers[index];
+    if (existing.type == transfer.type && existing.source == transfer.source && existing.dest == transfer.dest) return;
+  }
+  audit.transfers[audit.count++] = transfer;
 }
 
 bool OnDownstreamCopyResource(
     reshade::api::command_list* cmd_list,
     reshade::api::resource source,
     reshade::api::resource dest) {
+  RecordDlssFgTagTransfer(DownstreamTransferType::copy_resource, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::copy_resource, cmd_list, source, dest);
   return false;
 }
@@ -913,6 +957,7 @@ bool OnDownstreamCopyTextureRegion(
     uint32_t,
     const reshade::api::subresource_box*,
     reshade::api::filter_mode) {
+  RecordDlssFgTagTransfer(DownstreamTransferType::copy_texture_region, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::copy_texture_region, cmd_list, source, dest);
   return false;
 }
@@ -928,6 +973,7 @@ bool OnDownstreamResolveTextureRegion(
     uint32_t,
     uint32_t,
     reshade::api::format) {
+  RecordDlssFgTagTransfer(DownstreamTransferType::resolve_texture_region, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::resolve_texture_region, cmd_list, source, dest);
   return false;
 }
@@ -970,6 +1016,30 @@ void OnDownstreamDrawCapturePresent(
   }
 
   std::scoped_lock lock(downstream_draw_capture_mutex);
+  if (dlss_fg_tag_transfer_audit_state.active) {
+    const auto& audit = dlss_fg_tag_transfer_audit_state;
+    std::stringstream stream;
+    stream << "DL2 DLSS FG tag transfers: original=0x"
+           << std::hex << std::uppercase << audit.original_resource
+           << " clone=0x" << audit.clone_resource
+           << " count=" << std::dec << audit.count;
+    for (uint32_t index = 0u; index < audit.count; ++index) {
+      const auto& transfer = audit.transfers[index];
+      const char* type = transfer.type == DownstreamTransferType::copy_resource ? "CopyResource"
+                         : transfer.type == DownstreamTransferType::copy_texture_region ? "CopyTexture"
+                                                                                         : "ResolveTexture";
+      stream << " " << type << "(0x" << std::hex << std::uppercase << transfer.source
+             << "," << static_cast<uint32_t>(transfer.source_format)
+             << ",clone=0x" << transfer.source_clone
+             << " => 0x" << transfer.dest
+             << "," << static_cast<uint32_t>(transfer.dest_format)
+             << ",clone=0x" << transfer.dest_clone << ")";
+    }
+    reshade::log::message(reshade::log::level::info, stream.str().c_str());
+    dlss_fg_tag_transfer_audit_state = {};
+    dlss_fg_tag_transfer_capture_active.store(false, std::memory_order_relaxed);
+  }
+
   if (dlss_fg_producer_audit_state.active) {
     const auto& audit = dlss_fg_producer_audit_state;
     std::stringstream stream;
@@ -1513,6 +1583,23 @@ renodx::utils::settings::Settings settings = {
         .label = "DLSS FG Skip Generated Proxy",
         .section = "Compatibility",
         .tooltip = "Experimental. After a new Streamline HUDLessColor tag, skips RenoDX's final proxy draw once for the immediately following DLSS-generated Present. Resource upgrades and all other Present work remain active.",
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture DLSS FG Tag Transfers (1 frame)",
+        .section = "Debug",
+        .tooltip = "One-shot: records up to 8 copy or resolve operations that use the most recently tagged DLSS FG color resource during the next frame. It records only handles, formats, and clone handles; no dump, readback, or resource redirection.",
+        .on_click = []() {
+          std::scoped_lock lock(downstream_draw_capture_mutex);
+          dlss_fg_tag_transfer_audit_state = {
+              .original_resource = dlss_fg_latest_color_original.load(std::memory_order_relaxed),
+              .clone_resource = dlss_fg_latest_color_clone.load(std::memory_order_relaxed),
+              .active = true,
+          };
+          dlss_fg_tag_transfer_capture_active.store(true, std::memory_order_relaxed);
+          return false;
+        },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
