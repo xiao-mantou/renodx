@@ -485,6 +485,25 @@ struct DlssFgProducerAuditState {
   bool active = false;
 };
 
+struct DlssFgComputeWriter {
+  uint32_t shader_hash = 0u;
+  uint64_t resource = 0u;
+  uint64_t effective_resource = 0u;
+  reshade::api::format format = reshade::api::format::unknown;
+  reshade::api::format effective_format = reshade::api::format::unknown;
+  uint32_t group_count_x = 0u;
+  uint32_t group_count_y = 0u;
+  uint32_t group_count_z = 0u;
+};
+
+struct DlssFgComputeWriterAuditState {
+  std::array<DlssFgComputeWriter, 8> writers = {};
+  uint64_t original_resource = 0u;
+  uint64_t clone_resource = 0u;
+  uint32_t count = 0u;
+  bool active = false;
+};
+
 struct DlssFgTagTransferAuditState {
   std::array<DownstreamTransfer, 8> transfers = {};
   uint64_t original_resource = 0u;
@@ -497,11 +516,13 @@ DownstreamDrawCaptureState downstream_draw_capture_state = {};
 GammaDrawAuditState gamma_draw_audit_state = {};
 GammaNativeInputAuditState gamma_native_input_audit_state = {};
 DlssFgProducerAuditState dlss_fg_producer_audit_state = {};
+DlssFgComputeWriterAuditState dlss_fg_compute_writer_audit_state = {};
 DlssFgTagTransferAuditState dlss_fg_tag_transfer_audit_state = {};
 std::mutex downstream_draw_capture_mutex;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> downstream_capture_rtvs;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> downstream_capture_t0_views;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> gamma_audit_t0_views;
+std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> dlss_fg_compute_uav_views;
 
 GammaAuditResource DescribeGammaAuditView(
     reshade::api::device* device,
@@ -572,7 +593,33 @@ void OnGammaAuditPushDescriptors(
   // bounded cache when the one-shot button is armed rather than afterwards.
   const bool capture_downstream_inputs = downstream_draw_capture >= 0.5f
       && !downstream_draw_capture_state.consumed;
-  if ((!capture_gamma_input && !capture_downstream_inputs) || update.count == 0u
+  const bool capture_fg_compute_writer = dlss_fg_compute_writer_audit_state.active;
+  if ((!capture_gamma_input && !capture_downstream_inputs && !capture_fg_compute_writer) || update.count == 0u) {
+    return;
+  }
+
+  if (capture_fg_compute_writer
+      && renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::compute)
+      && (update.type == reshade::api::descriptor_type::texture_unordered_access_view
+          || update.type == reshade::api::descriptor_type::buffer_unordered_access_view)) {
+    auto* device = cmd_list->get_device();
+    if (device != nullptr) {
+      for (uint32_t index = 0u; index < update.count; ++index) {
+        const auto view = renodx::utils::descriptor::GetResourceViewFromDescriptorUpdate(update, index);
+        if (view.handle == 0u) continue;
+        const auto resource = device->get_resource_from_view(view);
+        std::scoped_lock lock(downstream_draw_capture_mutex);
+        const auto& audit = dlss_fg_compute_writer_audit_state;
+        if (!audit.active) return;
+        if (resource.handle == audit.original_resource || resource.handle == audit.clone_resource) {
+          dlss_fg_compute_uav_views[cmd_list] = view;
+          break;
+        }
+      }
+    }
+  }
+
+  if ((!capture_gamma_input && !capture_downstream_inputs)
       || !renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::pixel)) {
     return;
   }
@@ -731,12 +778,14 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   const bool capture_transfers = downstream_transfer_capture >= 0.5f;
   auto& fg_producer_audit = dlss_fg_producer_audit_state;
   const bool capture_fg_producer = fg_producer_audit.active;
-  if (!capture_commands && !capture_transfers && !capture_fg_producer) {
+  auto& fg_compute_writer_audit = dlss_fg_compute_writer_audit_state;
+  const bool capture_fg_compute_writer = fg_compute_writer_audit.active;
+  if (!capture_commands && !capture_transfers && !capture_fg_producer && !capture_fg_compute_writer) {
     capture = {};
     downstream_capture_t0_views.clear();
     return {};
   }
-  if (capture.consumed && !capture_fg_producer) return {};
+  if (capture.consumed && !capture_fg_producer && !capture_fg_compute_writer) return {};
 
   auto* shader_state = renodx::utils::command_action::GetShaderState(&context);
   if (shader_state == nullptr) return {};
@@ -757,6 +806,41 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
         }
         if (!known_shader && fg_producer_audit.count < fg_producer_audit.pixel_shader_hashes.size()) {
           fg_producer_audit.pixel_shader_hashes[fg_producer_audit.count++] = shader_hash;
+        }
+      }
+    }
+  }
+
+  if (capture_fg_compute_writer && is_compute && shader_hash != 0u) {
+    const auto target = dlss_fg_compute_uav_views.find(context.cmd_list);
+    if (target != dlss_fg_compute_uav_views.end()) {
+      const auto output = DescribeGammaAuditView(context.cmd_list->get_device(), target->second);
+      if (output.resource == fg_compute_writer_audit.original_resource
+          || output.resource == fg_compute_writer_audit.clone_resource
+          || output.effective == fg_compute_writer_audit.clone_resource) {
+        bool known_shader = false;
+        for (uint32_t index = 0u; index < fg_compute_writer_audit.count; ++index) {
+          const auto& writer = fg_compute_writer_audit.writers[index];
+          if (writer.shader_hash == shader_hash && writer.resource == output.resource
+              && writer.effective_resource == output.effective) {
+            known_shader = true;
+            break;
+          }
+        }
+        if (!known_shader && fg_compute_writer_audit.count < fg_compute_writer_audit.writers.size()) {
+          auto& writer = fg_compute_writer_audit.writers[fg_compute_writer_audit.count++];
+          writer = {
+              .shader_hash = shader_hash,
+              .resource = output.resource,
+              .effective_resource = output.effective,
+              .format = output.format,
+              .effective_format = output.effective_format,
+          };
+          if constexpr (requires { context.arguments.group_count_x; }) {
+            writer.group_count_x = context.arguments.group_count_x;
+            writer.group_count_y = context.arguments.group_count_y;
+            writer.group_count_z = context.arguments.group_count_z;
+          }
         }
       }
     }
@@ -1038,6 +1122,26 @@ void OnDownstreamDrawCapturePresent(
     reshade::log::message(reshade::log::level::info, stream.str().c_str());
     dlss_fg_tag_transfer_audit_state = {};
     dlss_fg_tag_transfer_capture_active.store(false, std::memory_order_relaxed);
+  }
+
+  if (dlss_fg_compute_writer_audit_state.active) {
+    const auto& audit = dlss_fg_compute_writer_audit_state;
+    std::stringstream stream;
+    stream << "DL2 DLSS FG tag compute writers: original=0x"
+           << std::hex << std::uppercase << audit.original_resource
+           << " clone=0x" << audit.clone_resource
+           << " count=" << std::dec << audit.count;
+    for (uint32_t index = 0u; index < audit.count; ++index) {
+      const auto& writer = audit.writers[index];
+      stream << " cs=0x" << std::hex << std::uppercase << writer.shader_hash
+             << " uav(0x" << writer.resource << "," << static_cast<uint32_t>(writer.format)
+             << "=>0x" << writer.effective_resource << "," << static_cast<uint32_t>(writer.effective_format)
+             << ",groups=" << std::dec << writer.group_count_x << "x" << writer.group_count_y
+             << "x" << writer.group_count_z << ")";
+    }
+    reshade::log::message(reshade::log::level::info, stream.str().c_str());
+    dlss_fg_compute_writer_audit_state = {};
+    dlss_fg_compute_uav_views.clear();
   }
 
   if (dlss_fg_producer_audit_state.active) {
@@ -1598,6 +1702,23 @@ renodx::utils::settings::Settings settings = {
               .active = true,
           };
           dlss_fg_tag_transfer_capture_active.store(true, std::memory_order_relaxed);
+          return false;
+        },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture DLSS FG Compute Writers (1 frame)",
+        .section = "Debug",
+        .tooltip = "One-shot: records compute-shader hashes only when their UAV is the most recently tagged DLSS FG color resource or its RenoDX FP16 clone during the next frame. It records handles, formats, and dispatch size; no dump, readback, copy, or resource redirection.",
+        .on_click = []() {
+          std::scoped_lock lock(downstream_draw_capture_mutex);
+          dlss_fg_compute_writer_audit_state = {
+              .original_resource = dlss_fg_latest_color_original.load(std::memory_order_relaxed),
+              .clone_resource = dlss_fg_latest_color_clone.load(std::memory_order_relaxed),
+              .active = true,
+          };
+          dlss_fg_compute_uav_views.clear();
           return false;
         },
         .is_visible = []() { return current_settings_mode >= 2; },

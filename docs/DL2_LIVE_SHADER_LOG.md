@@ -306,3 +306,9 @@ Verification:
 - A matching one-frame transfer audit proved the normal display path is `0xAD085E81` Gamma FP16 clone -> FP16 intermediate -> FP16 swapchain backbuffer.
 - In the same resource lifetime, the DLSS FG tag original/clone was distinct from the Gamma clone, intermediate, and swapchain resources. DLSS FG therefore uses a separate color producer rather than the already proven Gamma-to-Present HDR chain.
 - Do not treat the successful FP16 tag route as proof that this separate producer contains HDR scene values. The next bounded diagnostic records only pixel-shader hashes that write the tagged resource during one frame.
+
+### FG tag graphics and transfer audit
+
+- The one-frame graphics writer audit found seven pixel shaders writing the tagged surface (`0xF34DDC49`, `0x43B22618`, `0x2280559E`, `0x7D1BA5D4`, `0xEDC2563A`, `0x2BECAD9C`, and `0xC6ADA2E9`). Offline decompilation classified all seven as UI, mask, or primitive compositing; none is a scene HDR/tonemap producer.
+- A later transfer capture targeted `original=0x2E40D1CEF90`, `clone=0x2E40D1CF920` and found no direct CopyResource, CopyTexture, or ResolveTexture operation (`count=0`). The immediately following handoff audit reported exactly the same original/clone pair and two Presents, proving this was not a rotating-resource false negative.
+- The remaining bounded producer path is compute/UAV. The next diagnostic is a one-frame, target-specific audit of compute UAV bindings followed by dispatch hashes. It is default-off, performs no resource readback, mutation, tag routing, or global dispatch tracing, and releases itself at the next Present.
