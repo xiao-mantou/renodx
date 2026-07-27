@@ -500,6 +500,11 @@ struct DlssFgComputeWriterAuditState {
   std::array<DlssFgComputeWriter, 8> writers = {};
   uint64_t original_resource = 0u;
   uint64_t clone_resource = 0u;
+  uint32_t initial_tag_serial = 0u;
+  uint32_t final_tag_serial = 0u;
+  uint32_t present_count = 0u;
+  uint32_t compute_uav_update_count = 0u;
+  uint32_t compute_uav_view_count = 0u;
   uint32_t count = 0u;
   bool active = false;
 };
@@ -602,15 +607,18 @@ void OnGammaAuditPushDescriptors(
       && renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::compute)
       && (update.type == reshade::api::descriptor_type::texture_unordered_access_view
           || update.type == reshade::api::descriptor_type::buffer_unordered_access_view)) {
+    std::scoped_lock lock(downstream_draw_capture_mutex);
+    auto& audit = dlss_fg_compute_writer_audit_state;
+    if (!audit.active) return;
+    ++audit.compute_uav_update_count;
+
     auto* device = cmd_list->get_device();
     if (device != nullptr) {
       for (uint32_t index = 0u; index < update.count; ++index) {
         const auto view = renodx::utils::descriptor::GetResourceViewFromDescriptorUpdate(update, index);
         if (view.handle == 0u) continue;
+        ++audit.compute_uav_view_count;
         const auto resource = device->get_resource_from_view(view);
-        std::scoped_lock lock(downstream_draw_capture_mutex);
-        const auto& audit = dlss_fg_compute_writer_audit_state;
-        if (!audit.active) return;
         if (resource.handle == audit.original_resource || resource.handle == audit.clone_resource) {
           dlss_fg_compute_uav_views[cmd_list] = view;
           break;
@@ -1125,23 +1133,31 @@ void OnDownstreamDrawCapturePresent(
   }
 
   if (dlss_fg_compute_writer_audit_state.active) {
-    const auto& audit = dlss_fg_compute_writer_audit_state;
-    std::stringstream stream;
-    stream << "DL2 DLSS FG tag compute writers: original=0x"
-           << std::hex << std::uppercase << audit.original_resource
-           << " clone=0x" << audit.clone_resource
-           << " count=" << std::dec << audit.count;
-    for (uint32_t index = 0u; index < audit.count; ++index) {
-      const auto& writer = audit.writers[index];
-      stream << " cs=0x" << std::hex << std::uppercase << writer.shader_hash
-             << " uav(0x" << writer.resource << "," << static_cast<uint32_t>(writer.format)
-             << "=>0x" << writer.effective_resource << "," << static_cast<uint32_t>(writer.effective_format)
-             << ",groups=" << std::dec << writer.group_count_x << "x" << writer.group_count_y
-             << "x" << writer.group_count_z << ")";
+    auto& audit = dlss_fg_compute_writer_audit_state;
+    audit.final_tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_relaxed);
+    ++audit.present_count;
+    if (audit.present_count >= 3u) {
+      std::stringstream stream;
+      stream << "DL2 DLSS FG tag compute writers: original=0x"
+             << std::hex << std::uppercase << audit.original_resource
+             << " clone=0x" << audit.clone_resource
+             << " presents=" << std::dec << audit.present_count
+             << " tags=" << audit.initial_tag_serial << "=>" << audit.final_tag_serial
+             << " uav_updates=" << audit.compute_uav_update_count
+             << " uav_views=" << audit.compute_uav_view_count
+             << " count=" << audit.count;
+      for (uint32_t index = 0u; index < audit.count; ++index) {
+        const auto& writer = audit.writers[index];
+        stream << " cs=0x" << std::hex << std::uppercase << writer.shader_hash
+               << " uav(0x" << writer.resource << "," << static_cast<uint32_t>(writer.format)
+               << "=>0x" << writer.effective_resource << "," << static_cast<uint32_t>(writer.effective_format)
+               << ",groups=" << std::dec << writer.group_count_x << "x" << writer.group_count_y
+               << "x" << writer.group_count_z << ")";
+      }
+      reshade::log::message(reshade::log::level::info, stream.str().c_str());
+      dlss_fg_compute_writer_audit_state = {};
+      dlss_fg_compute_uav_views.clear();
     }
-    reshade::log::message(reshade::log::level::info, stream.str().c_str());
-    dlss_fg_compute_writer_audit_state = {};
-    dlss_fg_compute_uav_views.clear();
   }
 
   if (dlss_fg_producer_audit_state.active) {
@@ -1708,14 +1724,15 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
-        .label = "Capture DLSS FG Compute Writers (1 frame)",
+        .label = "Capture DLSS FG Compute Writers (3 Presents)",
         .section = "Debug",
-        .tooltip = "One-shot: records compute-shader hashes only when their UAV is the most recently tagged DLSS FG color resource or its RenoDX FP16 clone during the next frame. It records handles, formats, and dispatch size; no dump, readback, copy, or resource redirection.",
+        .tooltip = "One-shot: covers three Presents to include a rendered and DLSS-generated frame. It records compute-UAV update counts, and compute-shader hashes only when their UAV is the most recently tagged DLSS FG color resource or its RenoDX FP16 clone. No dump, readback, copy, or resource redirection.",
         .on_click = []() {
           std::scoped_lock lock(downstream_draw_capture_mutex);
           dlss_fg_compute_writer_audit_state = {
               .original_resource = dlss_fg_latest_color_original.load(std::memory_order_relaxed),
               .clone_resource = dlss_fg_latest_color_clone.load(std::memory_order_relaxed),
+              .initial_tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_relaxed),
               .active = true,
           };
           dlss_fg_compute_uav_views.clear();
