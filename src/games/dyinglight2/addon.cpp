@@ -49,6 +49,18 @@ struct DownstreamTransfer {
   uint64_t dest = 0u;
   reshade::api::format source_format = reshade::api::format::unknown;
   reshade::api::format dest_format = reshade::api::format::unknown;
+  uint32_t source_usage = 0u;
+  uint32_t dest_usage = 0u;
+  uint32_t source_flags = 0u;
+  uint32_t dest_flags = 0u;
+  uint64_t source_clone = 0u;
+  uint64_t dest_clone = 0u;
+  uint64_t source_proxy = 0u;
+  uint64_t dest_proxy = 0u;
+  bool source_clone_enabled = false;
+  bool dest_clone_enabled = false;
+  bool source_shared = false;
+  bool dest_shared = false;
 };
 
 struct DownstreamTarget {
@@ -472,13 +484,29 @@ void RecordDownstreamTransfer(
   if (device == nullptr) return;
   const auto source_desc = device->get_resource_desc(source);
   const auto dest_desc = device->get_resource_desc(dest);
-  const DownstreamTransfer transfer = {
+  DownstreamTransfer transfer = {
       .type = type,
       .source = source.handle,
       .dest = dest.handle,
       .source_format = source_desc.texture.format,
       .dest_format = dest_desc.texture.format,
+      .source_usage = static_cast<uint32_t>(source_desc.usage),
+      .dest_usage = static_cast<uint32_t>(dest_desc.usage),
+      .source_flags = static_cast<uint32_t>(source_desc.flags),
+      .dest_flags = static_cast<uint32_t>(dest_desc.flags),
   };
+  renodx::utils::resource::GetResourceInfo(source, [&transfer](const renodx::utils::resource::ResourceInfo& info) {
+    transfer.source_clone = info.clone.handle;
+    transfer.source_proxy = info.proxy_resource.handle;
+    transfer.source_clone_enabled = info.clone_enabled;
+    transfer.source_shared = info.shared_handle != nullptr;
+  });
+  renodx::utils::resource::GetResourceInfo(dest, [&transfer](const renodx::utils::resource::ResourceInfo& info) {
+    transfer.dest_clone = info.clone.handle;
+    transfer.dest_proxy = info.proxy_resource.handle;
+    transfer.dest_clone_enabled = info.clone_enabled;
+    transfer.dest_shared = info.shared_handle != nullptr;
+  });
 
   for (uint32_t index = 0u; index < capture.transfer_count; ++index) {
     const auto& existing = capture.transfers[index];
@@ -637,7 +665,19 @@ void OnDownstreamDrawCapturePresent(
                                                                                          : "ResolveTexture";
       stream << " " << type << "(0x" << std::hex << std::uppercase << transfer.source << ", "
              << static_cast<uint32_t>(transfer.source_format) << " => 0x" << transfer.dest << ", "
-             << static_cast<uint32_t>(transfer.dest_format) << ")";
+             << static_cast<uint32_t>(transfer.dest_format)
+             << ", src_usage=0x" << transfer.source_usage
+             << ", dst_usage=0x" << transfer.dest_usage
+             << ", src_flags=0x" << transfer.source_flags
+             << ", dst_flags=0x" << transfer.dest_flags
+             << ", src_clone=0x" << transfer.source_clone
+             << ", dst_clone=0x" << transfer.dest_clone
+             << ", src_proxy=0x" << transfer.source_proxy
+             << ", dst_proxy=0x" << transfer.dest_proxy
+             << ", src_clone_enabled=" << (transfer.source_clone_enabled ? "yes" : "no")
+             << ", dst_clone_enabled=" << (transfer.dest_clone_enabled ? "yes" : "no")
+             << ", src_shared=" << (transfer.source_shared ? "yes" : "no")
+             << ", dst_shared=" << (transfer.dest_shared ? "yes" : "no") << ")";
     }
     if (queue != nullptr && swapchain != nullptr) {
       const auto back_buffer_desc =
@@ -1182,7 +1222,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .use_resource_view_cloning = true,
           .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::BACK_BUFFER,
           .usage_include = reshade::api::resource_usage::render_target,
-          .usage_exclude = reshade::api::resource_usage::copy_dest,
       });
 
       renodx::mods::swapchain::resource_upgrade_infos.push_back({
@@ -1192,7 +1231,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .use_resource_view_cloning = true,
           .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
           .usage_include = reshade::api::resource_usage::render_target,
-          .usage_exclude = reshade::api::resource_usage::copy_dest,
       });
 
       // DL2's SDR scene composite may use the sRGB view format. Promote it
@@ -1205,7 +1243,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .use_resource_view_cloning = true,
           .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
           .usage_include = reshade::api::resource_usage::render_target,
-          .usage_exclude = reshade::api::resource_usage::copy_dest,
       });
 
       reshade::register_event<reshade::addon_event::init_device>(OnInitDevice);
