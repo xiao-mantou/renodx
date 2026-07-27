@@ -1824,6 +1824,17 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "One-shot, records up to 16 unique copy or resolve operations after 0xAD085E81 until the next Present. It records only resource handles and formats, with no readback or interception.",
         .is_visible = []() { return current_settings_mode >= 2; },
     },
+      new renodx::utils::settings::Setting{
+          .key = "ClampSwapchainOutput",
+          .binding = &shader_injection.clamp_swapchain_output,
+          .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+          .default_value = 0.f,
+          .can_reset = false,
+          .label = "Clamp Swapchain Output (Test)",
+          .section = "Compatibility",
+          .tooltip = "Experimental. Clips final proxy output to [0,1] range. If this stops DLSS-G flicker, it confirms extended-range values are causing Streamline interpolation errors.",
+          .is_visible = []() { return current_settings_mode >= 2; },
+      },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture Gamma Targets (8 frames)",
@@ -1883,6 +1894,7 @@ void OnPresetOff() {
       {"DebugMode", 0.f},
       {"CaptureDownstreamDraws", 0.f},
       {"CaptureDownstreamTransfers", 0.f},
+      {"ClampSwapchainOutput", 0.f},
   });
 }
 

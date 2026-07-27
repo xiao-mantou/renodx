@@ -14,6 +14,9 @@ float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
   if (RENODX_DEBUG_MODE > 14.5 && RENODX_DEBUG_MODE < 15.5) {
     return float4(renodx::draw::SwapChainPass(float3(6.25, 6.25, 6.25), uv, config).rgb, 1.f);
   }
-
-  return float4(renodx::draw::SwapChainPass(t0.Sample(s0, uv).rgb, uv, config).rgb, 1.f);
+  float3 output = renodx::draw::SwapChainPass(t0.Sample(s0, uv).rgb, uv, config).rgb;
+  if (RENODX_CLAMP_SWAPCHAIN_OUTPUT > 0.5f) {
+    output = saturate(output);
+  }
+  return float4(output, 1.f);
 }

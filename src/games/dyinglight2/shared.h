@@ -30,6 +30,7 @@ struct ShaderInjectData {
   float custom_lut_scaling;
   float swap_chain_encoding;
   float swap_chain_encoding_color_space;
+  float clamp_swapchain_output;
   float debug_mode;
   float tone_map_white_clip;
   float auto_exposure_min;
@@ -73,6 +74,7 @@ cbuffer shader_injection : register(b13) {
 #define RENODX_COLOR_GRADE_STRENGTH            shader_injection.color_grade_strength
 #define RENODX_SWAP_CHAIN_ENCODING             shader_injection.swap_chain_encoding
 #define RENODX_SWAP_CHAIN_ENCODING_COLOR_SPACE shader_injection.swap_chain_encoding_color_space
+#define RENODX_CLAMP_SWAPCHAIN_OUTPUT             shader_injection.clamp_swapchain_output
 #define RENODX_RENO_DRT_TONE_MAP_METHOD        shader_injection.renodrt_tone_map_method
 #define RENODX_RENO_DRT_SCALING_METHOD         shader_injection.tone_map_per_channel
 #define CUSTOM_AUTO_EXPOSURE                   shader_injection.custom_auto_exposure
