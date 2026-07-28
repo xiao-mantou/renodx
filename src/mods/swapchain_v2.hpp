@@ -134,6 +134,11 @@ inline bool prevent_multiple_flip_swapchains_per_window = true;
 // run normally; only the final proxy draw is skipped once.
 inline std::atomic_bool skip_next_proxy_draw = false;
 inline std::atomic_bool skip_proxy_log_emitted = false;
+// A frame-generation integration may render the proxy at its own final-color
+// capture boundary. Suppress the normal Present callback in that case, while
+// allowing one explicitly forced invocation at the earlier boundary.
+inline std::atomic_bool suppress_proxy_draw = false;
+inline std::atomic_bool force_next_proxy_draw = false;
 
 inline bool bypass_dummy_windows = true;
 [[deprecated("Use use_auto_cloning instead")]]
@@ -1222,6 +1227,11 @@ inline void OnPresent(
   }
 
   if (utils::device_proxy::UseProxyRequested()) {
+    return;
+  }
+
+  const bool force_proxy_draw = force_next_proxy_draw.exchange(false, std::memory_order_acq_rel);
+  if (!force_proxy_draw && suppress_proxy_draw.load(std::memory_order_acquire)) {
     return;
   }
 

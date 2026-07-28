@@ -91,12 +91,24 @@ sl::Result (*real_sl_set_tag)(
 decltype(&slSetTagForFrame) real_sl_set_tag_for_frame = nullptr;
 decltype(&slDLSSGSetOptions) real_sl_dlssg_set_options = nullptr;
 decltype(&slDLSSGGetState) real_sl_dlssg_get_state = nullptr;
+using SlDlssGHookPresent = HRESULT(IDXGISwapChain*, UINT, UINT, bool&);
+using SlDlssGHookPresent1 = HRESULT(IDXGISwapChain*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*, bool&);
+SlDlssGHookPresent* real_sl_dlssg_hook_present = nullptr;
+SlDlssGHookPresent1* real_sl_dlssg_hook_present1 = nullptr;
 bool dlss_fg_options_logged = false;
 bool dlss_fg_options_hook_installed = false;
 bool dlss_fg_options_hook_wait_logged = false;
 bool dlss_fg_state_hook_installed = false;
 bool dlss_fg_state_hook_wait_logged = false;
+bool dlss_fg_present_hook_installed = false;
+bool dlss_fg_present_hook_wait_logged = false;
 std::atomic_uint32_t dlss_fg_state_diagnostic_count = 0u;
+std::atomic_bool dlss_fg_mode_active = false;
+std::atomic<reshade::api::command_queue*> dlss_fg_present_queue = nullptr;
+std::atomic<reshade::api::swapchain*> dlss_fg_present_swapchain = nullptr;
+std::atomic_uintptr_t dlss_fg_present_native_swapchain = 0u;
+std::atomic_bool dlss_fg_early_proxy_logged = false;
+std::atomic_bool dlss_fg_early_proxy_mismatch_logged = false;
 
 std::mutex dlss_fg_fence_mutex;
 ID3D12Fence* dlss_fg_inputs_fence = nullptr;
@@ -201,6 +213,43 @@ sl::Result HookedSlDLSSGGetState(
     renodx::utils::log::w("DL2 DLSS FG: GetState failed before resize/state update.");
   }
   return result;
+}
+
+void RenderDlssFgEarlyProxy(IDXGISwapChain* native_swapchain) {
+  if (!dlss_fg_mode_active.load(std::memory_order_acquire) || swap_chain_use_hdr10 < 0.5f) return;
+
+  auto* queue = dlss_fg_present_queue.load(std::memory_order_acquire);
+  auto* swapchain = dlss_fg_present_swapchain.load(std::memory_order_acquire);
+  const uintptr_t expected_native = dlss_fg_present_native_swapchain.load(std::memory_order_acquire);
+  if (queue == nullptr || swapchain == nullptr
+      || expected_native != reinterpret_cast<uintptr_t>(native_swapchain)) {
+    if (!dlss_fg_early_proxy_mismatch_logged.exchange(true, std::memory_order_acq_rel)) {
+      renodx::utils::log::w("DL2 DLSS FG: early proxy missing matching ReShade swapchain/queue.");
+    }
+    return;
+  }
+
+  renodx::mods::swapchain::force_next_proxy_draw.store(true, std::memory_order_release);
+  renodx::mods::swapchain::OnPresent(queue, swapchain, nullptr, nullptr, 0u, nullptr);
+  queue->flush_immediate_command_list();
+  if (!dlss_fg_early_proxy_logged.exchange(true, std::memory_order_acq_rel)) {
+    renodx::utils::log::i("DL2 DLSS FG: rendered and flushed HDR10 proxy before Streamline final-color capture.");
+  }
+}
+
+HRESULT HookedSlDlssGPresent(IDXGISwapChain* swapchain, UINT sync_interval, UINT flags, bool& skip) {
+  RenderDlssFgEarlyProxy(swapchain);
+  return real_sl_dlssg_hook_present(swapchain, sync_interval, flags, skip);
+}
+
+HRESULT HookedSlDlssGPresent1(
+    IDXGISwapChain* swapchain,
+    UINT sync_interval,
+    UINT flags,
+    const DXGI_PRESENT_PARAMETERS* parameters,
+    bool& skip) {
+  RenderDlssFgEarlyProxy(swapchain);
+  return real_sl_dlssg_hook_present1(swapchain, sync_interval, flags, parameters, skip);
 }
 
 const char* GetStreamlineTagName(sl::BufferType type) {
@@ -471,6 +520,11 @@ sl::Result HookedSlDLSSGSetOptions(
     const sl::DLSSGOptions& options) {
   dlss_fg_viewport.store(static_cast<uint32_t>(viewport), std::memory_order_relaxed);
   auto corrected = options;
+  const bool fg_active = corrected.mode != sl::DLSSGMode::eOff;
+  dlss_fg_mode_active.store(fg_active, std::memory_order_release);
+  renodx::mods::swapchain::suppress_proxy_draw.store(
+      fg_active && swap_chain_use_hdr10 >= 0.5f,
+      std::memory_order_release);
   const uint32_t incoming_color_format = corrected.colorBufferFormat;
   if (swap_chain_use_hdr10 >= 0.5f) {
     corrected.colorBufferFormat = static_cast<uint32_t>(DXGI_FORMAT_R10G10B10A2_UNORM);
@@ -572,8 +626,41 @@ bool TryInstallDlssGStateHook(HMODULE module) {
   return true;
 }
 
+bool TryInstallDlssGPresentHook() {
+  if (dlss_fg_present_hook_installed) return true;
+  auto* module = GetModuleHandleA("sl.dlss_g.dll");
+  if (module == nullptr) return false;
+  using GetPluginFunction = void*(const char*);
+  auto* get_plugin_function = reinterpret_cast<GetPluginFunction*>(GetProcAddress(module, "slGetPluginFunction"));
+  if (get_plugin_function == nullptr) return false;
+
+  real_sl_dlssg_hook_present = reinterpret_cast<SlDlssGHookPresent*>(get_plugin_function("slHookPresent"));
+  real_sl_dlssg_hook_present1 = reinterpret_cast<SlDlssGHookPresent1*>(get_plugin_function("slHookPresent1"));
+  if (real_sl_dlssg_hook_present == nullptr || real_sl_dlssg_hook_present1 == nullptr) return false;
+
+  if (DetourTransactionBegin() != NO_ERROR) return false;
+  if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR
+      || DetourAttach(
+             reinterpret_cast<void**>(&real_sl_dlssg_hook_present),
+             reinterpret_cast<void*>(&HookedSlDlssGPresent)) != NO_ERROR
+      || DetourAttach(
+             reinterpret_cast<void**>(&real_sl_dlssg_hook_present1),
+             reinterpret_cast<void*>(&HookedSlDlssGPresent1)) != NO_ERROR
+      || DetourTransactionCommit() != NO_ERROR) {
+    DetourTransactionAbort();
+    real_sl_dlssg_hook_present = nullptr;
+    real_sl_dlssg_hook_present1 = nullptr;
+    return false;
+  }
+  dlss_fg_present_hook_installed = true;
+  dlss_fg_present_hook_wait_logged = false;
+  renodx::utils::log::i("DL2 DLSS FG: plugin Present capture hook installed.");
+  return true;
+}
+
 void TryInstallStreamlineHook() {
-  if (dlss_fg_hook_installed && dlss_fg_options_hook_installed && dlss_fg_state_hook_installed) return;
+  if (dlss_fg_hook_installed && dlss_fg_options_hook_installed && dlss_fg_state_hook_installed
+      && dlss_fg_present_hook_installed) return;
 
   auto* module = GetModuleHandleA("sl.interposer.dll");
   if (module == nullptr) {
@@ -601,6 +688,11 @@ void TryInstallStreamlineHook() {
       && !dlss_fg_state_hook_wait_logged) {
     dlss_fg_state_hook_wait_logged = true;
     renodx::utils::log::w("DL2 DLSS FG: state fence hook was not installed.");
+  }
+  if (!dlss_fg_present_hook_installed && !TryInstallDlssGPresentHook()
+      && !dlss_fg_present_hook_wait_logged) {
+    dlss_fg_present_hook_wait_logged = true;
+    renodx::utils::log::w("DL2 DLSS FG: plugin Present capture hook was not installed.");
   }
 }
 
@@ -638,6 +730,26 @@ void RemoveStreamlineHook() {
   real_sl_dlssg_get_state = nullptr;
   dlss_fg_state_hook_installed = false;
   dlss_fg_state_hook_wait_logged = false;
+  if (dlss_fg_present_hook_installed) {
+    if (DetourTransactionBegin() == NO_ERROR
+        && DetourUpdateThread(GetCurrentThread()) == NO_ERROR
+        && DetourDetach(
+               reinterpret_cast<void**>(&real_sl_dlssg_hook_present),
+               reinterpret_cast<void*>(&HookedSlDlssGPresent)) == NO_ERROR
+        && DetourDetach(
+               reinterpret_cast<void**>(&real_sl_dlssg_hook_present1),
+               reinterpret_cast<void*>(&HookedSlDlssGPresent1)) == NO_ERROR) {
+      DetourTransactionCommit();
+    } else {
+      DetourTransactionAbort();
+    }
+  }
+  real_sl_dlssg_hook_present = nullptr;
+  real_sl_dlssg_hook_present1 = nullptr;
+  dlss_fg_present_hook_installed = false;
+  dlss_fg_present_hook_wait_logged = false;
+  dlss_fg_mode_active.store(false, std::memory_order_release);
+  renodx::mods::swapchain::suppress_proxy_draw.store(false, std::memory_order_release);
   std::scoped_lock lock(dlss_fg_fence_mutex);
   if (dlss_fg_inputs_fence != nullptr) dlss_fg_inputs_fence->Release();
   dlss_fg_inputs_fence = nullptr;
@@ -1432,6 +1544,11 @@ void OnDownstreamDrawCapturePresent(
     const reshade::api::rect*,
     uint32_t,
     const reshade::api::rect*) {
+  dlss_fg_present_queue.store(queue, std::memory_order_release);
+  dlss_fg_present_swapchain.store(swapchain, std::memory_order_release);
+  dlss_fg_present_native_swapchain.store(
+      static_cast<uintptr_t>(swapchain->get_native()),
+      std::memory_order_release);
   TryInstallStreamlineHook();
   // One-shot, first-Present only. Reports the final presentation state so an
   // HDR10 black screen can be told apart from a wrong-encoding black screen.
