@@ -129,6 +129,7 @@ std::atomic_uint64_t dlss_fg_identity_event_serial = 0u;
 std::atomic_bool dlss_fg_mode_active = false;
 std::atomic_uint32_t dlss_fg_execute_candidate_remaining = 0u;
 std::atomic_uint32_t dlss_fg_final_copy_diagnostic_count = 0u;
+std::atomic_uint32_t dlss_fg_final_copy_match_diagnostic_count = 0u;
 
 struct DlssFgCommandListCandidate {
   uint64_t back_buffer = 0u;
@@ -694,6 +695,7 @@ sl::Result HookedSlDLSSGSetOptions(
     dlss_fg_present_identity_count.store(0u, std::memory_order_release);
     dlss_fg_reshade_identity_count.store(0u, std::memory_order_release);
     dlss_fg_final_copy_diagnostic_count.store(0u, std::memory_order_release);
+    dlss_fg_final_copy_match_diagnostic_count.store(0u, std::memory_order_release);
     dlss_fg_execute_candidate_remaining.store(128u, std::memory_order_release);
     renodx::utils::log::i("DL2 DLSS FG: armed read-only backbuffer submission audit (128 candidates).");
   } else if (!fg_active && was_active) {
@@ -1686,8 +1688,26 @@ bool IsDlssFgFinalHdr10Copy(
   }
 
   bool is_swapchain_back_buffer = false;
+  uint64_t source_clone = 0u;
+  uint64_t source_fallback = 0u;
+  uint64_t dest_clone = 0u;
+  uint64_t dest_fallback = 0u;
+  bool source_clone_enabled = false;
+  bool dest_clone_enabled = false;
+  bool source_is_clone = false;
+  bool dest_is_clone = false;
+  renodx::utils::resource::GetResourceInfo(source, [&](const renodx::utils::resource::ResourceInfo& info) {
+    source_clone = info.clone.handle;
+    source_fallback = info.fallback.handle;
+    source_clone_enabled = info.clone_enabled;
+    source_is_clone = info.is_clone;
+  });
   renodx::utils::resource::GetResourceInfo(dest, [&](const renodx::utils::resource::ResourceInfo& info) {
     is_swapchain_back_buffer = info.is_swap_chain;
+    dest_clone = info.clone.handle;
+    dest_fallback = info.fallback.handle;
+    dest_clone_enabled = info.clone_enabled;
+    dest_is_clone = info.is_clone;
   });
   if (!is_swapchain_back_buffer) return false;
 
@@ -1703,13 +1723,24 @@ bool IsDlssFgFinalHdr10Copy(
                           && source_desc.texture.height == dest_desc.texture.height;
 
   const uint32_t diagnostic = dlss_fg_final_copy_diagnostic_count.fetch_add(1u, std::memory_order_relaxed);
-  if (diagnostic < 8u) {
+  const uint32_t match_diagnostic = compatible
+                                        ? dlss_fg_final_copy_match_diagnostic_count.fetch_add(1u, std::memory_order_relaxed)
+                                        : UINT32_MAX;
+  if (diagnostic < 16u || match_diagnostic < 8u) {
     std::ostringstream message;
     message << "DL2 DLSS FG final copy: source=0x" << std::hex << std::uppercase << source.handle
             << " dest=0x" << dest.handle
+            << " source_clone=0x" << source_clone
+            << " source_fallback=0x" << source_fallback
+            << " dest_clone=0x" << dest_clone
+            << " dest_fallback=0x" << dest_fallback
             << std::dec << " source_format=" << static_cast<uint32_t>(source_desc.texture.format)
             << " dest_format=" << static_cast<uint32_t>(dest_desc.texture.format)
             << " size=" << source_desc.texture.width << "x" << source_desc.texture.height
+            << " source_clone_enabled=" << (source_clone_enabled ? 1 : 0)
+            << " dest_clone_enabled=" << (dest_clone_enabled ? 1 : 0)
+            << " source_is_clone=" << (source_is_clone ? 1 : 0)
+            << " dest_is_clone=" << (dest_is_clone ? 1 : 0)
             << " preserve=" << (compatible ? 1 : 0);
     renodx::utils::log::i(message.str().c_str());
   }
@@ -1720,7 +1751,18 @@ bool OnDownstreamCopyResource(
     reshade::api::command_list* cmd_list,
     reshade::api::resource source,
     reshade::api::resource dest) {
+  static thread_local uint32_t callback_depth = 0u;
+  ++callback_depth;
+  const auto current_depth = callback_depth;
   const bool preserve_native_copy = IsDlssFgFinalHdr10Copy(cmd_list, source, dest);
+  if (preserve_native_copy) {
+    const uint32_t diagnostic = dlss_fg_final_copy_match_diagnostic_count.load(std::memory_order_relaxed);
+    if (diagnostic <= 8u) {
+      std::ostringstream message;
+      message << "DL2 DLSS FG final copy callback: depth=" << current_depth;
+      renodx::utils::log::i(message.str().c_str());
+    }
+  }
   MarkDlssFgCommandListSwapchainWrite(cmd_list, source, dest, false, true, preserve_native_copy);
   RecordDlssFgTagTransfer(DownstreamTransferType::copy_resource, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::copy_resource, cmd_list, source, dest);
@@ -1729,8 +1771,10 @@ bool OnDownstreamCopyResource(
     // the real backbuffer instead of letting resource upgrading redirect it to
     // a per-backbuffer FP16 clone that may contain an older rendered frame.
     cmd_list->copy_resource(source, dest);
+    --callback_depth;
     return true;
   }
+  --callback_depth;
   return false;
 }
 

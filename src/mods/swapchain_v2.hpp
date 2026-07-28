@@ -134,6 +134,7 @@ inline bool prevent_multiple_flip_swapchains_per_window = true;
 // run normally; only the final proxy draw is skipped once.
 inline std::atomic_bool skip_next_proxy_draw = false;
 inline std::atomic_bool skip_proxy_log_emitted = false;
+inline std::atomic_bool preserve_proxy_log_emitted = false;
 inline std::mutex skip_proxy_back_buffers_mutex;
 inline std::unordered_set<uint64_t> skip_proxy_back_buffers;
 
@@ -1266,9 +1267,11 @@ inline void OnPresent(
   assert(proxy_pass != nullptr);
 
   if (ConsumeProxyDrawSkipForBackBuffer({back_buffer_handle})) {
-    reshade::log::message(
-        reshade::log::level::info,
-        "mods::swapchain::v2 OnPresent: preserved one frame-generation backbuffer copy.");
+    if (!preserve_proxy_log_emitted.exchange(true, std::memory_order_acq_rel)) {
+      reshade::log::message(
+          reshade::log::level::info,
+          "mods::swapchain::v2 OnPresent: preserving frame-generation backbuffer copies.");
+    }
     return;
   }
 
