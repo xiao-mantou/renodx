@@ -381,4 +381,11 @@ DL2 present state(... format=r10g10b10a2_unorm, clone=0x..., clone_enabled=1 ...
 If `clone=0x0` or `clone_enabled=0`, the black screen is the `draw.hpp:163` abort
 and the fix belongs in clone activation for an RGB10 backbuffer. If the clone is
 valid and the screen is still black, the cause is downstream of the proxy draw
-(Streamline swapchain interception), not the container.
+ (Streamline swapchain interception), not the container.
+
+The DLSS-G guide also requires Hudless to use the same color space and
+post-processing as the final color backbuffer. DL2's captured HUD/UI tags are
+pre-proxy resources while the final output is HDR10/PQ, so an optional
+`DLSS FG Suppress Pre-PQ Color Tags` switch now omits those auxiliary tags and
+lets Streamline use its automatically intercepted final color. This is an A/B
+compatibility test and may reduce UI reconstruction quality.

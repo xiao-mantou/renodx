@@ -41,6 +41,7 @@ float swap_chain_format_setting = 0.f;
 float swap_chain_use_hdr10 = 1.f;
 
 float dlss_fg_tag_clone = 0.f;
+float dlss_fg_suppress_color_tags = 0.f;
 float dlss_fg_skip_generated_proxy = 0.f;
 bool dlss_fg_tag_capture = false;
 bool dlss_fg_present_cadence_capture = false;
@@ -53,6 +54,7 @@ uint32_t dlss_fg_last_present_tag_serial = 0u;
 bool dlss_fg_hook_installed = false;
 bool dlss_fg_waiting_for_streamline_logged = false;
 bool dlss_fg_tag_clone_logged = false;
+bool dlss_fg_color_tag_suppression_logged = false;
 
 struct DlssFgHandoffAudit {
   bool armed = false;
@@ -174,11 +176,31 @@ struct RoutedStreamlineTags {
 
 RoutedStreamlineTags RouteStreamlineColorTags(const sl::ResourceTag* tags, uint32_t num_tags) {
   RoutedStreamlineTags routed = {.tags = tags, .count = num_tags};
-  if (dlss_fg_tag_clone < 0.5f || tags == nullptr || num_tags == 0u) return routed;
+  if (tags == nullptr || num_tags == 0u) return routed;
+
+  if (dlss_fg_suppress_color_tags >= 0.5f) {
+    routed.tags_storage.reserve(num_tags);
+    for (uint32_t index = 0u; index < num_tags; ++index) {
+      const auto type = tags[index].type;
+      if (type == sl::kBufferTypeHUDLessColor || type == sl::kBufferTypeUIColorAndAlpha) continue;
+      routed.tags_storage.push_back(tags[index]);
+    }
+    if (routed.tags_storage.size() != num_tags) {
+      routed.count = static_cast<uint32_t>(routed.tags_storage.size());
+      routed.tags = routed.tags_storage.data();
+      if (!dlss_fg_color_tag_suppression_logged) {
+        dlss_fg_color_tag_suppression_logged = true;
+        renodx::utils::log::i("DL2 DLSS FG: suppressed pre-PQ HUDLessColor/UIColorAndAlpha tags.");
+      }
+    }
+    if (routed.count == 0u) return routed;
+  }
+
+  if (dlss_fg_tag_clone < 0.5f) return routed;
 
   std::unordered_map<uint64_t, size_t> replacement_indices;
-  for (uint32_t index = 0u; index < num_tags; ++index) {
-    const auto& tag = tags[index];
+  for (uint32_t index = 0u; index < routed.count; ++index) {
+    const auto& tag = routed.tags[index];
     if ((tag.type != sl::kBufferTypeHUDLessColor && tag.type != sl::kBufferTypeUIColorAndAlpha)
         || tag.resource == nullptr || tag.resource->native == nullptr) {
       continue;
@@ -193,7 +215,7 @@ RoutedStreamlineTags RouteStreamlineColorTags(const sl::ResourceTag* tags, uint3
     if (clone_info == nullptr || !clone_info->is_clone) continue;
 
     if (routed.tags_storage.empty()) {
-      routed.tags_storage.assign(tags, tags + num_tags);
+      if (routed.tags_storage.empty()) routed.tags_storage.assign(tags, tags + num_tags);
       routed.resources_storage.reserve(num_tags);
       routed.tags = routed.tags_storage.data();
     }
@@ -2011,6 +2033,17 @@ renodx::utils::settings::Settings settings = {
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
+        .key = "DLSSFGSuppressPrePQTags",
+        .binding = &dlss_fg_suppress_color_tags,
+        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "DLSS FG Suppress Pre-PQ Color Tags",
+        .section = "Compatibility",
+        .tooltip = "Experimental. Omits DL2's pre-PQ HUDLessColor and UIColorAndAlpha tags so DLSS-G uses the automatically intercepted final HDR10/PQ color. This may reduce UI reconstruction quality but avoids mixing linear inputs with PQ output.",
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture DLSS FG Backbuffer Barriers (128)",
         .section = "Debug",
@@ -2121,6 +2154,7 @@ void OnPresetOff() {
       {"FxLensFlare", 100.f},
       {"FrameGenerationCompatibility", 0.f},
       {"DLSSFGUseTaggedClone", 0.f},
+      {"DLSSFGSuppressPrePQTags", 0.f},
       {"DLSSFGSkipGeneratedProxy", 0.f},
       {"DebugMode", 0.f},
       {"CaptureDownstreamDraws", 0.f},
