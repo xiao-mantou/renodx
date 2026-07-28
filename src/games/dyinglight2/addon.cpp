@@ -43,6 +43,7 @@ float dlss_fg_tag_clone = 0.f;
 float dlss_fg_skip_generated_proxy = 0.f;
 bool dlss_fg_tag_capture = false;
 bool dlss_fg_present_cadence_capture = false;
+std::atomic_uint32_t dlss_fg_backbuffer_barrier_capture = 0u;
 std::atomic_uint32_t dlss_fg_color_tag_serial = 0u;
 std::atomic_uint64_t dlss_fg_latest_color_original = 0u;
 std::atomic_uint64_t dlss_fg_latest_color_clone = 0u;
@@ -1078,6 +1079,48 @@ bool OnDownstreamResolveTextureRegion(
   return false;
 }
 
+void OnDlssFgBackbufferBarrier(
+    reshade::api::command_list*,
+    uint32_t count,
+    const reshade::api::resource* resources,
+    const reshade::api::resource_usage* old_states,
+    const reshade::api::resource_usage* new_states) {
+  if (dlss_fg_backbuffer_barrier_capture.load(std::memory_order_relaxed) == 0u
+      || resources == nullptr || old_states == nullptr || new_states == nullptr) {
+    return;
+  }
+
+  for (uint32_t index = 0u; index < count; ++index) {
+    const auto resource = resources[index];
+    bool is_backbuffer = false;
+    uint32_t width = 0u;
+    uint32_t height = 0u;
+    renodx::utils::resource::GetResourceInfo(resource, [&](const renodx::utils::resource::ResourceInfo& info) {
+      is_backbuffer = info.is_swap_chain;
+      width = info.desc.texture.width;
+      height = info.desc.texture.height;
+    });
+    if (!is_backbuffer || width < 128u || height < 128u) continue;
+
+    uint32_t remaining = dlss_fg_backbuffer_barrier_capture.load(std::memory_order_relaxed);
+    while (remaining != 0u
+           && !dlss_fg_backbuffer_barrier_capture.compare_exchange_weak(
+               remaining, remaining - 1u, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+    }
+    if (remaining == 0u) return;
+
+    std::stringstream stream;
+    stream << "DL2 DLSS FG backbuffer barrier: tag="
+           << dlss_fg_color_tag_serial.load(std::memory_order_relaxed)
+           << " resource=0x" << std::hex << std::uppercase << resource.handle
+           << " size=" << std::dec << width << "x" << height
+           << " old=0x" << std::hex << static_cast<uint32_t>(old_states[index])
+           << " new=0x" << static_cast<uint32_t>(new_states[index])
+           << " remaining=" << std::dec << (remaining - 1u);
+    reshade::log::message(reshade::log::level::info, stream.str().c_str());
+  }
+}
+
 void OnDownstreamDrawCapturePresent(
     reshade::api::command_queue* queue,
     reshade::api::swapchain* swapchain,
@@ -1880,6 +1923,17 @@ renodx::utils::settings::Settings settings = {
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture DLSS FG Backbuffer Barriers (128)",
+        .section = "Debug",
+        .tooltip = "One-shot: records up to 128 barriers for full-size swapchain backbuffers and clones, including old/new states and the current Streamline tag serial. No mutation or readback.",
+        .on_click = []() {
+          dlss_fg_backbuffer_barrier_capture.store(128u, std::memory_order_release);
+          return false;
+        },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
         .key = "DebugMode",
         .binding = &shader_injection.debug_mode,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
@@ -2111,6 +2165,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::utils::command_action::Unregister(OnDownstreamDrawCapture);
       renodx::utils::command_action::Unregister(OnGammaDrawAudit);
       reshade::unregister_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
+      reshade::unregister_event<reshade::addon_event::barrier>(OnDlssFgBackbufferBarrier);
       reshade::unregister_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
       reshade::unregister_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
       reshade::unregister_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
@@ -2130,6 +2185,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   // proxy copy/resolve work issued from its own Present callback.
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     reshade::register_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
+    reshade::register_event<reshade::addon_event::barrier>(OnDlssFgBackbufferBarrier);
   }
 
   return TRUE;
