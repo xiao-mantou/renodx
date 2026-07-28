@@ -912,6 +912,12 @@ static void OnInitSwapchain(reshade::api::swapchain* swapchain, bool resize) {
     return;
   }
 
+  {
+    std::stringstream s;
+    s << "mods::swapchain::OnInitSwapchain(before ChangeColorSpace: set_color_space=" << (set_color_space ? "true" : "false");
+    s << ", target_color_space=" << static_cast<int>(target_color_space) << ")";
+    reshade::log::message(reshade::log::level::info, s.str().c_str());
+  }
   if (set_color_space) {
     renodx::utils::swapchain::ChangeColorSpace(swapchain, target_color_space);
   }
