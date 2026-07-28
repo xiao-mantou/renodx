@@ -134,6 +134,8 @@ inline bool prevent_multiple_flip_swapchains_per_window = true;
 // run normally; only the final proxy draw is skipped once.
 inline std::atomic_bool skip_next_proxy_draw = false;
 inline std::atomic_bool skip_proxy_log_emitted = false;
+inline std::mutex skip_proxy_back_buffers_mutex;
+inline std::unordered_set<uint64_t> skip_proxy_back_buffers;
 
 inline bool bypass_dummy_windows = true;
 [[deprecated("Use use_auto_cloning instead")]]
@@ -753,6 +755,23 @@ static bool OnCreateSwapchain(reshade::api::swapchain_desc& desc, void* hwnd) {
   return true;
 }
 
+inline void SkipProxyDrawForBackBuffer(reshade::api::resource back_buffer) {
+  if (back_buffer.handle == 0u) return;
+  std::scoped_lock lock(skip_proxy_back_buffers_mutex);
+  skip_proxy_back_buffers.insert(back_buffer.handle);
+}
+
+inline bool ConsumeProxyDrawSkipForBackBuffer(reshade::api::resource back_buffer) {
+  if (back_buffer.handle == 0u) return false;
+  std::scoped_lock lock(skip_proxy_back_buffers_mutex);
+  return skip_proxy_back_buffers.erase(back_buffer.handle) != 0u;
+}
+
+inline void ClearProxyDrawBackBufferSkips() {
+  std::scoped_lock lock(skip_proxy_back_buffers_mutex);
+  skip_proxy_back_buffers.clear();
+}
+
 static void OnPresentForResizeBuffer(
     reshade::api::command_queue* queue,
     reshade::api::swapchain* swapchain,
@@ -1245,6 +1264,13 @@ inline void OnPresent(
     proxy_pass = pass_pointer->second;
   }
   assert(proxy_pass != nullptr);
+
+  if (ConsumeProxyDrawSkipForBackBuffer({back_buffer_handle})) {
+    reshade::log::message(
+        reshade::log::level::info,
+        "mods::swapchain::v2 OnPresent: preserved one frame-generation backbuffer copy.");
+    return;
+  }
 
   if (skip_next_proxy_draw.exchange(false, std::memory_order_acq_rel)) {
     if (!skip_proxy_log_emitted.exchange(true, std::memory_order_acq_rel)) {

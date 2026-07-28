@@ -128,6 +128,7 @@ std::atomic_uint32_t dlss_fg_reshade_identity_count = 0u;
 std::atomic_uint64_t dlss_fg_identity_event_serial = 0u;
 std::atomic_bool dlss_fg_mode_active = false;
 std::atomic_uint32_t dlss_fg_execute_candidate_remaining = 0u;
+std::atomic_uint32_t dlss_fg_final_copy_diagnostic_count = 0u;
 
 struct DlssFgCommandListCandidate {
   uint64_t back_buffer = 0u;
@@ -140,6 +141,7 @@ struct DlssFgCommandListCandidate {
   bool returned_to_present = false;
   bool bound_swapchain_rtv = false;
   bool copied_to_swapchain = false;
+  bool preserved_native_copy = false;
 };
 
 std::mutex dlss_fg_command_list_candidate_mutex;
@@ -691,8 +693,11 @@ sl::Result HookedSlDLSSGSetOptions(
     dlss_fg_identity_event_serial.store(0u, std::memory_order_release);
     dlss_fg_present_identity_count.store(0u, std::memory_order_release);
     dlss_fg_reshade_identity_count.store(0u, std::memory_order_release);
+    dlss_fg_final_copy_diagnostic_count.store(0u, std::memory_order_release);
     dlss_fg_execute_candidate_remaining.store(128u, std::memory_order_release);
     renodx::utils::log::i("DL2 DLSS FG: armed read-only backbuffer submission audit (128 candidates).");
+  } else if (!fg_active && was_active) {
+    renodx::mods::swapchain::ClearProxyDrawBackBufferSkips();
   }
   const uint32_t incoming_color_format = corrected.colorBufferFormat;
   if (swap_chain_use_hdr10 >= 0.5f) {
@@ -1283,9 +1288,9 @@ void MarkDlssFgCommandListSwapchainWrite(
     reshade::api::resource source,
     reshade::api::resource resource,
     bool bound_rtv,
-    bool copy_dest) {
+    bool copy_dest,
+    bool preserved_native_copy = false) {
   if (!dlss_fg_mode_active.load(std::memory_order_acquire)
-      || dlss_fg_execute_candidate_remaining.load(std::memory_order_relaxed) == 0u
       || cmd_list == nullptr || resource.handle == 0u) {
     return;
   }
@@ -1302,6 +1307,7 @@ void MarkDlssFgCommandListSwapchainWrite(
   candidate.tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_relaxed);
   candidate.bound_swapchain_rtv |= bound_rtv;
   candidate.copied_to_swapchain |= copy_dest;
+  candidate.preserved_native_copy |= preserved_native_copy;
 }
 
 void OnDownstreamBindRenderTargets(
@@ -1669,13 +1675,62 @@ void RecordDlssFgTagTransfer(
   audit.transfers[audit.count++] = transfer;
 }
 
+bool IsDlssFgFinalHdr10Copy(
+    reshade::api::command_list* cmd_list,
+    reshade::api::resource source,
+    reshade::api::resource dest) {
+  if (!dlss_fg_mode_active.load(std::memory_order_acquire)
+      || swap_chain_use_hdr10 < 0.5f
+      || cmd_list == nullptr || source.handle == 0u || dest.handle == 0u) {
+    return false;
+  }
+
+  bool is_swapchain_back_buffer = false;
+  renodx::utils::resource::GetResourceInfo(dest, [&](const renodx::utils::resource::ResourceInfo& info) {
+    is_swapchain_back_buffer = info.is_swap_chain;
+  });
+  if (!is_swapchain_back_buffer) return false;
+
+  auto* device = cmd_list->get_device();
+  if (device == nullptr) return false;
+  const auto source_desc = device->get_resource_desc(source);
+  const auto dest_desc = device->get_resource_desc(dest);
+  const bool compatible = source_desc.type == reshade::api::resource_type::texture_2d
+                          && dest_desc.type == reshade::api::resource_type::texture_2d
+                          && source_desc.texture.format == reshade::api::format::r10g10b10a2_unorm
+                          && dest_desc.texture.format == reshade::api::format::r10g10b10a2_unorm
+                          && source_desc.texture.width == dest_desc.texture.width
+                          && source_desc.texture.height == dest_desc.texture.height;
+
+  const uint32_t diagnostic = dlss_fg_final_copy_diagnostic_count.fetch_add(1u, std::memory_order_relaxed);
+  if (diagnostic < 8u) {
+    std::ostringstream message;
+    message << "DL2 DLSS FG final copy: source=0x" << std::hex << std::uppercase << source.handle
+            << " dest=0x" << dest.handle
+            << std::dec << " source_format=" << static_cast<uint32_t>(source_desc.texture.format)
+            << " dest_format=" << static_cast<uint32_t>(dest_desc.texture.format)
+            << " size=" << source_desc.texture.width << "x" << source_desc.texture.height
+            << " preserve=" << (compatible ? 1 : 0);
+    renodx::utils::log::i(message.str().c_str());
+  }
+  return compatible;
+}
+
 bool OnDownstreamCopyResource(
     reshade::api::command_list* cmd_list,
     reshade::api::resource source,
     reshade::api::resource dest) {
-  MarkDlssFgCommandListSwapchainWrite(cmd_list, source, dest, false, true);
+  const bool preserve_native_copy = IsDlssFgFinalHdr10Copy(cmd_list, source, dest);
+  MarkDlssFgCommandListSwapchainWrite(cmd_list, source, dest, false, true, preserve_native_copy);
   RecordDlssFgTagTransfer(DownstreamTransferType::copy_resource, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::copy_resource, cmd_list, source, dest);
+  if (preserve_native_copy) {
+    // Streamline has already produced the final RGB10 frame. Keep this copy on
+    // the real backbuffer instead of letting resource upgrading redirect it to
+    // a per-backbuffer FP16 clone that may contain an older rendered frame.
+    cmd_list->copy_resource(source, dest);
+    return true;
+  }
   return false;
 }
 
@@ -1798,6 +1853,10 @@ void OnDlssFgExecuteCommandList(
   if (!candidate.entered_render_target && !candidate.returned_to_present
       && !candidate.bound_swapchain_rtv && !candidate.copied_to_swapchain) return;
 
+  if (candidate.preserved_native_copy) {
+    renodx::mods::swapchain::SkipProxyDrawForBackBuffer({candidate.back_buffer});
+  }
+
   uint32_t remaining = dlss_fg_execute_candidate_remaining.load(std::memory_order_relaxed);
   while (remaining != 0u
          && !dlss_fg_execute_candidate_remaining.compare_exchange_weak(
@@ -1817,6 +1876,7 @@ void OnDlssFgExecuteCommandList(
           << " returned_present=" << (candidate.returned_to_present ? 1 : 0)
           << " bound_rtv=" << (candidate.bound_swapchain_rtv ? 1 : 0)
           << " copy_dest=" << (candidate.copied_to_swapchain ? 1 : 0)
+          << " preserve_copy=" << (candidate.preserved_native_copy ? 1 : 0)
           << " transitions=" << candidate.transition_count
           << " states=0x" << std::hex << candidate.first_old_state
           << "=>0x" << candidate.last_new_state
