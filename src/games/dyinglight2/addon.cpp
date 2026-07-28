@@ -96,12 +96,21 @@ bool dlss_fg_options_hook_installed = false;
 bool dlss_fg_options_hook_wait_logged = false;
 bool dlss_fg_state_hook_installed = false;
 bool dlss_fg_state_hook_wait_logged = false;
+std::atomic_uint32_t dlss_fg_state_diagnostic_count = 0u;
 
 std::mutex dlss_fg_fence_mutex;
 ID3D12Fence* dlss_fg_inputs_fence = nullptr;
 uint64_t dlss_fg_inputs_fence_value = 0u;
 std::atomic_uint32_t dlss_fg_viewport = UINT_MAX;
 std::vector<Microsoft::WRL::ComPtr<IUnknown>> dlss_fg_retained_resources;
+
+enum class DlssFgWaitResult : uint8_t {
+  no_fence,
+  already_complete,
+  wait_completed,
+  timeout,
+  set_event_failed,
+};
 
 void UpdateDlssFgFence(const sl::DLSSGState& state) {
   auto* next_fence = static_cast<ID3D12Fence*>(state.inputsProcessingCompletionFence);
@@ -112,33 +121,49 @@ void UpdateDlssFgFence(const sl::DLSSGState& state) {
   dlss_fg_inputs_fence_value = state.lastPresentInputsProcessingCompletionFenceValue;
 }
 
-bool WaitForDlssFgInputs() {
+DlssFgWaitResult WaitForDlssFgInputs(uint64_t *target_value, uint64_t *completed_before) {
   Microsoft::WRL::ComPtr<ID3D12Fence> fence;
   uint64_t value = 0u;
   {
     std::scoped_lock lock(dlss_fg_fence_mutex);
-    if (dlss_fg_inputs_fence == nullptr || dlss_fg_inputs_fence_value == 0u) return true;
+    if (target_value != nullptr) *target_value = dlss_fg_inputs_fence_value;
+    if (dlss_fg_inputs_fence == nullptr || dlss_fg_inputs_fence_value == 0u) {
+      if (completed_before != nullptr) *completed_before = 0u;
+      return DlssFgWaitResult::no_fence;
+    }
     fence = dlss_fg_inputs_fence;
     value = dlss_fg_inputs_fence_value;
   }
-  if (fence->GetCompletedValue() >= value) {
+  const uint64_t completed = fence->GetCompletedValue();
+  if (completed_before != nullptr) *completed_before = completed;
+  if (completed >= value) {
     std::scoped_lock lock(dlss_fg_fence_mutex);
     dlss_fg_retained_resources.clear();
-    return true;
+    return DlssFgWaitResult::already_complete;
   }
 
   HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-  if (event == nullptr) return false;
+  if (event == nullptr) return DlssFgWaitResult::set_event_failed;
   const HRESULT set_event_result = fence->SetEventOnCompletion(value, event);
   const DWORD wait_result = set_event_result == S_OK ? WaitForSingleObject(event, 1000u) : WAIT_FAILED;
   CloseHandle(event);
   if (wait_result == WAIT_OBJECT_0) {
     std::scoped_lock lock(dlss_fg_fence_mutex);
     dlss_fg_retained_resources.clear();
-    return true;
+    return DlssFgWaitResult::wait_completed;
   }
-  renodx::utils::log::w("DL2 DLSS FG: input fence wait timed out before resize.");
-  return false;
+  return set_event_result == S_OK ? DlssFgWaitResult::timeout : DlssFgWaitResult::set_event_failed;
+}
+
+const char *DlssFgWaitResultName(DlssFgWaitResult result) {
+  switch (result) {
+    case DlssFgWaitResult::no_fence: return "no_fence";
+    case DlssFgWaitResult::already_complete: return "already_complete";
+    case DlssFgWaitResult::wait_completed: return "wait_completed";
+    case DlssFgWaitResult::timeout: return "timeout";
+    case DlssFgWaitResult::set_event_failed: return "set_event_failed";
+  }
+  return "unknown";
 }
 
 void RetainDlssFgResource(uint64_t handle) {
@@ -156,7 +181,22 @@ sl::Result HookedSlDLSSGGetState(
     sl::DLSSGState& state,
     const sl::DLSSGOptions* options) {
   const auto result = real_sl_dlssg_get_state(viewport, state, options);
-  if (result == sl::Result::eOk) UpdateDlssFgFence(state);
+  if (result == sl::Result::eOk) {
+    UpdateDlssFgFence(state);
+    const uint32_t diagnostic_count = dlss_fg_state_diagnostic_count.fetch_add(1u);
+    if (diagnostic_count < 16u) {
+      auto *fence = static_cast<ID3D12Fence *>(state.inputsProcessingCompletionFence);
+      const uint64_t completed = fence != nullptr ? fence->GetCompletedValue() : 0u;
+      std::ostringstream message;
+      message << "DL2 DLSS FG: GetState viewport=" << static_cast<uint32_t>(viewport)
+              << " fence=" << static_cast<void *>(fence)
+              << " target=" << state.lastPresentInputsProcessingCompletionFenceValue
+              << " completed=" << completed;
+      renodx::utils::log::i(message.str().c_str());
+    }
+  } else {
+    renodx::utils::log::w("DL2 DLSS FG: GetState failed before resize/state update.");
+  }
   return result;
 }
 
@@ -605,20 +645,28 @@ void RemoveStreamlineHook() {
 void OnDestroySwapchain(reshade::api::swapchain*, bool resize) {
   if (!resize) return;
   const uint32_t viewport_value = dlss_fg_viewport.load(std::memory_order_relaxed);
+  bool state_updated = false;
   if (real_sl_dlssg_get_state != nullptr && viewport_value != UINT_MAX) {
     sl::DLSSGState state{};
     if (real_sl_dlssg_get_state(sl::ViewportHandle(viewport_value), state, nullptr) == sl::Result::eOk) {
       UpdateDlssFgFence(state);
+      state_updated = true;
     }
   }
-  if (WaitForDlssFgInputs()) {
-    renodx::utils::log::i("DL2 DLSS FG: input fence completed before resize.");
-  } else {
+  uint64_t target = 0u;
+  uint64_t completed = 0u;
+  const auto wait_result = WaitForDlssFgInputs(&target, &completed);
+  std::ostringstream wait_message;
+  wait_message << "DL2 DLSS FG: resize wait result=" << DlssFgWaitResultName(wait_result)
+               << " state_updated=" << (state_updated ? "yes" : "no")
+               << " target=" << target << " completed_before=" << completed;
+  renodx::utils::log::i(wait_message.str().c_str());
+  if (wait_result == DlssFgWaitResult::timeout || wait_result == DlssFgWaitResult::set_event_failed) {
     // Keep native resources alive if DLSS-G stopped progressing during focus
     // loss. This avoids destroying an object still referenced by FG.
     RetainDlssFgResource(dlss_fg_latest_color_original.load(std::memory_order_relaxed));
     RetainDlssFgResource(dlss_fg_latest_color_clone.load(std::memory_order_relaxed));
-    renodx::utils::log::w("DL2 DLSS FG: retained tagged resources after fence timeout.");
+    renodx::utils::log::w("DL2 DLSS FG: retained tagged resources after fence wait failure.");
   }
 }
 // Disabled by default. When armed from the Advanced diagnostic setting, this
