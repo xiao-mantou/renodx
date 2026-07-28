@@ -13,6 +13,7 @@
 #include <windef.h>
 
 #include <frozen/unordered_map.h>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -126,6 +127,13 @@ inline bool swapchain_proxy_revert_state = false;
 static bool& use_device_proxy = utils::device_proxy::use_device_proxy;
 static bool& use_auto_cloning = utils::resource::upgrade::use_auto_cloning;
 inline bool prevent_multiple_flip_swapchains_per_window = true;
+
+// Game-specific frame-generation compatibility callbacks can arm this after
+// a real Present so the immediately following generated Present leaves the
+// game's backbuffer untouched. Resource upgrades and Present plumbing still
+// run normally; only the final proxy draw is skipped once.
+inline std::atomic_bool skip_next_proxy_draw = false;
+inline std::atomic_bool skip_proxy_log_emitted = false;
 
 inline bool bypass_dummy_windows = true;
 [[deprecated("Use use_auto_cloning instead")]]
@@ -1237,6 +1245,15 @@ inline void OnPresent(
     proxy_pass = pass_pointer->second;
   }
   assert(proxy_pass != nullptr);
+
+  if (skip_next_proxy_draw.exchange(false, std::memory_order_acq_rel)) {
+    if (!skip_proxy_log_emitted.exchange(true, std::memory_order_acq_rel)) {
+      reshade::log::message(
+          reshade::log::level::info,
+          "mods::swapchain::v2 OnPresent: skipped one generated proxy draw.");
+    }
+    return;
+  }
 
   if (!proxy_pass->Render(swapchain, queue)) {
     proxy_pass->Destroy(device);

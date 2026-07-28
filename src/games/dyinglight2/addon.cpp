@@ -1139,11 +1139,11 @@ void OnDownstreamDrawCapturePresent(
     const uint32_t tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_acquire);
     if (tag_serial != 0u && tag_serial != dlss_fg_last_present_tag_serial) {
       dlss_fg_last_present_tag_serial = tag_serial;
-      renodx::mods::swapchain::v1::skip_next_proxy_draw.store(true, std::memory_order_release);
+      renodx::mods::swapchain::skip_next_proxy_draw.store(true, std::memory_order_release);
     }
   } else {
     dlss_fg_last_present_tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_relaxed);
-    renodx::mods::swapchain::v1::skip_next_proxy_draw.store(false, std::memory_order_release);
+    renodx::mods::swapchain::skip_next_proxy_draw.store(false, std::memory_order_release);
   }
 
   std::scoped_lock lock(downstream_draw_capture_mutex);
