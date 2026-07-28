@@ -8,12 +8,15 @@
 #include <array>
 #include <atomic>
 #include <d3d11.h>
+#include <d3d12.h>
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
 
 #include <embed/shaders.h>
+
+#include <wrl/client.h>
 
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>
@@ -87,9 +90,75 @@ sl::Result (*real_sl_set_tag)(
 
 decltype(&slSetTagForFrame) real_sl_set_tag_for_frame = nullptr;
 decltype(&slDLSSGSetOptions) real_sl_dlssg_set_options = nullptr;
+decltype(&slDLSSGGetState) real_sl_dlssg_get_state = nullptr;
 bool dlss_fg_options_logged = false;
 bool dlss_fg_options_hook_installed = false;
 bool dlss_fg_options_hook_wait_logged = false;
+bool dlss_fg_state_hook_installed = false;
+bool dlss_fg_state_hook_wait_logged = false;
+
+std::mutex dlss_fg_fence_mutex;
+ID3D12Fence* dlss_fg_inputs_fence = nullptr;
+uint64_t dlss_fg_inputs_fence_value = 0u;
+std::atomic_uint32_t dlss_fg_viewport = UINT_MAX;
+std::vector<Microsoft::WRL::ComPtr<IUnknown>> dlss_fg_retained_resources;
+
+void UpdateDlssFgFence(const sl::DLSSGState& state) {
+  auto* next_fence = static_cast<ID3D12Fence*>(state.inputsProcessingCompletionFence);
+  if (next_fence != nullptr) next_fence->AddRef();
+  std::scoped_lock lock(dlss_fg_fence_mutex);
+  if (dlss_fg_inputs_fence != nullptr) dlss_fg_inputs_fence->Release();
+  dlss_fg_inputs_fence = next_fence;
+  dlss_fg_inputs_fence_value = state.lastPresentInputsProcessingCompletionFenceValue;
+}
+
+bool WaitForDlssFgInputs() {
+  Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+  uint64_t value = 0u;
+  {
+    std::scoped_lock lock(dlss_fg_fence_mutex);
+    if (dlss_fg_inputs_fence == nullptr || dlss_fg_inputs_fence_value == 0u) return true;
+    fence = dlss_fg_inputs_fence;
+    value = dlss_fg_inputs_fence_value;
+  }
+  if (fence->GetCompletedValue() >= value) {
+    std::scoped_lock lock(dlss_fg_fence_mutex);
+    dlss_fg_retained_resources.clear();
+    return true;
+  }
+
+  HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  if (event == nullptr) return false;
+  const HRESULT set_event_result = fence->SetEventOnCompletion(value, event);
+  const DWORD wait_result = set_event_result == S_OK ? WaitForSingleObject(event, 1000u) : WAIT_FAILED;
+  CloseHandle(event);
+  if (wait_result == WAIT_OBJECT_0) {
+    std::scoped_lock lock(dlss_fg_fence_mutex);
+    dlss_fg_retained_resources.clear();
+    return true;
+  }
+  renodx::utils::log::w("DL2 DLSS FG: input fence wait timed out before resize.");
+  return false;
+}
+
+void RetainDlssFgResource(uint64_t handle) {
+  if (handle == 0u) return;
+  auto* resource = reinterpret_cast<IUnknown*>(handle);
+  resource->AddRef();
+  Microsoft::WRL::ComPtr<IUnknown> retained;
+  retained.Attach(resource);
+  std::scoped_lock lock(dlss_fg_fence_mutex);
+  dlss_fg_retained_resources.push_back(std::move(retained));
+}
+
+sl::Result HookedSlDLSSGGetState(
+    const sl::ViewportHandle& viewport,
+    sl::DLSSGState& state,
+    const sl::DLSSGOptions* options) {
+  const auto result = real_sl_dlssg_get_state(viewport, state, options);
+  if (result == sl::Result::eOk) UpdateDlssFgFence(state);
+  return result;
+}
 
 const char* GetStreamlineTagName(sl::BufferType type) {
   switch (type) {
@@ -357,6 +426,7 @@ sl::Result HookedSlSetTagForFrame(
 sl::Result HookedSlDLSSGSetOptions(
     const sl::ViewportHandle& viewport,
     const sl::DLSSGOptions& options) {
+  dlss_fg_viewport.store(static_cast<uint32_t>(viewport), std::memory_order_relaxed);
   auto corrected = options;
   const uint32_t incoming_color_format = corrected.colorBufferFormat;
   if (swap_chain_use_hdr10 >= 0.5f) {
@@ -431,8 +501,36 @@ bool TryInstallDlssGOptionsHook(HMODULE module) {
   return true;
 }
 
+bool TryInstallDlssGStateHook(HMODULE module) {
+  if (dlss_fg_state_hook_installed) return true;
+  auto get_feature_function = reinterpret_cast<decltype(&slGetFeatureFunction)>(
+      GetProcAddress(module, "slGetFeatureFunction"));
+  if (get_feature_function == nullptr) return false;
+
+  void* function = nullptr;
+  if (get_feature_function(sl::kFeatureDLSS_G, "slDLSSGGetState", function) != sl::Result::eOk
+      || function == nullptr) {
+    return false;
+  }
+  real_sl_dlssg_get_state = reinterpret_cast<decltype(&slDLSSGGetState)>(function);
+  if (DetourTransactionBegin() != NO_ERROR) return false;
+  if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR
+      || DetourAttach(
+             reinterpret_cast<void**>(&real_sl_dlssg_get_state),
+             reinterpret_cast<void*>(&HookedSlDLSSGGetState)) != NO_ERROR
+      || DetourTransactionCommit() != NO_ERROR) {
+    DetourTransactionAbort();
+    real_sl_dlssg_get_state = nullptr;
+    return false;
+  }
+  dlss_fg_state_hook_installed = true;
+  dlss_fg_state_hook_wait_logged = false;
+  renodx::utils::log::i("DL2 DLSS FG: state fence hook installed.");
+  return true;
+}
+
 void TryInstallStreamlineHook() {
-  if (dlss_fg_hook_installed && dlss_fg_options_hook_installed) return;
+  if (dlss_fg_hook_installed && dlss_fg_options_hook_installed && dlss_fg_state_hook_installed) return;
 
   auto* module = GetModuleHandleA("sl.interposer.dll");
   if (module == nullptr) {
@@ -456,6 +554,11 @@ void TryInstallStreamlineHook() {
     dlss_fg_options_hook_wait_logged = true;
     renodx::utils::log::w("DL2 DLSS FG: options format hook was not installed.");
   }
+  if (!dlss_fg_state_hook_installed && !TryInstallDlssGStateHook(module)
+      && !dlss_fg_state_hook_wait_logged) {
+    dlss_fg_state_hook_wait_logged = true;
+    renodx::utils::log::w("DL2 DLSS FG: state fence hook was not installed.");
+  }
 }
 
 void RemoveStreamlineHook() {
@@ -478,6 +581,45 @@ void RemoveStreamlineHook() {
   real_sl_dlssg_set_options = nullptr;
   dlss_fg_options_hook_installed = false;
   dlss_fg_options_hook_wait_logged = false;
+  if (dlss_fg_state_hook_installed && real_sl_dlssg_get_state != nullptr) {
+    if (DetourTransactionBegin() == NO_ERROR
+        && DetourUpdateThread(GetCurrentThread()) == NO_ERROR
+        && DetourDetach(
+               reinterpret_cast<void**>(&real_sl_dlssg_get_state),
+               reinterpret_cast<void*>(&HookedSlDLSSGGetState)) == NO_ERROR) {
+      DetourTransactionCommit();
+    } else {
+      DetourTransactionAbort();
+    }
+  }
+  real_sl_dlssg_get_state = nullptr;
+  dlss_fg_state_hook_installed = false;
+  dlss_fg_state_hook_wait_logged = false;
+  std::scoped_lock lock(dlss_fg_fence_mutex);
+  if (dlss_fg_inputs_fence != nullptr) dlss_fg_inputs_fence->Release();
+  dlss_fg_inputs_fence = nullptr;
+  dlss_fg_inputs_fence_value = 0u;
+  dlss_fg_retained_resources.clear();
+}
+
+void OnDestroySwapchain(reshade::api::swapchain*, bool resize) {
+  if (!resize) return;
+  const uint32_t viewport_value = dlss_fg_viewport.load(std::memory_order_relaxed);
+  if (real_sl_dlssg_get_state != nullptr && viewport_value != UINT_MAX) {
+    sl::DLSSGState state{};
+    if (real_sl_dlssg_get_state(sl::ViewportHandle(viewport_value), state, nullptr) == sl::Result::eOk) {
+      UpdateDlssFgFence(state);
+    }
+  }
+  if (WaitForDlssFgInputs()) {
+    renodx::utils::log::i("DL2 DLSS FG: input fence completed before resize.");
+  } else {
+    // Keep native resources alive if DLSS-G stopped progressing during focus
+    // loss. This avoids destroying an object still referenced by FG.
+    RetainDlssFgResource(dlss_fg_latest_color_original.load(std::memory_order_relaxed));
+    RetainDlssFgResource(dlss_fg_latest_color_clone.load(std::memory_order_relaxed));
+    renodx::utils::log::w("DL2 DLSS FG: retained tagged resources after fence timeout.");
+  }
 }
 // Disabled by default. When armed from the Advanced diagnostic setting, this
 // records graphics and compute shader hashes after the known late Gamma pass,
@@ -2225,6 +2367,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::register_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
       reshade::register_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
       reshade::register_event<reshade::addon_event::push_descriptors>(OnGammaAuditPushDescriptors);
+      // Registered before mods::swapchain::Use below so the DLSS-G input
+      // fence is observed before proxy clones are released during resize.
+      reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
 
       // Shader hook config (applies to both D3D11 and D3D12 custom shaders)
       // DL2 shared.h uses register(b13, space50) for SM5.1+ (D3D12) and
@@ -2309,6 +2454,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
       reshade::unregister_event<reshade::addon_event::push_descriptors>(OnGammaAuditPushDescriptors);
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
+      reshade::unregister_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
       RemoveStreamlineHook();
       reshade::unregister_addon(h_module);
       break;
