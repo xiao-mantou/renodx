@@ -18,8 +18,10 @@
 #include <optional>
 #include <span>
 #include <sstream>
+#include <mutex>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -124,14 +126,19 @@ struct ResourceViewSlots {
     // One-shot diagnostic for the DL2 HDR10 proxy path.  The view descriptor
     // is queried after creation, so this verifies the actual RTV format used
     // by the proxy without readback or native API-specific code.
-    static std::atomic_bool logged_rgb10_swapchain_rtv{false};
+    static std::mutex rgb10_swapchain_rtv_log_mutex;
+    static std::unordered_set<uintptr_t> logged_rgb10_swapchain_devices;
     if (is_swap_chain
         && usage == reshade::api::resource_usage::render_target
-        && resource_desc.texture.format == reshade::api::format::r10g10b10a2_unorm
-        && !logged_rgb10_swapchain_rtv.exchange(true, std::memory_order_relaxed)) {
+        && resource_desc.texture.format == reshade::api::format::r10g10b10a2_unorm) {
+      const auto device_key = reinterpret_cast<uintptr_t>(device);
+      std::scoped_lock lock(rgb10_swapchain_rtv_log_mutex);
+      if (!logged_rgb10_swapchain_devices.insert(device_key).second) return view;
       const auto actual_view_desc = renodx::utils::resource::GetResourceViewDesc(device, view);
       std::stringstream s;
-      s << "RenoDX swapchain RTV diagnostic(resource_format=" << resource_desc.texture.format;
+      s << "RenoDX swapchain RTV diagnostic(api=" << device->get_api();
+      s << ", device=0x" << std::hex << std::uppercase << device_key << std::dec << std::nouppercase;
+      s << ", resource_format=" << resource_desc.texture.format;
       s << ", requested_view_format=" << view_desc.format;
       s << ", actual_view_format=" << actual_view_desc.format;
       s << ", view=0x" << std::hex << std::uppercase << view.handle << std::dec << std::nouppercase;

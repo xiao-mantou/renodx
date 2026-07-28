@@ -16,6 +16,8 @@
 #include <mutex>
 #include <shared_mutex>
 #include <span>
+#include <sstream>
+#include <unordered_set>
 #include <utility>
 
 #include "./mutex.hpp"
@@ -49,6 +51,23 @@ struct SwapchainProxyPass {
     auto* cmd_list = queue->get_immediate_command_list();
     auto current_back_buffer = swapchain->get_current_back_buffer();
     auto* device = swapchain->get_device();
+
+    // Bounded diagnostic: identify which API/device actually executes the
+    // proxy. Existing failure paths retain their detailed warnings.
+    static std::mutex proxy_entry_log_mutex;
+    static std::unordered_set<uintptr_t> proxy_entry_log_devices;
+    {
+      const auto device_key = reinterpret_cast<uintptr_t>(device);
+      std::scoped_lock lock(proxy_entry_log_mutex);
+      if (proxy_entry_log_devices.insert(device_key).second) {
+        std::stringstream s;
+        s << "RenoDX swapchain proxy render entered(api=" << device->get_api();
+        s << ", device=0x" << std::hex << std::uppercase << device_key << std::dec << std::nouppercase;
+        s << ", swapchain=0x" << std::hex << std::uppercase << reinterpret_cast<uintptr_t>(swapchain);
+        s << ", back_buffer=0x" << current_back_buffer.handle << std::dec << std::nouppercase << ")";
+        reshade::log::message(reshade::log::level::info, s.str().c_str());
+      }
+    }
 
 #ifdef DEBUG_LEVEL_2
     {
