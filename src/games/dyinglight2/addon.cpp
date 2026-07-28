@@ -5,6 +5,7 @@
 
 #define ImTextureID ImU64
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <d3d11.h>
@@ -91,12 +92,37 @@ sl::Result (*real_sl_set_tag)(
 decltype(&slSetTagForFrame) real_sl_set_tag_for_frame = nullptr;
 decltype(&slDLSSGSetOptions) real_sl_dlssg_set_options = nullptr;
 decltype(&slDLSSGGetState) real_sl_dlssg_get_state = nullptr;
+using SlDlssGHookPresent = HRESULT(IDXGISwapChain*, UINT, UINT, bool&);
+using SlDlssGHookPresent1 = HRESULT(IDXGISwapChain*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*, bool&);
+SlDlssGHookPresent* real_sl_dlssg_hook_present = nullptr;
+SlDlssGHookPresent1* real_sl_dlssg_hook_present1 = nullptr;
 bool dlss_fg_options_logged = false;
 bool dlss_fg_options_hook_installed = false;
 bool dlss_fg_options_hook_wait_logged = false;
 bool dlss_fg_state_hook_installed = false;
 bool dlss_fg_state_hook_wait_logged = false;
+bool dlss_fg_present_hook_installed = false;
+bool dlss_fg_present_hook_wait_logged = false;
 std::atomic_uint32_t dlss_fg_state_diagnostic_count = 0u;
+
+struct DlssFgSwapchainSnapshot {
+  uintptr_t wrapper = 0u;
+  uintptr_t native = 0u;
+  uintptr_t hwnd = 0u;
+  uintptr_t back_buffer = 0u;
+  uint32_t api = 0u;
+  uint32_t width = 0u;
+  uint32_t height = 0u;
+  uint32_t format = 0u;
+  uint32_t buffer_count = 0u;
+  uint32_t back_buffer_index = 0u;
+  uint64_t serial = 0u;
+};
+
+std::mutex dlss_fg_swapchain_snapshot_mutex;
+std::array<DlssFgSwapchainSnapshot, 8> dlss_fg_swapchain_snapshots = {};
+uint64_t dlss_fg_swapchain_snapshot_serial = 0u;
+std::atomic_uint32_t dlss_fg_present_identity_count = 0u;
 
 std::mutex dlss_fg_fence_mutex;
 ID3D12Fence* dlss_fg_inputs_fence = nullptr;
@@ -201,6 +227,129 @@ sl::Result HookedSlDLSSGGetState(
     renodx::utils::log::w("DL2 DLSS FG: GetState failed before resize/state update.");
   }
   return result;
+}
+
+DlssFgSwapchainSnapshot ReadNativeSwapchainSnapshot(IDXGISwapChain* swapchain) {
+  DlssFgSwapchainSnapshot snapshot = {};
+  snapshot.native = reinterpret_cast<uintptr_t>(swapchain);
+  if (swapchain == nullptr) return snapshot;
+
+  DXGI_SWAP_CHAIN_DESC desc = {};
+  if (SUCCEEDED(swapchain->GetDesc(&desc))) {
+    snapshot.hwnd = reinterpret_cast<uintptr_t>(desc.OutputWindow);
+    snapshot.width = desc.BufferDesc.Width;
+    snapshot.height = desc.BufferDesc.Height;
+    snapshot.format = static_cast<uint32_t>(desc.BufferDesc.Format);
+    snapshot.buffer_count = desc.BufferCount;
+  }
+
+  Microsoft::WRL::ComPtr<IDXGISwapChain3> swapchain3;
+  if (SUCCEEDED(swapchain->QueryInterface(IID_PPV_ARGS(&swapchain3)))) {
+    snapshot.back_buffer_index = swapchain3->GetCurrentBackBufferIndex();
+  }
+  Microsoft::WRL::ComPtr<IUnknown> back_buffer;
+  if (SUCCEEDED(swapchain->GetBuffer(snapshot.back_buffer_index, IID_PPV_ARGS(&back_buffer)))) {
+    snapshot.back_buffer = reinterpret_cast<uintptr_t>(back_buffer.Get());
+  }
+  return snapshot;
+}
+
+void CaptureReshadeSwapchainSnapshot(
+    reshade::api::command_queue* queue,
+    reshade::api::swapchain* swapchain) {
+  if (queue == nullptr || swapchain == nullptr) return;
+
+  DlssFgSwapchainSnapshot snapshot = ReadNativeSwapchainSnapshot(
+      reinterpret_cast<IDXGISwapChain*>(swapchain->get_native()));
+  snapshot.wrapper = reinterpret_cast<uintptr_t>(swapchain);
+  snapshot.api = static_cast<uint32_t>(queue->get_device()->get_api());
+  snapshot.hwnd = reinterpret_cast<uintptr_t>(swapchain->get_hwnd());
+  snapshot.back_buffer = swapchain->get_current_back_buffer().handle;
+
+  std::scoped_lock lock(dlss_fg_swapchain_snapshot_mutex);
+  snapshot.serial = ++dlss_fg_swapchain_snapshot_serial;
+  DlssFgSwapchainSnapshot* slot = nullptr;
+  for (auto& existing : dlss_fg_swapchain_snapshots) {
+    if (existing.native == snapshot.native && snapshot.native != 0u) {
+      slot = &existing;
+      break;
+    }
+    if (slot == nullptr && existing.native == 0u) slot = &existing;
+  }
+  if (slot == nullptr) {
+    slot = &*std::min_element(
+        dlss_fg_swapchain_snapshots.begin(),
+        dlss_fg_swapchain_snapshots.end(),
+        [](const auto& left, const auto& right) { return left.serial < right.serial; });
+  }
+  *slot = snapshot;
+}
+
+void LogDlssFgPresentIdentity(const char* call_name, IDXGISwapChain* swapchain) {
+  const uint32_t count = dlss_fg_present_identity_count.fetch_add(1u, std::memory_order_relaxed);
+  if (count >= 48u) return;
+
+  const auto native = ReadNativeSwapchainSnapshot(swapchain);
+  DlssFgSwapchainSnapshot matched = {};
+  const char* match_kind = "none";
+  {
+    std::scoped_lock lock(dlss_fg_swapchain_snapshot_mutex);
+    for (const auto& candidate : dlss_fg_swapchain_snapshots) {
+      if (candidate.native != 0u && candidate.native == native.native) {
+        matched = candidate;
+        match_kind = "native";
+        break;
+      }
+    }
+    if (matched.native == 0u) {
+      for (const auto& candidate : dlss_fg_swapchain_snapshots) {
+        if (candidate.native != 0u && candidate.hwnd == native.hwnd
+            && candidate.width == native.width && candidate.height == native.height
+            && candidate.format == native.format) {
+          matched = candidate;
+          match_kind = candidate.back_buffer == native.back_buffer ? "hwnd_desc_buffer" : "hwnd_desc";
+          break;
+        }
+      }
+    }
+  }
+
+  std::ostringstream message;
+  message << "DL2 DLSS FG swapchain identity: call=" << call_name
+          << " thread=" << GetCurrentThreadId()
+          << " hook_native=0x" << std::hex << std::uppercase << native.native
+          << " hwnd=0x" << native.hwnd
+          << " size=" << std::dec << native.width << "x" << native.height
+          << " format=" << native.format
+          << " buffers=" << native.buffer_count
+          << " index=" << native.back_buffer_index
+          << " backbuffer=0x" << std::hex << native.back_buffer
+          << " match=" << match_kind;
+  if (matched.native != 0u) {
+    message << " reshade_wrapper=0x" << matched.wrapper
+            << " reshade_native=0x" << matched.native
+            << " api=" << std::dec << matched.api
+            << " reshade_hwnd=0x" << std::hex << matched.hwnd
+            << " reshade_backbuffer=0x" << matched.back_buffer
+            << " reshade_index=" << std::dec << matched.back_buffer_index
+            << " snapshot_serial=" << matched.serial;
+  }
+  renodx::utils::log::i(message.str().c_str());
+}
+
+HRESULT HookedSlDlssGPresent(IDXGISwapChain* swapchain, UINT sync_interval, UINT flags, bool& skip) {
+  LogDlssFgPresentIdentity("Present", swapchain);
+  return real_sl_dlssg_hook_present(swapchain, sync_interval, flags, skip);
+}
+
+HRESULT HookedSlDlssGPresent1(
+    IDXGISwapChain* swapchain,
+    UINT sync_interval,
+    UINT flags,
+    const DXGI_PRESENT_PARAMETERS* parameters,
+    bool& skip) {
+  LogDlssFgPresentIdentity("Present1", swapchain);
+  return real_sl_dlssg_hook_present1(swapchain, sync_interval, flags, parameters, skip);
 }
 
 const char* GetStreamlineTagName(sl::BufferType type) {
@@ -572,8 +721,44 @@ bool TryInstallDlssGStateHook(HMODULE module) {
   return true;
 }
 
+bool TryInstallDlssGPresentHook() {
+  if (dlss_fg_present_hook_installed) return true;
+  auto* module = GetModuleHandleA("sl.dlss_g.dll");
+  if (module == nullptr) return false;
+  using GetPluginFunction = void*(const char*);
+  auto* get_plugin_function = reinterpret_cast<GetPluginFunction*>(
+      GetProcAddress(module, "slGetPluginFunction"));
+  if (get_plugin_function == nullptr) return false;
+
+  real_sl_dlssg_hook_present = reinterpret_cast<SlDlssGHookPresent*>(
+      get_plugin_function("slHookPresent"));
+  real_sl_dlssg_hook_present1 = reinterpret_cast<SlDlssGHookPresent1*>(
+      get_plugin_function("slHookPresent1"));
+  if (real_sl_dlssg_hook_present == nullptr || real_sl_dlssg_hook_present1 == nullptr) return false;
+
+  if (DetourTransactionBegin() != NO_ERROR) return false;
+  if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR
+      || DetourAttach(
+             reinterpret_cast<void**>(&real_sl_dlssg_hook_present),
+             reinterpret_cast<void*>(&HookedSlDlssGPresent)) != NO_ERROR
+      || DetourAttach(
+             reinterpret_cast<void**>(&real_sl_dlssg_hook_present1),
+             reinterpret_cast<void*>(&HookedSlDlssGPresent1)) != NO_ERROR
+      || DetourTransactionCommit() != NO_ERROR) {
+    DetourTransactionAbort();
+    real_sl_dlssg_hook_present = nullptr;
+    real_sl_dlssg_hook_present1 = nullptr;
+    return false;
+  }
+  dlss_fg_present_hook_installed = true;
+  dlss_fg_present_hook_wait_logged = false;
+  renodx::utils::log::i("DL2 DLSS FG: read-only plugin Present identity hook installed.");
+  return true;
+}
+
 void TryInstallStreamlineHook() {
-  if (dlss_fg_hook_installed && dlss_fg_options_hook_installed && dlss_fg_state_hook_installed) return;
+  if (dlss_fg_hook_installed && dlss_fg_options_hook_installed && dlss_fg_state_hook_installed
+      && dlss_fg_present_hook_installed) return;
 
   auto* module = GetModuleHandleA("sl.interposer.dll");
   if (module == nullptr) {
@@ -601,6 +786,11 @@ void TryInstallStreamlineHook() {
       && !dlss_fg_state_hook_wait_logged) {
     dlss_fg_state_hook_wait_logged = true;
     renodx::utils::log::w("DL2 DLSS FG: state fence hook was not installed.");
+  }
+  if (!dlss_fg_present_hook_installed && !TryInstallDlssGPresentHook()
+      && !dlss_fg_present_hook_wait_logged) {
+    dlss_fg_present_hook_wait_logged = true;
+    renodx::utils::log::w("DL2 DLSS FG: read-only plugin Present identity hook was not installed.");
   }
 }
 
@@ -638,6 +828,24 @@ void RemoveStreamlineHook() {
   real_sl_dlssg_get_state = nullptr;
   dlss_fg_state_hook_installed = false;
   dlss_fg_state_hook_wait_logged = false;
+  if (dlss_fg_present_hook_installed) {
+    if (DetourTransactionBegin() == NO_ERROR
+        && DetourUpdateThread(GetCurrentThread()) == NO_ERROR
+        && DetourDetach(
+               reinterpret_cast<void**>(&real_sl_dlssg_hook_present),
+               reinterpret_cast<void*>(&HookedSlDlssGPresent)) == NO_ERROR
+        && DetourDetach(
+               reinterpret_cast<void**>(&real_sl_dlssg_hook_present1),
+               reinterpret_cast<void*>(&HookedSlDlssGPresent1)) == NO_ERROR) {
+      DetourTransactionCommit();
+    } else {
+      DetourTransactionAbort();
+    }
+  }
+  real_sl_dlssg_hook_present = nullptr;
+  real_sl_dlssg_hook_present1 = nullptr;
+  dlss_fg_present_hook_installed = false;
+  dlss_fg_present_hook_wait_logged = false;
   std::scoped_lock lock(dlss_fg_fence_mutex);
   if (dlss_fg_inputs_fence != nullptr) dlss_fg_inputs_fence->Release();
   dlss_fg_inputs_fence = nullptr;
@@ -1432,6 +1640,7 @@ void OnDownstreamDrawCapturePresent(
     const reshade::api::rect*,
     uint32_t,
     const reshade::api::rect*) {
+  CaptureReshadeSwapchainSnapshot(queue, swapchain);
   TryInstallStreamlineHook();
   // One-shot, first-Present only. Reports the final presentation state so an
   // HDR10 black screen can be told apart from a wrong-encoding black screen.
