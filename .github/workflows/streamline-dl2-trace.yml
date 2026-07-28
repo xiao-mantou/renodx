@@ -35,17 +35,16 @@ jobs:
       - name: Configure MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Build diagnostic DLLs
+      - name: Build interposer diagnostic DLL
         shell: cmd
-        run: msbuild streamline\_project\vs2022\streamline.sln /m /t:Clean,Build /p:Configuration=Develop /p:Platform=x64
+        run: msbuild streamline\_project\vs2022\sl.interposer.vcxproj /m /t:Clean,Build /p:Configuration=Develop /p:Platform=x64
 
       - name: Collect artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force artifact | Out-Null
           Copy-Item streamline/_artifacts/sl.interposer/Develop_x64/sl.interposer.dll artifact/
-          Copy-Item streamline/_artifacts/sl.common/Develop_x64/sl.common.dll artifact/
-          Set-Content artifact/README.txt 'DL2 diagnostic Streamline 2.9.0. Back up both original DLLs and replace both together. Restore originals after collecting logs.'
+          Set-Content artifact/README.txt 'DL2 diagnostic Streamline 2.9.0 interposer only. Back up the original sl.interposer.dll before replacing it. Restore the original after collecting logs; keep sl.common.dll and sl.dlss_g.dll unchanged.'
 
       - name: Upload diagnostic package
         uses: actions/upload-artifact@v4
