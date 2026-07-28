@@ -184,11 +184,14 @@ sl::Result HookedSlDLSSGGetState(
   if (result == sl::Result::eOk) {
     UpdateDlssFgFence(state);
     const uint32_t diagnostic_count = dlss_fg_state_diagnostic_count.fetch_add(1u);
-    if (diagnostic_count < 16u) {
+    if (diagnostic_count < 64u) {
       auto *fence = static_cast<ID3D12Fence *>(state.inputsProcessingCompletionFence);
       const uint64_t completed = fence != nullptr ? fence->GetCompletedValue() : 0u;
       std::ostringstream message;
       message << "DL2 DLSS FG: GetState viewport=" << static_cast<uint32_t>(viewport)
+              << " status=" << static_cast<uint32_t>(state.status)
+              << " presented=" << state.numFramesActuallyPresented
+              << " generate_max=" << state.numFramesToGenerateMax
               << " fence=" << static_cast<void *>(fence)
               << " target=" << state.lastPresentInputsProcessingCompletionFenceValue
               << " completed=" << completed;
