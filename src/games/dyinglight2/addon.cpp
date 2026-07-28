@@ -18,6 +18,7 @@
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>
 #include <sl_core_api.h>
+#include <sl_dlss_g.h>
 
 #include "../../mods/shader.hpp"
 #include "../../mods/swapchain.hpp"
@@ -82,6 +83,10 @@ sl::Result (*real_sl_set_tag)(
     sl::CommandBuffer* cmd_buffer) = nullptr;
 
 decltype(&slSetTagForFrame) real_sl_set_tag_for_frame = nullptr;
+decltype(&slDLSSGSetOptions) real_sl_dlssg_set_options = nullptr;
+bool dlss_fg_options_logged = false;
+bool dlss_fg_options_hook_installed = false;
+bool dlss_fg_options_hook_wait_logged = false;
 
 const char* GetStreamlineTagName(sl::BufferType type) {
   switch (type) {
@@ -326,6 +331,37 @@ sl::Result HookedSlSetTagForFrame(
   return result;
 }
 
+sl::Result HookedSlDLSSGSetOptions(
+    const sl::ViewportHandle& viewport,
+    const sl::DLSSGOptions& options) {
+  auto corrected = options;
+  const uint32_t incoming_color_format = corrected.colorBufferFormat;
+  if (swap_chain_use_hdr10 >= 0.5f) {
+    corrected.colorBufferFormat = static_cast<uint32_t>(DXGI_FORMAT_R10G10B10A2_UNORM);
+  }
+  if (dlss_fg_tag_clone >= 0.5f) {
+    corrected.hudLessBufferFormat = static_cast<uint32_t>(DXGI_FORMAT_R16G16B16A16_FLOAT);
+    corrected.uiBufferFormat = static_cast<uint32_t>(DXGI_FORMAT_R16G16B16A16_FLOAT);
+  }
+
+  const auto result = real_sl_dlssg_set_options(viewport, corrected);
+  if (!dlss_fg_options_logged) {
+    dlss_fg_options_logged = true;
+    std::stringstream stream;
+    stream << "DL2 DLSS FG options: color=" << incoming_color_format
+           << "=>" << corrected.colorBufferFormat
+           << " hudless=" << options.hudLessBufferFormat
+           << "=>" << corrected.hudLessBufferFormat
+           << " ui=" << options.uiBufferFormat
+           << "=>" << corrected.uiBufferFormat
+           << " buffers=" << corrected.numBackBuffers
+           << " size=" << corrected.colorWidth << "x" << corrected.colorHeight
+           << " result=" << static_cast<int32_t>(result);
+    reshade::log::message(reshade::log::level::info, stream.str().c_str());
+  }
+  return result;
+}
+
 const auto& GetStreamlineHooks() {
   static const std::array<renodx::utils::vtable::HookItem, 2> hooks = {
       renodx::utils::vtable::HookItem{
@@ -342,8 +378,38 @@ const auto& GetStreamlineHooks() {
   return hooks;
 }
 
+bool TryInstallDlssGOptionsHook(HMODULE module) {
+  if (dlss_fg_options_hook_installed) return true;
+  auto get_feature_function = reinterpret_cast<decltype(&slGetFeatureFunction)>(
+      GetProcAddress(module, "slGetFeatureFunction"));
+  if (get_feature_function == nullptr) return false;
+
+  void* function = nullptr;
+  if (get_feature_function(sl::kFeatureDLSS_G, "slDLSSGSetOptions", function) != sl::Result::eOk
+      || function == nullptr) {
+    return false;
+  }
+
+  real_sl_dlssg_set_options = reinterpret_cast<decltype(&slDLSSGSetOptions)>(function);
+  if (DetourTransactionBegin() != NO_ERROR) return false;
+  if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR
+      || DetourAttach(
+             reinterpret_cast<void**>(&real_sl_dlssg_set_options),
+             reinterpret_cast<void*>(&HookedSlDLSSGSetOptions)) != NO_ERROR
+      || DetourTransactionCommit() != NO_ERROR) {
+    DetourTransactionAbort();
+    real_sl_dlssg_set_options = nullptr;
+    return false;
+  }
+
+  dlss_fg_options_hook_installed = true;
+  dlss_fg_options_hook_wait_logged = false;
+  renodx::utils::log::i("DL2 DLSS FG: options format hook installed.");
+  return true;
+}
+
 void TryInstallStreamlineHook() {
-  if (dlss_fg_hook_installed) return;
+  if (dlss_fg_hook_installed && dlss_fg_options_hook_installed) return;
 
   auto* module = GetModuleHandleA("sl.interposer.dll");
   if (module == nullptr) {
@@ -354,19 +420,41 @@ void TryInstallStreamlineHook() {
     return;
   }
 
-  if (renodx::utils::vtable::Hook(module, GetStreamlineHooks())) {
-    dlss_fg_hook_installed = true;
-    renodx::utils::log::i("DL2 DLSS FG: Streamline tag capture hook installed.");
-  } else {
-    renodx::utils::log::w("DL2 DLSS FG: Streamline tag hook was not installed.");
+  if (!dlss_fg_hook_installed) {
+    if (renodx::utils::vtable::Hook(module, GetStreamlineHooks())) {
+      dlss_fg_hook_installed = true;
+      renodx::utils::log::i("DL2 DLSS FG: Streamline tag capture hook installed.");
+    } else {
+      renodx::utils::log::w("DL2 DLSS FG: Streamline tag hook was not installed.");
+    }
+  }
+  if (!dlss_fg_options_hook_installed && !TryInstallDlssGOptionsHook(module)
+      && !dlss_fg_options_hook_wait_logged) {
+    dlss_fg_options_hook_wait_logged = true;
+    renodx::utils::log::w("DL2 DLSS FG: options format hook was not installed.");
   }
 }
 
 void RemoveStreamlineHook() {
-  if (!dlss_fg_hook_installed) return;
   auto* module = GetModuleHandleA("sl.interposer.dll");
-  if (module != nullptr) renodx::utils::vtable::Unhook(module, GetStreamlineHooks());
+  if (module != nullptr && dlss_fg_hook_installed) {
+    renodx::utils::vtable::Unhook(module, GetStreamlineHooks());
+  }
   dlss_fg_hook_installed = false;
+  if (dlss_fg_options_hook_installed && real_sl_dlssg_set_options != nullptr) {
+    if (DetourTransactionBegin() == NO_ERROR
+        && DetourUpdateThread(GetCurrentThread()) == NO_ERROR
+        && DetourDetach(
+               reinterpret_cast<void**>(&real_sl_dlssg_set_options),
+               reinterpret_cast<void*>(&HookedSlDLSSGSetOptions)) == NO_ERROR) {
+      DetourTransactionCommit();
+    } else {
+      DetourTransactionAbort();
+    }
+  }
+  real_sl_dlssg_set_options = nullptr;
+  dlss_fg_options_hook_installed = false;
+  dlss_fg_options_hook_wait_logged = false;
 }
 // Disabled by default. When armed from the Advanced diagnostic setting, this
 // records graphics and compute shader hashes after the known late Gamma pass,
