@@ -905,6 +905,10 @@ static void OnInitSwapchain(reshade::api::swapchain* swapchain, bool resize) {
         });
       }
     }
+    // Set color space before returning, so resize path also gets HDR10 metadata
+    if (set_color_space) {
+      renodx::utils::swapchain::ChangeColorSpace(swapchain, target_color_space);
+    }
     return;
   }
 
