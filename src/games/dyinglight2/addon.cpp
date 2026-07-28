@@ -114,6 +114,7 @@ struct DlssFgSwapchainSnapshot {
   uint32_t width = 0u;
   uint32_t height = 0u;
   uint32_t format = 0u;
+  uint32_t resource_format = 0u;
   uint32_t buffer_count = 0u;
   uint32_t back_buffer_index = 0u;
   uint64_t serial = 0u;
@@ -123,6 +124,8 @@ std::mutex dlss_fg_swapchain_snapshot_mutex;
 std::array<DlssFgSwapchainSnapshot, 8> dlss_fg_swapchain_snapshots = {};
 uint64_t dlss_fg_swapchain_snapshot_serial = 0u;
 std::atomic_uint32_t dlss_fg_present_identity_count = 0u;
+std::atomic_uint32_t dlss_fg_reshade_identity_count = 0u;
+std::atomic_uint64_t dlss_fg_identity_event_serial = 0u;
 
 std::mutex dlss_fg_fence_mutex;
 ID3D12Fence* dlss_fg_inputs_fence = nullptr;
@@ -247,9 +250,18 @@ DlssFgSwapchainSnapshot ReadNativeSwapchainSnapshot(IDXGISwapChain* swapchain) {
   if (SUCCEEDED(swapchain->QueryInterface(IID_PPV_ARGS(&swapchain3)))) {
     snapshot.back_buffer_index = swapchain3->GetCurrentBackBufferIndex();
   }
-  Microsoft::WRL::ComPtr<IUnknown> back_buffer;
-  if (SUCCEEDED(swapchain->GetBuffer(snapshot.back_buffer_index, IID_PPV_ARGS(&back_buffer)))) {
-    snapshot.back_buffer = reinterpret_cast<uintptr_t>(back_buffer.Get());
+  Microsoft::WRL::ComPtr<ID3D12Resource> d3d12_back_buffer;
+  if (SUCCEEDED(swapchain->GetBuffer(snapshot.back_buffer_index, IID_PPV_ARGS(&d3d12_back_buffer)))) {
+    snapshot.back_buffer = reinterpret_cast<uintptr_t>(d3d12_back_buffer.Get());
+    snapshot.resource_format = static_cast<uint32_t>(d3d12_back_buffer->GetDesc().Format);
+  } else {
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> d3d11_back_buffer;
+    if (SUCCEEDED(swapchain->GetBuffer(snapshot.back_buffer_index, IID_PPV_ARGS(&d3d11_back_buffer)))) {
+      D3D11_TEXTURE2D_DESC resource_desc = {};
+      d3d11_back_buffer->GetDesc(&resource_desc);
+      snapshot.back_buffer = reinterpret_cast<uintptr_t>(d3d11_back_buffer.Get());
+      snapshot.resource_format = static_cast<uint32_t>(resource_desc.Format);
+    }
   }
   return snapshot;
 }
@@ -265,6 +277,8 @@ void CaptureReshadeSwapchainSnapshot(
   snapshot.api = static_cast<uint32_t>(queue->get_device()->get_api());
   snapshot.hwnd = reinterpret_cast<uintptr_t>(swapchain->get_hwnd());
   snapshot.back_buffer = swapchain->get_current_back_buffer().handle;
+  snapshot.resource_format = static_cast<uint32_t>(
+      queue->get_device()->get_resource_desc(swapchain->get_current_back_buffer()).texture.format);
 
   std::scoped_lock lock(dlss_fg_swapchain_snapshot_mutex);
   snapshot.serial = ++dlss_fg_swapchain_snapshot_serial;
@@ -283,12 +297,31 @@ void CaptureReshadeSwapchainSnapshot(
         [](const auto& left, const auto& right) { return left.serial < right.serial; });
   }
   *slot = snapshot;
+
+  const uint32_t count = dlss_fg_reshade_identity_count.fetch_add(1u, std::memory_order_relaxed);
+  if (count < 48u) {
+    const uint64_t event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
+    std::ostringstream message;
+    message << "DL2 DLSS FG ReShade present identity: event=" << event
+            << " thread=" << GetCurrentThreadId()
+            << " wrapper=0x" << std::hex << std::uppercase << snapshot.wrapper
+            << " native=0x" << snapshot.native
+            << " hwnd=0x" << snapshot.hwnd
+            << " size=" << std::dec << snapshot.width << "x" << snapshot.height
+            << " reported_format=" << snapshot.format
+            << " resource_format=" << snapshot.resource_format
+            << " buffers=" << snapshot.buffer_count
+            << " index=" << snapshot.back_buffer_index
+            << " backbuffer=0x" << std::hex << snapshot.back_buffer;
+    renodx::utils::log::i(message.str().c_str());
+  }
 }
 
 void LogDlssFgPresentIdentity(const char* call_name, IDXGISwapChain* swapchain) {
   const uint32_t count = dlss_fg_present_identity_count.fetch_add(1u, std::memory_order_relaxed);
   if (count >= 48u) return;
 
+  const uint64_t event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
   const auto native = ReadNativeSwapchainSnapshot(swapchain);
   DlssFgSwapchainSnapshot matched = {};
   const char* match_kind = "none";
@@ -303,11 +336,21 @@ void LogDlssFgPresentIdentity(const char* call_name, IDXGISwapChain* swapchain) 
     }
     if (matched.native == 0u) {
       for (const auto& candidate : dlss_fg_swapchain_snapshots) {
+        if (candidate.native != 0u && candidate.back_buffer != 0u
+            && candidate.back_buffer == native.back_buffer) {
+          matched = candidate;
+          match_kind = "backbuffer";
+          break;
+        }
+      }
+    }
+    if (matched.native == 0u) {
+      for (const auto& candidate : dlss_fg_swapchain_snapshots) {
         if (candidate.native != 0u && candidate.hwnd == native.hwnd
             && candidate.width == native.width && candidate.height == native.height
-            && candidate.format == native.format) {
+            && candidate.buffer_count == native.buffer_count) {
           matched = candidate;
-          match_kind = candidate.back_buffer == native.back_buffer ? "hwnd_desc_buffer" : "hwnd_desc";
+          match_kind = "hwnd_desc";
           break;
         }
       }
@@ -316,11 +359,13 @@ void LogDlssFgPresentIdentity(const char* call_name, IDXGISwapChain* swapchain) 
 
   std::ostringstream message;
   message << "DL2 DLSS FG swapchain identity: call=" << call_name
+          << " event=" << event
           << " thread=" << GetCurrentThreadId()
           << " hook_native=0x" << std::hex << std::uppercase << native.native
           << " hwnd=0x" << native.hwnd
           << " size=" << std::dec << native.width << "x" << native.height
-          << " format=" << native.format
+          << " reported_format=" << native.format
+          << " resource_format=" << native.resource_format
           << " buffers=" << native.buffer_count
           << " index=" << native.back_buffer_index
           << " backbuffer=0x" << std::hex << native.back_buffer
