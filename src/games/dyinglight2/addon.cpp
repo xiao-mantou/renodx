@@ -700,6 +700,7 @@ sl::Result HookedSlDLSSGSetOptions(
     renodx::utils::log::i("DL2 DLSS FG: armed read-only backbuffer submission audit (128 candidates).");
   } else if (!fg_active && was_active) {
     renodx::mods::swapchain::ClearProxyDrawBackBufferSkips();
+    renodx::mods::swapchain::ClearProxySourceOverrides();
   }
   const uint32_t incoming_color_format = corrected.colorBufferFormat;
   if (swap_chain_use_hdr10 >= 0.5f) {
@@ -941,6 +942,7 @@ void RemoveStreamlineHook() {
 }
 
 void OnDestroySwapchain(reshade::api::swapchain*, bool resize) {
+  renodx::mods::swapchain::ClearProxySourceOverrides();
   if (!resize) return;
   const uint32_t viewport_value = dlss_fg_viewport.load(std::memory_order_relaxed);
   bool state_updated = false;
@@ -1898,7 +1900,8 @@ void OnDlssFgExecuteCommandList(
       && !candidate.bound_swapchain_rtv && !candidate.copied_to_swapchain) return;
 
   if (candidate.preserved_native_copy) {
-    renodx::mods::swapchain::SkipProxyDrawForBackBuffer({candidate.back_buffer});
+    renodx::mods::swapchain::SetProxySourceForBackBuffer(
+        {candidate.back_buffer}, {candidate.copy_source});
   }
 
   uint32_t remaining = dlss_fg_execute_candidate_remaining.load(std::memory_order_relaxed);
@@ -2967,6 +2970,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx11;
       renodx::mods::swapchain::expected_constant_buffer_index = 13;
       renodx::mods::swapchain::expected_constant_buffer_space = 50;
+      renodx::mods::swapchain::proxy_source_is_hdr10_index =
+          offsetof(ShaderInjectData, renodrt_padding_2) / sizeof(float);
 
       // Upgrade targets: R8G8B8A8 -> R16G16B16A16_FLOAT.
       renodx::mods::swapchain::resource_upgrade_infos.push_back({

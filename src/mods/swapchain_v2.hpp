@@ -137,6 +137,9 @@ inline std::atomic_bool skip_proxy_log_emitted = false;
 inline std::atomic_bool preserve_proxy_log_emitted = false;
 inline std::mutex skip_proxy_back_buffers_mutex;
 inline std::unordered_set<uint64_t> skip_proxy_back_buffers;
+inline std::mutex proxy_source_overrides_mutex;
+inline std::unordered_map<uint64_t, reshade::api::resource> proxy_source_overrides;
+inline size_t proxy_source_is_hdr10_index = SIZE_MAX;
 
 inline bool bypass_dummy_windows = true;
 [[deprecated("Use use_auto_cloning instead")]]
@@ -773,6 +776,30 @@ inline void ClearProxyDrawBackBufferSkips() {
   skip_proxy_back_buffers.clear();
 }
 
+inline void SetProxySourceForBackBuffer(
+    reshade::api::resource back_buffer,
+    reshade::api::resource source) {
+  if (back_buffer.handle == 0u || source.handle == 0u) return;
+  std::scoped_lock lock(proxy_source_overrides_mutex);
+  proxy_source_overrides[back_buffer.handle] = source;
+}
+
+inline reshade::api::resource ConsumeProxySourceForBackBuffer(
+    reshade::api::resource back_buffer) {
+  if (back_buffer.handle == 0u) return {0u};
+  std::scoped_lock lock(proxy_source_overrides_mutex);
+  const auto iterator = proxy_source_overrides.find(back_buffer.handle);
+  if (iterator == proxy_source_overrides.end()) return {0u};
+  const auto source = iterator->second;
+  proxy_source_overrides.erase(iterator);
+  return source;
+}
+
+inline void ClearProxySourceOverrides() {
+  std::scoped_lock lock(proxy_source_overrides_mutex);
+  proxy_source_overrides.clear();
+}
+
 static void OnPresentForResizeBuffer(
     reshade::api::command_queue* queue,
     reshade::api::swapchain* swapchain,
@@ -1266,14 +1293,7 @@ inline void OnPresent(
   }
   assert(proxy_pass != nullptr);
 
-  if (ConsumeProxyDrawSkipForBackBuffer({back_buffer_handle})) {
-    if (!preserve_proxy_log_emitted.exchange(true, std::memory_order_acq_rel)) {
-      reshade::log::message(
-          reshade::log::level::info,
-          "mods::swapchain::v2 OnPresent: preserving frame-generation backbuffer copies.");
-    }
-    return;
-  }
+  const auto proxy_source_override = ConsumeProxySourceForBackBuffer({back_buffer_handle});
 
   if (skip_next_proxy_draw.exchange(false, std::memory_order_acq_rel)) {
     if (!skip_proxy_log_emitted.exchange(true, std::memory_order_acq_rel)) {
@@ -1284,7 +1304,22 @@ inline void OnPresent(
     return;
   }
 
-  if (!proxy_pass->Render(swapchain, queue)) {
+  std::vector<float> proxy_shader_injection;
+  const float* proxy_shader_injection_override = nullptr;
+  if (proxy_source_override.handle != 0u
+      && shader_injection != nullptr
+      && proxy_source_is_hdr10_index < shader_injection_size) {
+      const std::shared_lock lock(renodx::utils::mutex::global_mutex);
+      proxy_shader_injection.assign(
+          shader_injection, shader_injection + shader_injection_size);
+      proxy_shader_injection[proxy_source_is_hdr10_index] = 1.f;
+      proxy_shader_injection_override = proxy_shader_injection.data();
+  }
+  const bool rendered = proxy_pass->Render(
+      swapchain, queue,
+      proxy_source_override.handle != 0u ? &proxy_source_override : nullptr,
+      proxy_shader_injection_override);
+  if (!rendered) {
     proxy_pass->Destroy(device);
     data->swapchain_proxy_passes.erase(back_buffer_handle);
   }

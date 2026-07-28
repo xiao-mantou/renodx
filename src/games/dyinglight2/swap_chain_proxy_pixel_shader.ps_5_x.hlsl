@@ -15,6 +15,11 @@ float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
   config.swap_chain_output_preset = RENODX_SWAP_CHAIN_USE_HDR10
                                         ? renodx::draw::SWAP_CHAIN_OUTPUT_PRESET_HDR10
                                         : renodx::draw::SWAP_CHAIN_OUTPUT_PRESET_SCRGB;
+  if (RENODX_SWAP_CHAIN_SOURCE_IS_HDR10) {
+    config.swap_chain_decoding = renodx::draw::ENCODING_PQ;
+    config.swap_chain_decoding_color_space = renodx::color::convert::COLOR_SPACE_BT2020;
+    config.swap_chain_scaling_nits = 1.f;
+  }
 
   if (RENODX_DEBUG_MODE > 4.5 && RENODX_DEBUG_MODE < 5.5) {
     return float4(renodx::draw::SwapChainPass(float3(6.25, 0.0, 0.0), uv, config).rgb, 1.f);

@@ -47,7 +47,8 @@ struct SwapchainProxyPass {
   bool Render(
       reshade::api::swapchain* swapchain,
       reshade::api::command_queue* queue,
-      const reshade::api::resource* swapchain_clone_override = nullptr) {
+      const reshade::api::resource* swapchain_clone_override = nullptr,
+      const float* shader_injection_override = nullptr) {
     auto* cmd_list = queue->get_immediate_command_list();
     auto current_back_buffer = swapchain->get_current_back_buffer();
     auto* device = swapchain->get_device();
@@ -255,7 +256,10 @@ struct SwapchainProxyPass {
           .slot = register_index,
           .space = register_space,
       };
-      pass.push_constants[slot] = std::span<const float>(shader_injection, shader_injection_size);
+      const float* effective_shader_injection = shader_injection_override != nullptr
+                                                    ? shader_injection_override
+                                                    : shader_injection;
+      pass.push_constants[slot] = std::span<const float>(effective_shader_injection, shader_injection_size);
     }
 
     if (auto_device_flush && device->get_api() != reshade::api::device_api::d3d12) {
