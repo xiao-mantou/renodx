@@ -131,8 +131,11 @@ std::atomic_uint32_t dlss_fg_execute_candidate_remaining = 0u;
 
 struct DlssFgCommandListCandidate {
   uint64_t back_buffer = 0u;
+  uint64_t copy_source = 0u;
   uint32_t transition_count = 0u;
   uint32_t tag_serial = 0u;
+  uint32_t first_old_state = 0u;
+  uint32_t last_new_state = 0u;
   bool entered_render_target = false;
   bool returned_to_present = false;
   bool bound_swapchain_rtv = false;
@@ -685,6 +688,9 @@ sl::Result HookedSlDLSSGSetOptions(
   if (fg_active && !was_active) {
     std::scoped_lock lock(dlss_fg_command_list_candidate_mutex);
     dlss_fg_command_list_candidates.clear();
+    dlss_fg_identity_event_serial.store(0u, std::memory_order_release);
+    dlss_fg_present_identity_count.store(0u, std::memory_order_release);
+    dlss_fg_reshade_identity_count.store(0u, std::memory_order_release);
     dlss_fg_execute_candidate_remaining.store(128u, std::memory_order_release);
     renodx::utils::log::i("DL2 DLSS FG: armed read-only backbuffer submission audit (128 candidates).");
   }
@@ -1274,6 +1280,7 @@ void OnGammaAuditPushDescriptors(
 
 void MarkDlssFgCommandListSwapchainWrite(
     reshade::api::command_list* cmd_list,
+    reshade::api::resource source,
     reshade::api::resource resource,
     bool bound_rtv,
     bool copy_dest) {
@@ -1291,6 +1298,7 @@ void MarkDlssFgCommandListSwapchainWrite(
   std::scoped_lock lock(dlss_fg_command_list_candidate_mutex);
   auto& candidate = dlss_fg_command_list_candidates[reinterpret_cast<uintptr_t>(cmd_list)];
   candidate.back_buffer = resource.handle;
+  if (copy_dest) candidate.copy_source = source.handle;
   candidate.tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_relaxed);
   candidate.bound_swapchain_rtv |= bound_rtv;
   candidate.copied_to_swapchain |= copy_dest;
@@ -1306,6 +1314,7 @@ void OnDownstreamBindRenderTargets(
     if (device != nullptr) {
       MarkDlssFgCommandListSwapchainWrite(
           cmd_list,
+          {},
           device->get_resource_from_view(rtvs[0]),
           true,
           false);
@@ -1664,7 +1673,7 @@ bool OnDownstreamCopyResource(
     reshade::api::command_list* cmd_list,
     reshade::api::resource source,
     reshade::api::resource dest) {
-  MarkDlssFgCommandListSwapchainWrite(cmd_list, dest, false, true);
+  MarkDlssFgCommandListSwapchainWrite(cmd_list, source, dest, false, true);
   RecordDlssFgTagTransfer(DownstreamTransferType::copy_resource, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::copy_resource, cmd_list, source, dest);
   return false;
@@ -1679,7 +1688,7 @@ bool OnDownstreamCopyTextureRegion(
     uint32_t,
     const reshade::api::subresource_box*,
     reshade::api::filter_mode) {
-  MarkDlssFgCommandListSwapchainWrite(cmd_list, dest, false, true);
+  MarkDlssFgCommandListSwapchainWrite(cmd_list, source, dest, false, true);
   RecordDlssFgTagTransfer(DownstreamTransferType::copy_texture_region, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::copy_texture_region, cmd_list, source, dest);
   return false;
@@ -1696,7 +1705,7 @@ bool OnDownstreamResolveTextureRegion(
     uint32_t,
     uint32_t,
     reshade::api::format) {
-  MarkDlssFgCommandListSwapchainWrite(cmd_list, dest, false, true);
+  MarkDlssFgCommandListSwapchainWrite(cmd_list, source, dest, false, true);
   RecordDlssFgTagTransfer(DownstreamTransferType::resolve_texture_region, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::resolve_texture_region, cmd_list, source, dest);
   return false;
@@ -1733,6 +1742,10 @@ void OnDlssFgBackbufferBarrier(
       auto& candidate = dlss_fg_command_list_candidates[reinterpret_cast<uintptr_t>(cmd_list)];
       candidate.back_buffer = resource.handle;
       candidate.tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_relaxed);
+      if (candidate.transition_count == 0u) {
+        candidate.first_old_state = static_cast<uint32_t>(old_states[index]);
+      }
+      candidate.last_new_state = static_cast<uint32_t>(new_states[index]);
       ++candidate.transition_count;
       if (new_states[index] == reshade::api::resource_usage::render_target) {
         candidate.entered_render_target = true;
@@ -1799,11 +1812,15 @@ void OnDlssFgExecuteCommandList(
           << " queue=0x" << std::hex << std::uppercase << reinterpret_cast<uintptr_t>(queue)
           << " cmd=0x" << reinterpret_cast<uintptr_t>(cmd_list)
           << " backbuffer=0x" << candidate.back_buffer
+          << " copy_source=0x" << candidate.copy_source
           << " entered_rt=" << std::dec << (candidate.entered_render_target ? 1 : 0)
           << " returned_present=" << (candidate.returned_to_present ? 1 : 0)
           << " bound_rtv=" << (candidate.bound_swapchain_rtv ? 1 : 0)
           << " copy_dest=" << (candidate.copied_to_swapchain ? 1 : 0)
           << " transitions=" << candidate.transition_count
+          << " states=0x" << std::hex << candidate.first_old_state
+          << "=>0x" << candidate.last_new_state
+          << std::dec
           << " tag=" << candidate.tag_serial
           << " remaining=" << (remaining - 1u);
   renodx::utils::log::i(message.str().c_str());
