@@ -1,0 +1,105 @@
+diff --git a/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp b/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp
+index 24c48cf..0000000 100644
+--- a/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp
++++ b/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp
+@@ -22,6 +22,7 @@
+ 
+ #include <wrl/client.h>
+ #include <d3d11.h>
++#include <atomic>
+ #include <mutex>
+ 
+ #include "include/sl_hooks.h"
+@@ -171,6 +172,8 @@ private:
+     bool m_isImportant = false;
+ };
+ static SwapChainTracker g_swapChainTracker;
++static std::atomic<uint32_t> g_dl2PresentTraceCount{0};
++static std::atomic<uint32_t> g_dl2ResizeTraceCount{0};
+ 
+ ULONG   STDMETHODCALLTYPE DXGISwapChain::Release()
+ {
+@@ -244,6 +247,13 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present(UINT SyncInterval, UINT Flags)
+ {
+     auto present = [this](UINT SyncInterval, UINT Flags)->HRESULT
+     {
++        const uint32_t traceIndex = g_dl2PresentTraceCount.fetch_add(1, std::memory_order_relaxed);
++        const bool trace = traceIndex < 128;
++        if (trace)
++        {
++            SL_LOG_INFO("DL2 SL Present[%u] begin sc=0x%p tid=%lu sync=%u flags=0x%X", traceIndex,
++                m_base, GetCurrentThreadId(), SyncInterval, Flags);
++        }
+         auto hooksId = FunctionHookID::eIDXGISwapChain_Present;
+         const auto& hooks = sl::plugin_manager::getInterface()->getBeforeHooks(hooksId);
+         bool skip = false;
+@@ -258,6 +268,12 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present(UINT SyncInterval, UINT Flags)
+ 
+         if (!skip) hr = m_base->Present(SyncInterval, Flags);
+ 
++        if (trace)
++        {
++            SL_LOG_INFO("DL2 SL Present[%u] base_return hr=0x%08X skip=%u", traceIndex,
++                static_cast<uint32_t>(hr), skip ? 1 : 0);
++        }
++
+         if (g_swapChainTracker.notifyAfterPresent(this, skip))
+         {
+             const auto& hooksAfter = sl::plugin_manager::getInterface()->getAfterHooks(hooksId);
+@@ -272,6 +288,11 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present(UINT SyncInterval, UINT Flags)
+                 }
+             }
+         }
++
++        if (trace)
++        {
++            SL_LOG_INFO("DL2 SL Present[%u] end hr=0x%08X", traceIndex, static_cast<uint32_t>(hr));
++        }
+ 
+         return hr;
+     };
+@@ -384,6 +405,14 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers(UINT BufferCount, UINT Wi
+ {
+     auto resizeBuffers = [this](UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags)->HRESULT
+     {
++        const uint32_t traceIndex = g_dl2ResizeTraceCount.fetch_add(1, std::memory_order_relaxed);
++        const bool trace = traceIndex < 32;
++        if (trace)
++        {
++            SL_LOG_INFO("DL2 SL Resize[%u] begin sc=0x%p tid=%lu buffers=%u size=%ux%u format=%u flags=0x%X",
++                traceIndex, m_base, GetCurrentThreadId(), BufferCount, Width, Height,
++                static_cast<uint32_t>(NewFormat), SwapChainFlags);
++        }
+         bool Skip = false;
+         HRESULT hr = S_OK;
+         {
+@@ -404,6 +433,12 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers(UINT BufferCount, UINT Wi
+             hr = m_base->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
+         }
+ 
++        if (trace)
++        {
++            SL_LOG_INFO("DL2 SL Resize[%u] base_return hr=0x%08X skip=%u", traceIndex,
++                static_cast<uint32_t>(hr), Skip ? 1 : 0);
++        }
++
+         if (FAILED(hr))
+         {
+             SL_LOG_WARN("IDXGISwapChain::ResizeBuffers failed with error code %s", std::system_category().message(hr).c_str());
+diff --git a/source/plugins/sl.common/commonEntry.cpp b/source/plugins/sl.common/commonEntry.cpp
+index afa3c3d..0000000 100644
+--- a/source/plugins/sl.common/commonEntry.cpp
++++ b/source/plugins/sl.common/commonEntry.cpp
+@@ -180,8 +180,12 @@ void recycleFramePresentEndResourceTags()
+ 
+     if (ctx.useResourceTaggingForFrame)
+     {
++        SL_LOG_INFO("DL2 SL tag recycle begin tid=%lu frame=%llu",
++            GetCurrentThreadId(), static_cast<unsigned long long>(getCurrentFrame()));
+         auto pResourceTaggingForFrame = dynamic_cast<common::ResourceTaggingForFrame*>(ctx.pBaseResourceTagging.get());
+         assert(pResourceTaggingForFrame != nullptr);
+         pResourceTaggingForFrame->recycleTags();
++        SL_LOG_INFO("DL2 SL tag recycle end tid=%lu frame=%llu",
++            GetCurrentThreadId(), static_cast<unsigned long long>(getCurrentFrame()));
+     }
+ }

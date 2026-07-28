@@ -1,0 +1,52 @@
+name: Streamline DL2 Trace
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/dl2-hdr-next
+    paths:
+      - .github/workflows/streamline-dl2-trace.yml
+      - docs/patches/streamline-v2.9-dl2-trace.patch
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout RenoDX
+        uses: actions/checkout@v4
+
+      - name: Checkout Streamline 2.9.0
+        uses: actions/checkout@v4
+        with:
+          repository: NVIDIA-RTX/Streamline
+          ref: v2.9.0
+          path: streamline
+
+      - name: Apply bounded DL2 trace
+        shell: pwsh
+        run: git -C streamline apply ../docs/patches/streamline-v2.9-dl2-trace.patch
+
+      - name: Generate Visual Studio project
+        shell: cmd
+        working-directory: streamline
+        run: setup.bat vs2022
+
+      - name: Build diagnostic DLLs
+        shell: cmd
+        working-directory: streamline
+        run: build.bat -develop
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifact | Out-Null
+          Copy-Item streamline/_artifacts/sl.interposer/Develop_x64/sl.interposer.dll artifact/
+          Copy-Item streamline/_artifacts/sl.common/Develop_x64/sl.common.dll artifact/
+          Set-Content artifact/README.txt 'DL2 diagnostic Streamline 2.9.0. Back up both original DLLs and replace both together. Restore originals after collecting logs.'
+
+      - name: Upload diagnostic package
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamline-v2.9-dl2-trace
+          path: artifact
