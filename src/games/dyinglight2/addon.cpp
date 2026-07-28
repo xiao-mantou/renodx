@@ -107,7 +107,6 @@ std::atomic_uint32_t dlss_fg_state_diagnostic_count = 0u;
 
 struct DlssFgSwapchainSnapshot {
   uintptr_t wrapper = 0u;
-  uintptr_t queue = 0u;
   uintptr_t native = 0u;
   uintptr_t hwnd = 0u;
   uintptr_t back_buffer = 0u;
@@ -127,9 +126,6 @@ uint64_t dlss_fg_swapchain_snapshot_serial = 0u;
 std::atomic_uint32_t dlss_fg_present_identity_count = 0u;
 std::atomic_uint32_t dlss_fg_reshade_identity_count = 0u;
 std::atomic_uint64_t dlss_fg_identity_event_serial = 0u;
-std::atomic_bool dlss_fg_early_proxy_logged = false;
-std::atomic_bool dlss_fg_early_proxy_missing_logged = false;
-std::atomic_bool dlss_fg_mode_active = false;
 
 std::mutex dlss_fg_fence_mutex;
 ID3D12Fence* dlss_fg_inputs_fence = nullptr;
@@ -278,7 +274,6 @@ void CaptureReshadeSwapchainSnapshot(
   DlssFgSwapchainSnapshot snapshot = ReadNativeSwapchainSnapshot(
       reinterpret_cast<IDXGISwapChain*>(swapchain->get_native()));
   snapshot.wrapper = reinterpret_cast<uintptr_t>(swapchain);
-  snapshot.queue = reinterpret_cast<uintptr_t>(queue);
   snapshot.api = static_cast<uint32_t>(queue->get_device()->get_api());
   snapshot.hwnd = reinterpret_cast<uintptr_t>(swapchain->get_hwnd());
   snapshot.back_buffer = swapchain->get_current_back_buffer().handle;
@@ -310,7 +305,6 @@ void CaptureReshadeSwapchainSnapshot(
     message << "DL2 DLSS FG ReShade present identity: event=" << event
             << " thread=" << GetCurrentThreadId()
             << " wrapper=0x" << std::hex << std::uppercase << snapshot.wrapper
-            << " queue=0x" << snapshot.queue
             << " native=0x" << snapshot.native
             << " hwnd=0x" << snapshot.hwnd
             << " size=" << std::dec << snapshot.width << "x" << snapshot.height
@@ -321,73 +315,6 @@ void CaptureReshadeSwapchainSnapshot(
             << " backbuffer=0x" << std::hex << snapshot.back_buffer;
     renodx::utils::log::i(message.str().c_str());
   }
-}
-
-bool FindReshadeSwapchainForDlssPresent(
-    const DlssFgSwapchainSnapshot& native,
-    DlssFgSwapchainSnapshot& matched,
-    const char*& match_kind) {
-  std::scoped_lock lock(dlss_fg_swapchain_snapshot_mutex);
-  for (const auto& candidate : dlss_fg_swapchain_snapshots) {
-    if (candidate.wrapper != 0u && candidate.native == native.native && native.native != 0u) {
-      matched = candidate;
-      match_kind = "native";
-      return true;
-    }
-  }
-  for (const auto& candidate : dlss_fg_swapchain_snapshots) {
-    if (candidate.wrapper != 0u && candidate.back_buffer == native.back_buffer && native.back_buffer != 0u) {
-      matched = candidate;
-      match_kind = "backbuffer";
-      return true;
-    }
-  }
-  for (const auto& candidate : dlss_fg_swapchain_snapshots) {
-    if (candidate.wrapper != 0u && candidate.hwnd == native.hwnd
-        && candidate.width == native.width && candidate.height == native.height
-        && candidate.buffer_count == native.buffer_count
-        && candidate.resource_format == native.resource_format) {
-      matched = candidate;
-      match_kind = "hwnd_desc";
-      return true;
-    }
-  }
-  return false;
-}
-
-bool RenderDlssFgEarlyProxy(IDXGISwapChain* swapchain) {
-  if (swap_chain_use_hdr10 < 0.5f || !dlss_fg_mode_active.load(std::memory_order_acquire)) return false;
-  DlssFgSwapchainSnapshot matched = {};
-  const char* match_kind = "none";
-  const auto native = ReadNativeSwapchainSnapshot(swapchain);
-  if (!FindReshadeSwapchainForDlssPresent(native, matched, match_kind)
-      || matched.wrapper == 0u || matched.queue == 0u) {
-    if (!dlss_fg_early_proxy_missing_logged.exchange(true, std::memory_order_acq_rel)) {
-      renodx::utils::log::w("DL2 DLSS FG: early proxy skipped until Streamline/ReShade swapchain mapping is known.");
-    }
-    return false;
-  }
-  auto* const reshade_queue = reinterpret_cast<reshade::api::command_queue*>(matched.queue);
-  auto* const reshade_swapchain = reinterpret_cast<reshade::api::swapchain*>(matched.wrapper);
-  const uint64_t draw_serial = renodx::mods::swapchain::proxy_draw_serial.load(std::memory_order_acquire);
-  renodx::mods::swapchain::force_next_proxy_draw.store(true, std::memory_order_release);
-  renodx::mods::swapchain::OnPresent(reshade_queue, reshade_swapchain, nullptr, nullptr, 0u, nullptr);
-  if (renodx::mods::swapchain::proxy_draw_serial.load(std::memory_order_acquire) == draw_serial) {
-    renodx::mods::swapchain::force_next_proxy_draw.store(false, std::memory_order_release);
-    return false;
-  }
-  reshade_queue->flush_immediate_command_list();
-  renodx::mods::swapchain::skip_next_proxy_draw.store(true, std::memory_order_release);
-  if (!dlss_fg_early_proxy_logged.exchange(true, std::memory_order_acq_rel)) {
-    std::ostringstream message;
-    message << "DL2 DLSS FG: rendered HDR10 proxy before Streamline capture"
-            << " match=" << match_kind
-            << " hook_native=0x" << std::hex << std::uppercase << native.native
-            << " reshade_wrapper=0x" << matched.wrapper
-            << " backbuffer=0x" << native.back_buffer;
-    renodx::utils::log::i(message.str().c_str());
-  }
-  return true;
 }
 
 void LogDlssFgPresentIdentity(const char* call_name, IDXGISwapChain* swapchain) {
@@ -457,7 +384,6 @@ void LogDlssFgPresentIdentity(const char* call_name, IDXGISwapChain* swapchain) 
 
 HRESULT HookedSlDlssGPresent(IDXGISwapChain* swapchain, UINT sync_interval, UINT flags, bool& skip) {
   LogDlssFgPresentIdentity("Present", swapchain);
-  RenderDlssFgEarlyProxy(swapchain);
   return real_sl_dlssg_hook_present(swapchain, sync_interval, flags, skip);
 }
 
@@ -468,7 +394,6 @@ HRESULT HookedSlDlssGPresent1(
     const DXGI_PRESENT_PARAMETERS* parameters,
     bool& skip) {
   LogDlssFgPresentIdentity("Present1", swapchain);
-  RenderDlssFgEarlyProxy(swapchain);
   return real_sl_dlssg_hook_present1(swapchain, sync_interval, flags, parameters, skip);
 }
 
@@ -740,7 +665,6 @@ sl::Result HookedSlDLSSGSetOptions(
     const sl::DLSSGOptions& options) {
   dlss_fg_viewport.store(static_cast<uint32_t>(viewport), std::memory_order_relaxed);
   auto corrected = options;
-  dlss_fg_mode_active.store(corrected.mode != sl::DLSSGMode::eOff, std::memory_order_release);
   const uint32_t incoming_color_format = corrected.colorBufferFormat;
   if (swap_chain_use_hdr10 >= 0.5f) {
     corrected.colorBufferFormat = static_cast<uint32_t>(DXGI_FORMAT_R10G10B10A2_UNORM);
@@ -967,7 +891,6 @@ void RemoveStreamlineHook() {
   real_sl_dlssg_hook_present1 = nullptr;
   dlss_fg_present_hook_installed = false;
   dlss_fg_present_hook_wait_logged = false;
-  dlss_fg_mode_active.store(false, std::memory_order_release);
   std::scoped_lock lock(dlss_fg_fence_mutex);
   if (dlss_fg_inputs_fence != nullptr) dlss_fg_inputs_fence->Release();
   dlss_fg_inputs_fence = nullptr;
@@ -975,13 +898,7 @@ void RemoveStreamlineHook() {
   dlss_fg_retained_resources.clear();
 }
 
-void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) {
-  {
-    std::scoped_lock lock(dlss_fg_swapchain_snapshot_mutex);
-    for (auto& snapshot : dlss_fg_swapchain_snapshots) {
-      if (snapshot.wrapper == reinterpret_cast<uintptr_t>(swapchain)) snapshot = {};
-    }
-  }
+void OnDestroySwapchain(reshade::api::swapchain*, bool resize) {
   if (!resize) return;
   const uint32_t viewport_value = dlss_fg_viewport.load(std::memory_order_relaxed);
   bool state_updated = false;

@@ -134,8 +134,6 @@ inline bool prevent_multiple_flip_swapchains_per_window = true;
 // run normally; only the final proxy draw is skipped once.
 inline std::atomic_bool skip_next_proxy_draw = false;
 inline std::atomic_bool skip_proxy_log_emitted = false;
-inline std::atomic_bool force_next_proxy_draw = false;
-inline std::atomic_uint64_t proxy_draw_serial = 0u;
 
 inline bool bypass_dummy_windows = true;
 [[deprecated("Use use_auto_cloning instead")]]
@@ -1248,8 +1246,7 @@ inline void OnPresent(
   }
   assert(proxy_pass != nullptr);
 
-  const bool force_proxy_draw = force_next_proxy_draw.exchange(false, std::memory_order_acq_rel);
-  if (!force_proxy_draw && skip_next_proxy_draw.exchange(false, std::memory_order_acq_rel)) {
+  if (skip_next_proxy_draw.exchange(false, std::memory_order_acq_rel)) {
     if (!skip_proxy_log_emitted.exchange(true, std::memory_order_acq_rel)) {
       reshade::log::message(
           reshade::log::level::info,
@@ -1261,8 +1258,6 @@ inline void OnPresent(
   if (!proxy_pass->Render(swapchain, queue)) {
     proxy_pass->Destroy(device);
     data->swapchain_proxy_passes.erase(back_buffer_handle);
-  } else {
-    proxy_draw_serial.fetch_add(1u, std::memory_order_release);
   }
 }
 
