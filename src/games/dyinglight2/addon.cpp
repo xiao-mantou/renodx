@@ -31,6 +31,11 @@
 
 namespace {
 
+// 0 = HDR10 (RGB10 + BT.2100 PQ), 1 = scRGB (FP16 + linear).
+// DLSS Frame Generation requires HDR10/PQ, so that is the default. The value is
+// read once in DllMain because a swapchain container cannot change at runtime.
+float swap_chain_format_setting = 0.f;
+
 float dlss_fg_tag_clone = 0.f;
 float dlss_fg_skip_generated_proxy = 0.f;
 bool dlss_fg_tag_capture = false;
@@ -1422,11 +1427,6 @@ renodx::mods::shader::CustomShaders custom_shaders = {
 ShaderInjectData shader_injection;
 
 float current_settings_mode = 0;
-
-// 0 = HDR10 (RGB10 + BT.2100 PQ), 1 = scRGB (FP16 + linear).
-// DLSS Frame Generation requires HDR10/PQ, so that is the default. The value is
-// read once in DllMain because a swapchain container cannot change at runtime.
-float swap_chain_format_setting = 0.f;
 
 renodx::utils::settings::Settings settings = {
     new renodx::utils::settings::Setting{
