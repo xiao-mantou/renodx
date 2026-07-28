@@ -6,13 +6,11 @@ SamplerState s0 : register(s0);
 float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
     : SV_TARGET {
   renodx::draw::Config config = renodx::draw::BuildConfig();
-  // Test progressive scaling values to find "no-flicker" threshold
-  // 203 = severe overexposure but no flicker (proven)
-  // 80 = correct brightness but flickers
-  // Try: 150, 120, 100 to find sweet spot
-  config.swap_chain_scaling_nits = 150.f;  // TEST: adjust this value
-  config.swap_chain_encoding = renodx::draw::ENCODING_PQ;
-  config.swap_chain_output_preset = renodx::draw::SWAP_CHAIN_OUTPUT_PRESET_HDR10;
+  config.swap_chain_scaling_nits = RENODX_GRAPHICS_WHITE_NITS;
+  // Encoding follows the runtime Swap Chain Format setting so the shader can
+  // never disagree with the container DXGI actually created.
+  config.swap_chain_encoding = RENODX_SWAP_CHAIN_ENCODING;
+  config.swap_chain_output_preset = RENODX_SWAP_CHAIN_OUTPUT_PRESET;
 
   if (RENODX_DEBUG_MODE > 4.5 && RENODX_DEBUG_MODE < 5.5) {
     return float4(renodx::draw::SwapChainPass(float3(6.25, 0.0, 0.0), uv, config).rgb, 1.f);

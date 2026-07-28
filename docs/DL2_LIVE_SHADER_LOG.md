@@ -303,3 +303,53 @@ requires PQ colorspace signaling but the underlying container can stay FP16.
 This matches the pre-HDR10-experiment stable state (before 6e92f4a). DLSS Frame Generation flicker remains as the active fix target. HDR10 output (R10G10B10A2 + PQ) is deferred; it requires diagnosing the a2e1016 black-screen root cause separately.
 **Commit:** 489c302
 **Verification pending:** User will test with DLSS-G enabled to confirm stable visuals and persistent flicker, then continue FG diagnostic.
+
+## 2026-07-28: HDR10 as the runtime-selectable presentation container
+
+**Decision:** NVIDIA's DLSS-G documentation excludes FP16/scRGB for HDR output, so
+HDR10 (R10G10B10A2 + BT.2100 PQ) is the only viable target. All FP16/scRGB
+scaling experiments (`91c1432` through `aeba2b0`) are abandoned.
+
+**Static review of the a2e1016 black screen (evidence, not speculation):**
+- `swapchain_v2.hpp:146` `RenderPass` derives RTVs from the resource's own format,
+  and `render.hpp:516-533` auto-derives pipeline render-target formats from those
+  views. An RGB10 backbuffer therefore cannot produce an invalid RTV or a
+  pipeline format mismatch. That rules out the most obvious black-screen cause.
+- `resource.hpp:71-82` `VIEW_UPGRADES_R10G10B10A2_UNORM` covers every R8/B8/RGB10
+  source format, so view upgrades are not missing entries either.
+- `swapchain_v2.hpp:74-81` pins the backbuffer clone to FP16 regardless of the
+  container, so scene resources keep full HDR headroom under HDR10.
+- `draw.hpp:163-171`: with `swapchain_proxy_compatibility_mode = false`, a missing
+  clone makes `SwapchainProxyPass::Render` return false, which destroys the pass
+  and presents nothing. This is the one remaining code path that produces exactly
+  a black screen, and it is only observable at runtime.
+- Correction to the previous entry: the claim that Space Marine 2 proves
+  "HDR10 container + scRGB encoding" is wrong. `spacemarine2/addon.cpp:320` has
+  `SetUseHDR10()` commented out; that game runs FP16 + scRGB.
+- Correction to the `5ce5061` entry: a 10-bit container cannot clip the game's
+  early SDR stages, because it only applies to the final backbuffer.
+
+**Change:** `SwapChainFormat` is now a global Compatibility setting read once in
+DllMain (a container cannot change after swapchain creation). HDR10 is the
+default. The proxy shader no longer hardcodes its encoding; it reads
+`RENODX_SWAP_CHAIN_ENCODING` and `RENODX_SWAP_CHAIN_OUTPUT_PRESET` from the
+injection buffer, so the shader can never disagree with the container DXGI
+created. `swap_chain_scaling_nits` returns to `RENODX_GRAPHICS_WHITE_NITS` (203),
+dropping the temporary 150 test value.
+
+A one-shot, first-Present-only log reports the final presentation state:
+backbuffer handle/format/size, clone handle, `clone_enabled`, `clone_target`,
+clone format, and the active format setting. It reads descriptors only, with no
+readback, dump, or redirection.
+
+**Next log must be read for:**
+```text
+DL2 swapchain format: HDR10 (RGB10+PQ)
+swap: r8g8b8a8_unorm => r10g10b10a2_unorm
+colorspace: hdr10_st2084
+DL2 present state(... format=r10g10b10a2_unorm, clone=0x..., clone_enabled=1 ...)
+```
+If `clone=0x0` or `clone_enabled=0`, the black screen is the `draw.hpp:163` abort
+and the fix belongs in clone activation for an RGB10 backbuffer. If the clone is
+valid and the screen is still black, the cause is downstream of the proxy draw
+(Streamline swapchain interception), not the container.

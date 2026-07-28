@@ -1078,6 +1078,37 @@ void OnDownstreamDrawCapturePresent(
     uint32_t,
     const reshade::api::rect*) {
   TryInstallStreamlineHook();
+  // One-shot, first-Present only. Reports the final presentation state so an
+  // HDR10 black screen can be told apart from a wrong-encoding black screen.
+  // It reads descriptors and handles only: no readback, dump, or redirection.
+  static std::atomic<bool> swapchain_state_logged{false};
+  if (!swapchain_state_logged.exchange(true, std::memory_order_relaxed)) {
+    auto* device = queue->get_device();
+    const auto back_buffer = swapchain->get_current_back_buffer();
+    const auto desc = device->get_resource_desc(back_buffer);
+    uint64_t clone_handle = 0u;
+    bool clone_enabled = false;
+    bool has_clone_target = false;
+    reshade::api::format clone_format = reshade::api::format::unknown;
+    renodx::utils::resource::GetResourceInfo(back_buffer, [&](const renodx::utils::resource::ResourceInfo& info) {
+      clone_handle = info.clone.handle;
+      clone_enabled = info.clone_enabled;
+      has_clone_target = (info.clone_target != nullptr);
+      if (info.clone_target != nullptr) clone_format = info.clone_target->new_format;
+    });
+    std::stringstream s;
+    s << "DL2 present state(";
+    s << "back_buffer=0x" << std::hex << std::uppercase << back_buffer.handle << std::dec << std::nouppercase;
+    s << ", format=" << desc.texture.format;
+    s << ", size=" << desc.texture.width << "x" << desc.texture.height;
+    s << ", clone=0x" << std::hex << std::uppercase << clone_handle << std::dec << std::nouppercase;
+    s << ", clone_enabled=" << (clone_enabled ? "1" : "0");
+    s << ", clone_target=" << (has_clone_target ? "1" : "0");
+    s << ", clone_format=" << clone_format;
+    s << ", swap_chain_format_setting=" << swap_chain_format_setting;
+    s << ")";
+    reshade::log::message(reshade::log::level::info, s.str().c_str());
+  }
 
   {
     std::scoped_lock lock(dlss_fg_handoff_audit_mutex);
@@ -1392,6 +1423,11 @@ ShaderInjectData shader_injection;
 
 float current_settings_mode = 0;
 
+// 0 = HDR10 (RGB10 + BT.2100 PQ), 1 = scRGB (FP16 + linear).
+// DLSS Frame Generation requires HDR10/PQ, so that is the default. The value is
+// read once in DllMain because a swapchain container cannot change at runtime.
+float swap_chain_format_setting = 0.f;
+
 renodx::utils::settings::Settings settings = {
     new renodx::utils::settings::Setting{
         .key = "SettingsMode",
@@ -1683,6 +1719,19 @@ renodx::utils::settings::Settings settings = {
         .parse = [](float value) { return value * 0.01f; },
     },
     new renodx::utils::settings::Setting{
+        .key = "SwapChainFormat",
+        .binding = &swap_chain_format_setting,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "Swap Chain Format",
+        .section = "Compatibility",
+        .tooltip = "Requires a game restart. HDR10 presents R10G10B10A2 with BT.2100 PQ, the only HDR output DLSS Frame Generation supports. scRGB presents R16G16B16A16_FLOAT linear, which has more headroom but is unsupported by Frame Generation.",
+        .labels = {"HDR10 (PQ, DLSS FG)", "scRGB (FP16, no FG)"},
+        .is_global = true,
+        .is_visible = []() { return current_settings_mode >= 1; },
+    },
+    new renodx::utils::settings::Setting{
         .key = "FrameGenerationCompatibility",
         .binding = &renodx::mods::swapchain::v1::copy_swapchain_back_buffer_before_proxy,
         .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
@@ -1898,7 +1947,6 @@ void OnPresetOff() {
       {"ColorGradeStrength", 100.f},
       {"ColorGradeLUTScaling", 100.f},
       {"FxLensFlare", 100.f},
-      {"SwapChainEncoding", 4.f},
       {"FrameGenerationCompatibility", 0.f},
       {"DLSSFGUseTaggedClone", 0.f},
       {"DLSSFGSkipGeneratedProxy", 0.f},
@@ -1967,9 +2015,23 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::shader::allow_multiple_push_constants = true;
       renodx::mods::shader::force_pipeline_cloning = true;
 
-      // DLSS Frame Generation HDR output: keep FP16 container to preserve the
-      // game's HDR pipeline, but signal PQ colorspace to Windows so it correctly
-      // interprets the proxy's BT.2100 PQ output.
+      // Final presentation container. HDR10 (RGB10 + BT.2100 PQ) is the only
+      // HDR output DLSS Frame Generation supports; scRGB stays available as a
+      // no-FG fallback. Scene resources keep their FP16 clones either way.
+      {
+        int32_t format_choice = 0;
+        reshade::get_config_value(nullptr, renodx::utils::settings::global_name.c_str(), "SwapChainFormat", format_choice);
+        swap_chain_format_setting = static_cast<float>(format_choice);
+        const bool use_hdr10 = (format_choice == 0);
+        renodx::mods::swapchain::SetUseHDR10(use_hdr10);
+        shader_injection.swap_chain_encoding =
+            use_hdr10 ? 4.f /* ENCODING_PQ */ : 5.f /* ENCODING_SCRGB */;
+        shader_injection.swap_chain_output_preset =
+            use_hdr10 ? 1.f /* HDR10 */ : 2.f /* SCRGB */;
+        std::stringstream s;
+        s << "DL2 swapchain format: " << (use_hdr10 ? "HDR10 (RGB10+PQ)" : "scRGB (FP16)");
+        reshade::log::message(reshade::log::level::info, s.str().c_str());
+      }
       renodx::mods::swapchain::swapchain_proxy_compatibility_mode = false;
       renodx::mods::swapchain::force_borderless = false;
       renodx::mods::swapchain::use_resource_cloning = true;
