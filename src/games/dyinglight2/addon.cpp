@@ -35,6 +35,9 @@ namespace {
 // DLSS Frame Generation requires HDR10/PQ, so that is the default. The value is
 // read once in DllMain because a swapchain container cannot change at runtime.
 float swap_chain_format_setting = 0.f;
+// Immutable copy used by the proxy shader. ReShade may reload the global
+// setting after DllMain, but the swapchain container cannot change then.
+float swap_chain_use_hdr10 = 1.f;
 
 float dlss_fg_tag_clone = 0.f;
 float dlss_fg_skip_generated_proxy = 0.f;
@@ -1110,7 +1113,7 @@ void OnDownstreamDrawCapturePresent(
     s << ", clone_enabled=" << (clone_enabled ? "1" : "0");
     s << ", clone_target=" << (has_clone_target ? "1" : "0");
     s << ", clone_format=" << clone_format;
-    s << ", swap_chain_format_setting=" << swap_chain_format_setting;
+    s << ", swap_chain_use_hdr10=" << swap_chain_use_hdr10;
     s << ")";
     reshade::log::message(reshade::log::level::info, s.str().c_str());
   }
@@ -2023,6 +2026,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         reshade::get_config_value(nullptr, renodx::utils::settings::global_name.c_str(), "SwapChainFormat", format_choice);
         swap_chain_format_setting = static_cast<float>(format_choice);
         const bool use_hdr10 = (format_choice == 0);
+        swap_chain_use_hdr10 = use_hdr10 ? 1.f : 0.f;
+        shader_injection.renodrt_padding_1 = swap_chain_use_hdr10;
         renodx::mods::swapchain::SetUseHDR10(use_hdr10);
         shader_injection.swap_chain_encoding =
             use_hdr10 ? 4.f /* ENCODING_PQ */ : 5.f /* ENCODING_SCRGB */;
