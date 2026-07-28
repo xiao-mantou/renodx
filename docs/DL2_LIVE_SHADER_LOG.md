@@ -389,3 +389,11 @@ pre-proxy resources while the final output is HDR10/PQ, so an optional
 `DLSS FG Suppress Pre-PQ Color Tags` switch now omits those auxiliary tags and
 lets Streamline use its automatically intercepted final color. This is an A/B
 compatibility test and may reduce UI reconstruction quality.
+
+Focused freeze is not a classic deadlock: tag serials, Presents, and symmetric
+backbuffer barriers continue while the visible frame is stale. A separate
+`DLSS FG Bypass All RenoDX Proxy` A/B now skips only the final proxy draw on
+every Present after the first. Its output color is intentionally invalid; the
+test asks only whether focused motion resumes. This distinguishes proxy/
+Streamline backbuffer contention from a failure inside Streamline's HDR10
+swapchain interception.

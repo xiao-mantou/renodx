@@ -43,6 +43,7 @@ float swap_chain_use_hdr10 = 1.f;
 float dlss_fg_tag_clone = 0.f;
 float dlss_fg_suppress_color_tags = 0.f;
 float dlss_fg_skip_generated_proxy = 0.f;
+float dlss_fg_bypass_all_proxy = 0.f;
 bool dlss_fg_tag_capture = false;
 bool dlss_fg_present_cadence_capture = false;
 std::atomic_uint32_t dlss_fg_backbuffer_barrier_capture = 0u;
@@ -1288,7 +1289,9 @@ void OnDownstreamDrawCapturePresent(
     }
   }
 
-  if (dlss_fg_skip_generated_proxy >= 0.5f) {
+  if (dlss_fg_bypass_all_proxy >= 0.5f) {
+    renodx::mods::swapchain::skip_next_proxy_draw.store(true, std::memory_order_release);
+  } else if (dlss_fg_skip_generated_proxy >= 0.5f) {
     const uint32_t tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_acquire);
     if (tag_serial != 0u && tag_serial != dlss_fg_last_present_tag_serial) {
       dlss_fg_last_present_tag_serial = tag_serial;
@@ -2033,6 +2036,17 @@ renodx::utils::settings::Settings settings = {
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
+        .key = "DLSSFGBypassAllProxy",
+        .binding = &dlss_fg_bypass_all_proxy,
+        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "DLSS FG Bypass All RenoDX Proxy",
+        .section = "Compatibility",
+        .tooltip = "Diagnostic A/B. Skips RenoDX's final proxy draw on every Present after the first. Colors will be incorrect; test only whether focused gameplay continues updating instead of freezing.",
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
         .key = "DLSSFGSuppressPrePQTags",
         .binding = &dlss_fg_suppress_color_tags,
         .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
@@ -2156,6 +2170,7 @@ void OnPresetOff() {
       {"DLSSFGUseTaggedClone", 0.f},
       {"DLSSFGSuppressPrePQTags", 0.f},
       {"DLSSFGSkipGeneratedProxy", 0.f},
+      {"DLSSFGBypassAllProxy", 0.f},
       {"DebugMode", 0.f},
       {"CaptureDownstreamDraws", 0.f},
       {"CaptureDownstreamTransfers", 0.f},
