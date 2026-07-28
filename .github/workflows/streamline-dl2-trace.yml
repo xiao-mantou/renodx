@@ -32,10 +32,12 @@ jobs:
         working-directory: streamline
         run: setup.bat vs2022
 
+      - name: Configure MSBuild
+        uses: microsoft/setup-msbuild@v2
+
       - name: Build diagnostic DLLs
         shell: cmd
-        working-directory: streamline
-        run: build.bat -develop
+        run: msbuild streamline\_project\vs2022\streamline.sln /m /t:Clean,Build /p:Configuration=Develop /p:Platform=x64
 
       - name: Collect artifacts
         shell: pwsh
