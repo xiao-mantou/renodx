@@ -135,6 +135,8 @@ struct DlssFgCommandListCandidate {
   uint32_t tag_serial = 0u;
   bool entered_render_target = false;
   bool returned_to_present = false;
+  bool bound_swapchain_rtv = false;
+  bool copied_to_swapchain = false;
 };
 
 std::mutex dlss_fg_command_list_candidate_mutex;
@@ -1270,11 +1272,45 @@ void OnGammaAuditPushDescriptors(
   }
 }
 
+void MarkDlssFgCommandListSwapchainWrite(
+    reshade::api::command_list* cmd_list,
+    reshade::api::resource resource,
+    bool bound_rtv,
+    bool copy_dest) {
+  if (!dlss_fg_mode_active.load(std::memory_order_acquire)
+      || dlss_fg_execute_candidate_remaining.load(std::memory_order_relaxed) == 0u
+      || cmd_list == nullptr || resource.handle == 0u) {
+    return;
+  }
+  bool is_backbuffer = false;
+  renodx::utils::resource::GetResourceInfo(resource, [&](const renodx::utils::resource::ResourceInfo& info) {
+    is_backbuffer = info.is_swap_chain;
+  });
+  if (!is_backbuffer) return;
+
+  std::scoped_lock lock(dlss_fg_command_list_candidate_mutex);
+  auto& candidate = dlss_fg_command_list_candidates[reinterpret_cast<uintptr_t>(cmd_list)];
+  candidate.back_buffer = resource.handle;
+  candidate.tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_relaxed);
+  candidate.bound_swapchain_rtv |= bound_rtv;
+  candidate.copied_to_swapchain |= copy_dest;
+}
+
 void OnDownstreamBindRenderTargets(
     reshade::api::command_list* cmd_list,
     uint32_t count,
     const reshade::api::resource_view* rtvs,
   reshade::api::resource_view) {
+  if (count != 0u && rtvs != nullptr && cmd_list != nullptr) {
+    auto* device = cmd_list->get_device();
+    if (device != nullptr) {
+      MarkDlssFgCommandListSwapchainWrite(
+          cmd_list,
+          device->get_resource_from_view(rtvs[0]),
+          true,
+          false);
+    }
+  }
   std::scoped_lock lock(downstream_draw_capture_mutex);
   // Keep the current target while any one-shot diagnostic is armed. The
   // command-candidate capture previously omitted downstream_draw_capture
@@ -1628,6 +1664,7 @@ bool OnDownstreamCopyResource(
     reshade::api::command_list* cmd_list,
     reshade::api::resource source,
     reshade::api::resource dest) {
+  MarkDlssFgCommandListSwapchainWrite(cmd_list, dest, false, true);
   RecordDlssFgTagTransfer(DownstreamTransferType::copy_resource, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::copy_resource, cmd_list, source, dest);
   return false;
@@ -1642,6 +1679,7 @@ bool OnDownstreamCopyTextureRegion(
     uint32_t,
     const reshade::api::subresource_box*,
     reshade::api::filter_mode) {
+  MarkDlssFgCommandListSwapchainWrite(cmd_list, dest, false, true);
   RecordDlssFgTagTransfer(DownstreamTransferType::copy_texture_region, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::copy_texture_region, cmd_list, source, dest);
   return false;
@@ -1658,6 +1696,7 @@ bool OnDownstreamResolveTextureRegion(
     uint32_t,
     uint32_t,
     reshade::api::format) {
+  MarkDlssFgCommandListSwapchainWrite(cmd_list, dest, false, true);
   RecordDlssFgTagTransfer(DownstreamTransferType::resolve_texture_region, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::resolve_texture_region, cmd_list, source, dest);
   return false;
@@ -1743,7 +1782,8 @@ void OnDlssFgExecuteCommandList(
     candidate = iterator->second;
     dlss_fg_command_list_candidates.erase(iterator);
   }
-  if (!candidate.entered_render_target && !candidate.returned_to_present) return;
+  if (!candidate.entered_render_target && !candidate.returned_to_present
+      && !candidate.bound_swapchain_rtv && !candidate.copied_to_swapchain) return;
 
   uint32_t remaining = dlss_fg_execute_candidate_remaining.load(std::memory_order_relaxed);
   while (remaining != 0u
@@ -1761,6 +1801,8 @@ void OnDlssFgExecuteCommandList(
           << " backbuffer=0x" << candidate.back_buffer
           << " entered_rt=" << std::dec << (candidate.entered_render_target ? 1 : 0)
           << " returned_present=" << (candidate.returned_to_present ? 1 : 0)
+          << " bound_rtv=" << (candidate.bound_swapchain_rtv ? 1 : 0)
+          << " copy_dest=" << (candidate.copied_to_swapchain ? 1 : 0)
           << " transitions=" << candidate.transition_count
           << " tag=" << candidate.tag_serial
           << " remaining=" << (remaining - 1u);
