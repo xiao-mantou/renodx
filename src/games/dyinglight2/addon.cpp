@@ -2451,7 +2451,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         s << "DL2 swapchain format: " << (use_hdr10 ? "HDR10 (RGB10+PQ)" : "scRGB (FP16)");
         reshade::log::message(reshade::log::level::info, s.str().c_str());
       }
-      renodx::mods::swapchain::swapchain_proxy_compatibility_mode = false;
+      // In HDR10 mode the late Gamma pass has already encoded PQ. Keep final
+      // game writes on the real backbuffer so DLSS-G captures the current
+      // frame instead of the previous contents of RenoDX's proxy target.
+      renodx::mods::swapchain::swapchain_proxy_compatibility_mode = swap_chain_use_hdr10 >= 0.5f;
       renodx::mods::swapchain::force_borderless = false;
       renodx::mods::swapchain::use_resource_cloning = true;
       // 初始用 DX11 shader，OnInitDevice 会根据 device API 动态切换

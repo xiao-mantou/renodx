@@ -24,5 +24,12 @@ float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
     return float4(renodx::draw::SwapChainPass(float3(6.25, 6.25, 6.25), uv, config).rgb, 1.f);
   }
 
-  return float4(renodx::draw::SwapChainPass(t0.Sample(s0, uv).rgb, uv, config).rgb, 1.f);
+  const float3 input_color = t0.Sample(s0, uv).rgb;
+  // HDR10 is encoded in the late game Gamma pass so Streamline sees current
+  // PQ final color before its Present interception. The proxy must not encode
+  // that result a second time.
+  if (RENODX_SWAP_CHAIN_USE_HDR10) {
+    return float4(input_color, 1.f);
+  }
+  return float4(renodx::draw::SwapChainPass(input_color, uv, config).rgb, 1.f);
 }
