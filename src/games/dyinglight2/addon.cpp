@@ -1213,20 +1213,47 @@ void OnDownstreamDrawCapturePresent(
     dlss_fg_producer_audit_state = {};
   }
   if (dlss_fg_present_cadence_capture) {
-    static std::array<uint32_t, 16> tag_serials = {};
-    static std::array<uint64_t, 16> back_buffers = {};
+    struct PresentSample {
+      uint32_t tag_serial = 0u;
+      uint64_t back_buffer = 0u;
+      uint32_t format = 0u;
+      uint32_t usage = 0u;
+      uint64_t clone = 0u;
+      bool clone_enabled = false;
+      bool clone_target = false;
+      uint32_t view_count = 0u;
+    };
+    static std::array<PresentSample, 16> samples = {};
     static uint32_t present_count = 0u;
 
-    tag_serials[present_count] = dlss_fg_color_tag_serial.load(std::memory_order_relaxed);
-    back_buffers[present_count] = swapchain->get_current_back_buffer().handle;
+    const auto back_buffer = swapchain->get_current_back_buffer();
+    const auto desc = queue->get_device()->get_resource_desc(back_buffer);
+    auto& sample = samples[present_count];
+    sample.tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_relaxed);
+    sample.back_buffer = back_buffer.handle;
+    sample.format = static_cast<uint32_t>(desc.texture.format);
+    sample.usage = static_cast<uint32_t>(desc.usage);
+    renodx::utils::resource::GetResourceInfo(back_buffer, [&](const renodx::utils::resource::ResourceInfo& info) {
+      sample.clone = info.clone.handle;
+      sample.clone_enabled = info.clone_enabled;
+      sample.clone_target = info.clone_target != nullptr;
+      sample.view_count = static_cast<uint32_t>(info.resource_view_handles.size());
+    });
     ++present_count;
 
-    if (present_count >= tag_serials.size()) {
+    if (present_count >= samples.size()) {
       std::stringstream stream;
       stream << "DL2 DLSS FG present cadence (" << present_count << "):";
       for (uint32_t index = 0u; index < present_count; ++index) {
-        stream << " #" << std::dec << (index + 1u) << " tag=" << tag_serials[index]
-               << " backbuffer=0x" << std::hex << std::uppercase << back_buffers[index];
+        const auto& item = samples[index];
+        stream << " #" << std::dec << (index + 1u) << " tag=" << item.tag_serial
+               << " backbuffer=0x" << std::hex << std::uppercase << item.back_buffer
+               << " format=" << std::dec << item.format
+               << " usage=0x" << std::hex << item.usage
+               << " clone=0x" << item.clone
+               << " clone_enabled=" << (item.clone_enabled ? 1 : 0)
+               << " clone_target=" << (item.clone_target ? 1 : 0)
+               << " views=" << std::dec << item.view_count;
       }
       reshade::log::message(reshade::log::level::info, stream.str().c_str());
       dlss_fg_present_cadence_capture = false;

@@ -300,6 +300,11 @@ tests did not exercise the intended skip at all. The switch now targets the
 active swapchain alias, and v2 skips only one proxy draw after a new Streamline
 color tag, with a one-shot confirmation log. Resource upgrades, clone state,
 and Present handling remain unchanged.
+
+The cadence capture then showed two Presents per Streamline tag, with a
+different rotating backbuffer on each Present. The next bounded audit expands
+those 16 samples with resource format, usage, clone state, and view count so
+the real/generated pair can be compared without GPU readback or mutation.
 ## 2026-07-28: FP16/scRGB restoration after HDR10 colorspace API rejection
 **Problem:** cc14071 attempted to set `hdr10_st2084` colorspace on the FP16 swapchain while keeping the proxy's PQ encoding. DXGI rejected this with `E_INVALIDARG` (0x80070057), causing the runtime colorspace to fall back to `unknown`. Windows then interpreted the proxy's PQ-encoded output as linear scRGB, resulting in washed-out, low-contrast visuals identical to the earlier a2e1016 mismatch.
 **Root cause:** `IDXGISwapChain3::SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)` requires an HDR10-compatible container format (R10G10B10A2 or R16G16B16A16_FLOAT in specific scenarios). The FP16 container with `extended_srgb_linear` is the standard path; forcing `hdr10_st2084` metadata without changing the container is unsupported.
