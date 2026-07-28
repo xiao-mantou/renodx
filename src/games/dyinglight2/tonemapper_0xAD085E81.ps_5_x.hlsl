@@ -64,18 +64,6 @@ void main(
     return;
   }
 
-  const float3 gamma_output = exp2(cb0[0].xxx * log2(abs(input_color.rgb)));
-  if (RENODX_SWAP_CHAIN_USE_HDR10) {
-    // DLSS-G intercepts final color before RenoDX's Present callback. Encode
-    // here so the real RGB10 backbuffer already contains this frame's PQ
-    // output when Streamline captures it.
-    renodx::draw::Config config = renodx::draw::BuildConfig();
-    config.swap_chain_scaling_nits = RENODX_GRAPHICS_WHITE_NITS;
-    config.swap_chain_encoding = renodx::draw::ENCODING_PQ;
-    config.swap_chain_output_preset = renodx::draw::SWAP_CHAIN_OUTPUT_PRESET_HDR10;
-    o0.rgb = renodx::draw::SwapChainPass(gamma_output, v1.xy, config).rgb;
-  } else {
-    o0.rgb = gamma_output;
-  }
+  o0.rgb = exp2(cb0[0].xxx * log2(abs(input_color.rgb)));
   o0.a = input_color.a;
 }
