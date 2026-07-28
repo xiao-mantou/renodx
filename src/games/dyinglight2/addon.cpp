@@ -126,6 +126,19 @@ uint64_t dlss_fg_swapchain_snapshot_serial = 0u;
 std::atomic_uint32_t dlss_fg_present_identity_count = 0u;
 std::atomic_uint32_t dlss_fg_reshade_identity_count = 0u;
 std::atomic_uint64_t dlss_fg_identity_event_serial = 0u;
+std::atomic_bool dlss_fg_mode_active = false;
+std::atomic_uint32_t dlss_fg_execute_candidate_remaining = 0u;
+
+struct DlssFgCommandListCandidate {
+  uint64_t back_buffer = 0u;
+  uint32_t transition_count = 0u;
+  uint32_t tag_serial = 0u;
+  bool entered_render_target = false;
+  bool returned_to_present = false;
+};
+
+std::mutex dlss_fg_command_list_candidate_mutex;
+std::unordered_map<uintptr_t, DlssFgCommandListCandidate> dlss_fg_command_list_candidates;
 
 std::mutex dlss_fg_fence_mutex;
 ID3D12Fence* dlss_fg_inputs_fence = nullptr;
@@ -665,6 +678,14 @@ sl::Result HookedSlDLSSGSetOptions(
     const sl::DLSSGOptions& options) {
   dlss_fg_viewport.store(static_cast<uint32_t>(viewport), std::memory_order_relaxed);
   auto corrected = options;
+  const bool fg_active = corrected.mode != sl::DLSSGMode::eOff;
+  const bool was_active = dlss_fg_mode_active.exchange(fg_active, std::memory_order_acq_rel);
+  if (fg_active && !was_active) {
+    std::scoped_lock lock(dlss_fg_command_list_candidate_mutex);
+    dlss_fg_command_list_candidates.clear();
+    dlss_fg_execute_candidate_remaining.store(128u, std::memory_order_release);
+    renodx::utils::log::i("DL2 DLSS FG: armed read-only backbuffer submission audit (128 candidates).");
+  }
   const uint32_t incoming_color_format = corrected.colorBufferFormat;
   if (swap_chain_use_hdr10 >= 0.5f) {
     corrected.colorBufferFormat = static_cast<uint32_t>(DXGI_FORMAT_R10G10B10A2_UNORM);
@@ -891,6 +912,12 @@ void RemoveStreamlineHook() {
   real_sl_dlssg_hook_present1 = nullptr;
   dlss_fg_present_hook_installed = false;
   dlss_fg_present_hook_wait_logged = false;
+  dlss_fg_mode_active.store(false, std::memory_order_release);
+  dlss_fg_execute_candidate_remaining.store(0u, std::memory_order_release);
+  {
+    std::scoped_lock candidate_lock(dlss_fg_command_list_candidate_mutex);
+    dlss_fg_command_list_candidates.clear();
+  }
   std::scoped_lock lock(dlss_fg_fence_mutex);
   if (dlss_fg_inputs_fence != nullptr) dlss_fg_inputs_fence->Release();
   dlss_fg_inputs_fence = nullptr;
@@ -1637,15 +1664,18 @@ bool OnDownstreamResolveTextureRegion(
 }
 
 void OnDlssFgBackbufferBarrier(
-    reshade::api::command_list*,
+    reshade::api::command_list* cmd_list,
     uint32_t count,
     const reshade::api::resource* resources,
     const reshade::api::resource_usage* old_states,
     const reshade::api::resource_usage* new_states) {
-  if (dlss_fg_backbuffer_barrier_capture.load(std::memory_order_relaxed) == 0u
-      || resources == nullptr || old_states == nullptr || new_states == nullptr) {
+  if (resources == nullptr || old_states == nullptr || new_states == nullptr) {
     return;
   }
+  const bool submission_audit_active = dlss_fg_mode_active.load(std::memory_order_acquire)
+                                       && dlss_fg_execute_candidate_remaining.load(std::memory_order_relaxed) != 0u;
+  const bool manual_capture_active = dlss_fg_backbuffer_barrier_capture.load(std::memory_order_relaxed) != 0u;
+  if (!submission_audit_active && !manual_capture_active) return;
 
   for (uint32_t index = 0u; index < count; ++index) {
     const auto resource = resources[index];
@@ -1658,6 +1688,23 @@ void OnDlssFgBackbufferBarrier(
       height = info.desc.texture.height;
     });
     if (!is_backbuffer || width < 128u || height < 128u) continue;
+
+    if (submission_audit_active) {
+      std::scoped_lock lock(dlss_fg_command_list_candidate_mutex);
+      auto& candidate = dlss_fg_command_list_candidates[reinterpret_cast<uintptr_t>(cmd_list)];
+      candidate.back_buffer = resource.handle;
+      candidate.tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_relaxed);
+      ++candidate.transition_count;
+      if (new_states[index] == reshade::api::resource_usage::render_target) {
+        candidate.entered_render_target = true;
+      }
+      if (old_states[index] == reshade::api::resource_usage::render_target
+          && new_states[index] == reshade::api::resource_usage::present) {
+        candidate.returned_to_present = true;
+      }
+    }
+
+    if (!manual_capture_active) continue;
 
     uint32_t remaining = dlss_fg_backbuffer_barrier_capture.load(std::memory_order_relaxed);
     while (remaining != 0u
@@ -1676,6 +1723,48 @@ void OnDlssFgBackbufferBarrier(
            << " remaining=" << std::dec << (remaining - 1u);
     reshade::log::message(reshade::log::level::info, stream.str().c_str());
   }
+}
+
+void OnDlssFgResetCommandList(reshade::api::command_list* cmd_list) {
+  std::scoped_lock lock(dlss_fg_command_list_candidate_mutex);
+  dlss_fg_command_list_candidates.erase(reinterpret_cast<uintptr_t>(cmd_list));
+}
+
+void OnDlssFgExecuteCommandList(
+    reshade::api::command_queue* queue,
+    reshade::api::command_list* cmd_list) {
+  if (!dlss_fg_mode_active.load(std::memory_order_acquire)) return;
+
+  DlssFgCommandListCandidate candidate = {};
+  {
+    std::scoped_lock lock(dlss_fg_command_list_candidate_mutex);
+    const auto iterator = dlss_fg_command_list_candidates.find(reinterpret_cast<uintptr_t>(cmd_list));
+    if (iterator == dlss_fg_command_list_candidates.end()) return;
+    candidate = iterator->second;
+    dlss_fg_command_list_candidates.erase(iterator);
+  }
+  if (!candidate.entered_render_target && !candidate.returned_to_present) return;
+
+  uint32_t remaining = dlss_fg_execute_candidate_remaining.load(std::memory_order_relaxed);
+  while (remaining != 0u
+         && !dlss_fg_execute_candidate_remaining.compare_exchange_weak(
+             remaining, remaining - 1u, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+  }
+  if (remaining == 0u) return;
+
+  const uint64_t event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
+  std::ostringstream message;
+  message << "DL2 DLSS FG backbuffer submission: event=" << event
+          << " thread=" << GetCurrentThreadId()
+          << " queue=0x" << std::hex << std::uppercase << reinterpret_cast<uintptr_t>(queue)
+          << " cmd=0x" << reinterpret_cast<uintptr_t>(cmd_list)
+          << " backbuffer=0x" << candidate.back_buffer
+          << " entered_rt=" << std::dec << (candidate.entered_render_target ? 1 : 0)
+          << " returned_present=" << (candidate.returned_to_present ? 1 : 0)
+          << " transitions=" << candidate.transition_count
+          << " tag=" << candidate.tag_serial
+          << " remaining=" << (remaining - 1u);
+  renodx::utils::log::i(message.str().c_str());
 }
 
 void OnDownstreamDrawCapturePresent(
@@ -2672,6 +2761,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::register_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
       reshade::register_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
       reshade::register_event<reshade::addon_event::push_descriptors>(OnGammaAuditPushDescriptors);
+      reshade::register_event<reshade::addon_event::reset_command_list>(OnDlssFgResetCommandList);
+      reshade::register_event<reshade::addon_event::execute_command_list>(OnDlssFgExecuteCommandList);
       // Registered before mods::swapchain::Use below so the DLSS-G input
       // fence is observed before proxy clones are released during resize.
       reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
@@ -2758,6 +2849,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
       reshade::unregister_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
       reshade::unregister_event<reshade::addon_event::push_descriptors>(OnGammaAuditPushDescriptors);
+      reshade::unregister_event<reshade::addon_event::reset_command_list>(OnDlssFgResetCommandList);
+      reshade::unregister_event<reshade::addon_event::execute_command_list>(OnDlssFgExecuteCommandList);
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
       reshade::unregister_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
       RemoveStreamlineHook();
