@@ -114,6 +114,15 @@ void main(
     o0 = float4(renodx::draw::RenderIntermediatePass(DebugChroma(debug_color)), 1.0);
     return;
   }
+  // Direct counterparts to the chroma probes above. These retain luminance
+  // and saturation so a tiny input chroma delta is not artificially expanded.
+  if (RENODX_DEBUG_MODE > 21.5 && RENODX_DEBUG_MODE < 23.5) {
+    const float3 debug_color = RENODX_DEBUG_MODE < 22.5
+        ? vanilla
+        : renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr);
+    o0 = float4(renodx::draw::RenderIntermediatePass(debug_color), 1.0);
+    return;
+  }
 
   // Stability probe: aim the suspected flickering highlight at screen center.
   // Each column samples one scalar stage from the same center pixel; the top
