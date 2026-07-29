@@ -2927,9 +2927,8 @@ void OnDownstreamDrawCapturePresent(
 }
 
 renodx::mods::shader::CustomShaders custom_shaders = {
-    CustomDirectXShaders(0x3E36DA5B),
-    // Diagnostic isolation build: leave the game's later LUT and Gamma passes
-    // native so a DLSS Off/Balance color comparison can locate the boundary.
+    // Diagnostic isolation build: leave the game's color chain fully native
+    // to determine whether RenoDX's 0x3E bridge causes DLSS-mode divergence.
     // Disabled: guessed hashes caused crashes because the copied tonemapper
     // template shader has mismatched inputs/outputs.
     // CustomDirectXShaders(0x4d2b3f4d),
