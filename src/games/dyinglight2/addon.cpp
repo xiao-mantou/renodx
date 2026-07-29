@@ -1179,6 +1179,12 @@ struct UpscalerCurveAudit {
   bool cache_available = false;
 };
 
+struct UpscalerMappedBuffer {
+  uint8_t* data = nullptr;
+  uint64_t offset = 0u;
+  uint64_t size = 0u;
+};
+
 struct UpscalerInputAuditEntry {
   uint64_t generation = 0u;
   uint32_t api = 0u;
@@ -1221,6 +1227,8 @@ std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> dow
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> gamma_audit_t0_views;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> dlss_fg_compute_uav_views;
 std::unordered_map<reshade::api::command_list*, reshade::api::buffer_range> upscaler_input_cb0_ranges;
+std::unordered_map<uint64_t, UpscalerMappedBuffer> upscaler_mapped_buffers;
+std::mutex upscaler_mapped_buffers_mutex;
 
 GammaAuditResource DescribeGammaAuditView(
     reshade::api::device* device,
@@ -1318,20 +1326,63 @@ UpscalerCurveAudit DescribeUpscalerCurve(
   };
   if (device == nullptr || buffer_range.buffer.handle == 0u) return result;
   const auto cache = renodx::utils::constants::GetResourceCache(device, buffer_range.buffer);
-  if (buffer_range.offset >= cache.size()) return result;
-  const size_t available = std::min<size_t>(
-      cache.size() - static_cast<size_t>(buffer_range.offset),
-      buffer_range.size == UINT64_MAX ? 8u * sizeof(float) : static_cast<size_t>(buffer_range.size));
-  const uint32_t count = static_cast<uint32_t>(std::min<size_t>(8u, available / sizeof(float)));
-  if (count == 0u) return result;
-  result.cache_available = true;
-  result.cached_float_count = count;
-  for (uint32_t index = 0u; index < count; ++index) {
-    const auto* source = cache.data() + buffer_range.offset + index * sizeof(float);
-    std::memcpy(&result.bits[index], source, sizeof(uint32_t));
-    std::memcpy(&result.values[index], source, sizeof(float));
+  const auto capture_floats = [&result](const uint8_t* source, uint32_t count) {
+    result.cache_available = true;
+    result.cached_float_count = count;
+    for (uint32_t index = 0u; index < count; ++index) {
+      std::memcpy(&result.bits[index], source + index * sizeof(float), sizeof(uint32_t));
+      std::memcpy(&result.values[index], source + index * sizeof(float), sizeof(float));
+    }
+  };
+  if (buffer_range.offset < cache.size()) {
+    const size_t available = std::min<size_t>(
+        cache.size() - static_cast<size_t>(buffer_range.offset),
+        buffer_range.size == UINT64_MAX ? 8u * sizeof(float) : static_cast<size_t>(buffer_range.size));
+    const uint32_t count = static_cast<uint32_t>(std::min<size_t>(8u, available / sizeof(float)));
+    if (count != 0u) {
+      capture_floats(cache.data() + buffer_range.offset, count);
+      return result;
+    }
   }
+  // DL2 binds b0 from a persistently mapped D3D12 upload buffer. It is not
+  // created with the ReShade constant-buffer usage bit, so use the CPU map
+  // already exposed by the runtime instead of issuing a GPU readback.
+  std::scoped_lock lock(upscaler_mapped_buffers_mutex);
+  const auto mapped_it = upscaler_mapped_buffers.find(buffer_range.buffer.handle);
+  if (mapped_it == upscaler_mapped_buffers.end()) return result;
+  const auto& mapped = mapped_it->second;
+  if (mapped.data == nullptr || buffer_range.offset < mapped.offset) return result;
+  const uint64_t relative_offset = buffer_range.offset - mapped.offset;
+  if (relative_offset > mapped.size || mapped.size - relative_offset < 8u * sizeof(float)) return result;
+  capture_floats(mapped.data + relative_offset, 8u);
   return result;
+}
+
+void OnUpscalerMapBufferRegion(
+    reshade::api::device* device,
+    reshade::api::resource resource,
+    uint64_t offset,
+    uint64_t size,
+    reshade::api::map_access,
+    void** mapped_data) {
+  if (device == nullptr || resource.handle == 0u || mapped_data == nullptr || *mapped_data == nullptr) return;
+  const auto desc = device->get_resource_desc(resource);
+  if (desc.type != reshade::api::resource_type::buffer) return;
+  const uint64_t mapped_size = size == UINT64_MAX ? desc.buffer.size : size;
+  if (mapped_size == 0u) return;
+  std::scoped_lock lock(upscaler_mapped_buffers_mutex);
+  upscaler_mapped_buffers[resource.handle] = {
+      .data = static_cast<uint8_t*>(*mapped_data),
+      .offset = offset,
+      .size = mapped_size,
+  };
+}
+
+void OnUpscalerUnmapBufferRegion(
+    reshade::api::device*,
+    reshade::api::resource resource) {
+  std::scoped_lock lock(upscaler_mapped_buffers_mutex);
+  upscaler_mapped_buffers.erase(resource.handle);
 }
 
 GammaAuditResource DescribeNativeD3D11Resource(
@@ -3310,7 +3361,7 @@ renodx::utils::settings::Settings settings = {
         .label = "Debug Mode",
         .section = "Debug",
         .tooltip = "False-color visualization and output probes. Luminance Ladder places four known scene values in the lower-right corner.",
-        .labels = {"Off", "HDR Input Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500-nit red)", "Scene Probe (Peak white)", "Output Luminance Ladder", "Raw Output Ladder", "Late LUT Output Ladder", "Source t0 Range", "Auto Exposure t1", "Bypass Late Gamma (Test)", "LUT Output Constant (500-nit white)", "Gamma Output Constant (500-nit white)", "Final Proxy Constant (500-nit white)", "Gamma Input t0 Range", "Gamma Power cb0", "Stability Probe (4 stages; top bypass, bottom Gamma)"},
+        .labels = {"Off", "HDR Input Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500-nit red)", "Scene Probe (Peak white)", "Output Luminance Ladder", "Raw Output Ladder", "Late LUT Output Ladder", "Source t0 Range", "Auto Exposure t1", "Bypass Late Gamma (Test)", "LUT Output Constant (500-nit white)", "Gamma Output Constant (500-nit white)", "Final Proxy Constant (500-nit white)", "Gamma Input t0 Range", "Gamma Power cb0", "Stability Probe (4 stages; top bypass, bottom Gamma)", "Source t0 Chroma"},
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -3468,6 +3519,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::register_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
       reshade::register_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
       reshade::register_event<reshade::addon_event::push_descriptors>(OnGammaAuditPushDescriptors);
+      reshade::register_event<reshade::addon_event::map_buffer_region>(OnUpscalerMapBufferRegion);
+      reshade::register_event<reshade::addon_event::unmap_buffer_region>(OnUpscalerUnmapBufferRegion);
       reshade::register_event<reshade::addon_event::reset_command_list>(OnDlssFgResetCommandList);
       reshade::register_event<reshade::addon_event::execute_command_list>(OnDlssFgExecuteCommandList);
       // Registered before mods::swapchain::Use below so the DLSS-G input
@@ -3558,6 +3611,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
       reshade::unregister_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
       reshade::unregister_event<reshade::addon_event::push_descriptors>(OnGammaAuditPushDescriptors);
+      reshade::unregister_event<reshade::addon_event::map_buffer_region>(OnUpscalerMapBufferRegion);
+      reshade::unregister_event<reshade::addon_event::unmap_buffer_region>(OnUpscalerUnmapBufferRegion);
       reshade::unregister_event<reshade::addon_event::reset_command_list>(OnDlssFgResetCommandList);
       reshade::unregister_event<reshade::addon_event::execute_command_list>(OnDlssFgExecuteCommandList);
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);

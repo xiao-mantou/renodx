@@ -92,6 +92,14 @@ void main(
     o0 = float4(renodx::draw::RenderIntermediatePass(DebugFalseColor(exposure)), 1.0);
     return;
   }
+  // Normalize out intensity so DLSS modes can be compared for t0 chroma
+  // alone. This is a visual fallback when a driver keeps its root-CBV upload
+  // buffer persistently mapped outside the generic constant-buffer cache.
+  if (RENODX_DEBUG_MODE > 18.5 && RENODX_DEBUG_MODE < 19.5) {
+    const float source_peak = max(max(source.r, source.g), max(source.b, 0.0001));
+    o0 = float4(renodx::draw::RenderIntermediatePass(saturate(source.rgb / source_peak)), 1.0);
+    return;
+  }
 
   // Stability probe: aim the suspected flickering highlight at screen center.
   // Each column samples one scalar stage from the same center pixel; the top
