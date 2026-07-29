@@ -23,7 +23,7 @@
 
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>
-#include <sl_core_api.h>
+#include <sl.h>
 #include <sl_dlss.h>
 #include <sl_dlss_g.h>
 
@@ -751,7 +751,6 @@ sl::Result HookedSlDLSSSetOptions(
            << " exposureScale=" << options.exposureScale
            << " colorBuffersHDR=" << static_cast<int32_t>(options.colorBuffersHDR)
            << " useAutoExposure=" << static_cast<int32_t>(options.useAutoExposure)
-           << " sharpness=" << options.sharpness
            << " result=forwarded";
     renodx::utils::log::i(stream.str().c_str());
   }
