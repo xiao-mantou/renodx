@@ -1293,6 +1293,15 @@ inline void OnPresent(
   }
   assert(proxy_pass != nullptr);
 
+  if (ConsumeProxyDrawSkipForBackBuffer({back_buffer_handle})) {
+    if (!preserve_proxy_log_emitted.exchange(true, std::memory_order_acq_rel)) {
+      reshade::log::message(
+          reshade::log::level::info,
+          "mods::swapchain::v2 OnPresent: preserving Streamline final PQ frame.");
+    }
+    return;
+  }
+
   const auto proxy_source_override = ConsumeProxySourceForBackBuffer({back_buffer_handle});
 
   if (skip_next_proxy_draw.exchange(false, std::memory_order_acq_rel)) {

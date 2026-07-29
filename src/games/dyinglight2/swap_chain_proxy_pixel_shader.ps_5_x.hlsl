@@ -6,7 +6,12 @@ SamplerState s0 : register(s0);
 float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
     : SV_TARGET {
   renodx::draw::Config config = renodx::draw::BuildConfig();
+  // DL2's FP16 bridge is relative to its fixed 203-nit reference white. This
+  // is a unit conversion, not the runtime Game/UI brightness setting.
   config.swap_chain_scaling_nits = RENODX_GRAPHICS_WHITE_NITS;
+  // Tone mapping already handled the user peak. Do not compress the completed
+  // image a second time in the final HDR10 encoding pass.
+  config.swap_chain_clamp_nits = 10000.f;
   // Encoding follows the runtime Swap Chain Format setting so the shader can
   // never disagree with the container DXGI actually created.
   config.swap_chain_encoding = RENODX_SWAP_CHAIN_USE_HDR10
@@ -18,6 +23,8 @@ float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
   if (RENODX_SWAP_CHAIN_SOURCE_IS_HDR10) {
     config.swap_chain_decoding = renodx::draw::ENCODING_PQ;
     config.swap_chain_decoding_color_space = renodx::color::convert::COLOR_SPACE_BT2020;
+    // PQ decode returns absolute nits, so this source needs no reference-white
+    // conversion before being encoded again.
     config.swap_chain_scaling_nits = 1.f;
   }
 

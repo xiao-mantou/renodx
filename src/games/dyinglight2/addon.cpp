@@ -48,6 +48,7 @@ float dlss_fg_tag_clone = 0.f;
 float dlss_fg_suppress_color_tags = 0.f;
 float dlss_fg_skip_generated_proxy = 0.f;
 float dlss_fg_bypass_all_proxy = 0.f;
+float dlss_fg_final_color_mode = 0.f;
 bool dlss_fg_tag_capture = false;
 bool dlss_fg_present_cadence_capture = false;
 std::atomic_uint32_t dlss_fg_backbuffer_barrier_capture = 0u;
@@ -1900,8 +1901,14 @@ void OnDlssFgExecuteCommandList(
       && !candidate.bound_swapchain_rtv && !candidate.copied_to_swapchain) return;
 
   if (candidate.preserved_native_copy) {
-    renodx::mods::swapchain::SetProxySourceForBackBuffer(
-        {candidate.back_buffer}, {candidate.copy_source});
+    if (dlss_fg_final_color_mode < 0.5f) {
+      renodx::mods::swapchain::ConsumeProxySourceForBackBuffer({candidate.back_buffer});
+      renodx::mods::swapchain::SkipProxyDrawForBackBuffer({candidate.back_buffer});
+    } else {
+      renodx::mods::swapchain::ConsumeProxyDrawSkipForBackBuffer({candidate.back_buffer});
+      renodx::mods::swapchain::SetProxySourceForBackBuffer(
+          {candidate.back_buffer}, {candidate.copy_source});
+    }
   }
 
   uint32_t remaining = dlss_fg_execute_candidate_remaining.load(std::memory_order_relaxed);
@@ -2639,6 +2646,18 @@ renodx::utils::settings::Settings settings = {
         .label = "DLSS FG Use Tagged FP16 Clone",
         .section = "Compatibility",
         .tooltip = "Experimental. Routes only DLSS FG's captured HUDLessColor and UIColorAndAlpha tags to the matching RenoDX FP16 clone, with clone format and dimensions preserved in the Streamline resource metadata.",
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "DLSSFGFinalColorMode",
+        .binding = &dlss_fg_final_color_mode,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "DLSS FG Final Color",
+        .section = "Compatibility",
+        .tooltip = "A/B test for Streamline's final RGB10/PQ frame. Direct PQ preserves the completed frame without another RenoDX proxy pass; PQ Round-trip decodes and re-encodes it through the standard HDR10 output pass.",
+        .labels = {"Direct PQ", "PQ Round-trip"},
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
