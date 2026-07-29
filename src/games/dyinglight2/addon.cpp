@@ -9,6 +9,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <d3d11.h>
 #include <d3d12.h>
 #include <mutex>
@@ -28,6 +29,7 @@
 #include "../../mods/shader.hpp"
 #include "../../mods/swapchain.hpp"
 #include "../../utils/descriptor.hpp"
+#include "../../utils/constants.hpp"
 #include "../../utils/log.hpp"
 #include "../../utils/pipeline_layout.hpp"
 #include "../../utils/resource.hpp"
@@ -1167,6 +1169,42 @@ struct UpscalerColorPathAuditState {
   bool active = false;
 };
 
+struct UpscalerCurveAudit {
+  uint64_t resource = 0u;
+  uint64_t offset = 0u;
+  uint64_t size = 0u;
+  std::array<uint32_t, 8> bits = {};
+  std::array<float, 8> values = {};
+  uint32_t cached_float_count = 0u;
+  bool cache_available = false;
+};
+
+struct UpscalerInputAuditEntry {
+  uint64_t generation = 0u;
+  uint32_t api = 0u;
+  uint32_t draw_count = 0u;
+  uint32_t instance_count = 0u;
+  uint32_t present_index = 0u;
+  uint32_t t0_table = UINT_MAX;
+  uint32_t t0_binding = UINT_MAX;
+  uint32_t t1_table = UINT_MAX;
+  uint32_t t1_binding = UINT_MAX;
+  uint32_t cb0_table = UINT_MAX;
+  uint32_t cb0_binding = UINT_MAX;
+  GammaAuditResource source = {};
+  GammaAuditResource exposure = {};
+  UpscalerCurveAudit curve = {};
+};
+
+struct UpscalerInputAuditState {
+  std::array<UpscalerInputAuditEntry, 16> entries = {};
+  uint64_t capture_id = 0u;
+  uint64_t start_generation = 0u;
+  uint32_t count = 0u;
+  uint32_t presents = 0u;
+  bool active = false;
+};
+
 DownstreamDrawCaptureState downstream_draw_capture_state = {};
 GammaDrawAuditState gamma_draw_audit_state = {};
 GammaNativeInputAuditState gamma_native_input_audit_state = {};
@@ -1175,6 +1213,8 @@ DlssFgComputeWriterAuditState dlss_fg_compute_writer_audit_state = {};
 DlssFgTagTransferAuditState dlss_fg_tag_transfer_audit_state = {};
 UpscalerColorPathAuditState upscaler_color_path_audit_state = {};
 uint64_t upscaler_color_path_capture_serial = 0u;
+UpscalerInputAuditState upscaler_input_audit_state = {};
+uint64_t upscaler_input_audit_capture_serial = 0u;
 std::mutex downstream_draw_capture_mutex;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> downstream_capture_rtvs;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> downstream_capture_t0_views;
@@ -1210,6 +1250,86 @@ GammaAuditResource DescribeGammaAuditView(
     result.effective = effective_resource.handle;
     result.effective_format = effective_desc.texture.format;
   });
+  return result;
+}
+
+struct DescriptorBindingAudit {
+  uint32_t table = UINT_MAX;
+  uint32_t binding = UINT_MAX;
+  renodx::utils::descriptor::DescriptorHeapSlot slot = {};
+  bool found = false;
+};
+
+bool FindGraphicsDescriptorBinding(
+    reshade::api::device* device,
+    const renodx::utils::state::CommandListState* command_state,
+    uint32_t dx_register_index,
+    reshade::api::descriptor_type expected_type,
+    DescriptorBindingAudit* result) {
+  if (device == nullptr || command_state == nullptr || result == nullptr) return false;
+  auto* descriptor_data = renodx::utils::data::Get<renodx::utils::descriptor::DeviceData>(device);
+  if (descriptor_data == nullptr) return false;
+
+  bool found = false;
+  renodx::utils::pipeline_layout::GetPipelineLayoutData(
+      command_state->graphics_pipeline_layout,
+      [&](const renodx::utils::pipeline_layout::PipelineLayoutData* layout_data) {
+        for (uint32_t table_index = 0u;
+             !found && table_index < layout_data->params.size()
+             && table_index < command_state->graphics_descriptor_tables.size(); ++table_index) {
+          const auto& param = layout_data->params[table_index];
+          if (param.type != reshade::api::pipeline_layout_param_type::descriptor_table) continue;
+          const auto table = command_state->graphics_descriptor_tables[table_index];
+          if (table.handle == 0u) continue;
+          for (uint32_t range_index = 0u;
+               !found && range_index < param.descriptor_table.count; ++range_index) {
+            const auto& range = param.descriptor_table.ranges[range_index];
+            if (range.type != expected_type || dx_register_index < range.dx_register_index) continue;
+            const uint32_t register_offset = dx_register_index - range.dx_register_index;
+            if (range.count != UINT_MAX && register_offset >= range.count) continue;
+            const uint32_t binding = range.binding + register_offset;
+            reshade::api::descriptor_heap heap = {};
+            uint32_t heap_offset = 0u;
+            device->get_descriptor_heap_offset(table, binding, 0u, &heap, &heap_offset);
+            const std::shared_lock descriptor_lock(descriptor_data->mutex);
+            const auto heap_it = descriptor_data->heaps.find(heap.handle);
+            if (heap_it == descriptor_data->heaps.end() || heap_offset >= heap_it->second.size()) continue;
+            const auto& slot = heap_it->second[heap_offset];
+            if (slot.type != expected_type) continue;
+            result->table = table_index;
+            result->binding = binding;
+            result->slot = slot;
+            result->found = true;
+            found = true;
+          }
+        }
+      });
+  return found;
+}
+
+UpscalerCurveAudit DescribeUpscalerCurve(
+    reshade::api::device* device,
+    const reshade::api::buffer_range& buffer_range) {
+  UpscalerCurveAudit result = {
+      .resource = buffer_range.buffer.handle,
+      .offset = buffer_range.offset,
+      .size = buffer_range.size,
+  };
+  if (device == nullptr || buffer_range.buffer.handle == 0u) return result;
+  const auto cache = renodx::utils::constants::GetResourceCache(device, buffer_range.buffer);
+  if (buffer_range.offset >= cache.size()) return result;
+  const size_t available = std::min<size_t>(
+      cache.size() - static_cast<size_t>(buffer_range.offset),
+      buffer_range.size == UINT64_MAX ? 8u * sizeof(float) : static_cast<size_t>(buffer_range.size));
+  const uint32_t count = static_cast<uint32_t>(std::min<size_t>(8u, available / sizeof(float)));
+  if (count == 0u) return result;
+  result.cache_available = true;
+  result.cached_float_count = count;
+  for (uint32_t index = 0u; index < count; ++index) {
+    const auto* source = cache.data() + buffer_range.offset + index * sizeof(float);
+    std::memcpy(&result.bits[index], source, sizeof(uint32_t));
+    std::memcpy(&result.values[index], source, sizeof(float));
+  }
   return result;
 }
 
@@ -1514,6 +1634,59 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   const bool targeted_color_shader = shader_hash == 0x3E36DA5Bu
       || shader_hash == 0x268BAB6Du
       || shader_hash == 0xAD085E81u;
+
+  if (upscaler_input_audit_state.active && !is_compute && shader_hash == 0x3E36DA5Bu
+      && likely_fullscreen_draw && upscaler_input_audit_state.count < upscaler_input_audit_state.entries.size()) {
+    auto* device = context.cmd_list->get_device();
+    const auto* command_state = renodx::utils::state::GetCurrentState(context.cmd_list);
+    DescriptorBindingAudit t0_binding = {};
+    DescriptorBindingAudit t1_binding = {};
+    DescriptorBindingAudit cb0_binding = {};
+    FindGraphicsDescriptorBinding(
+        device, command_state, 0u,
+        reshade::api::descriptor_type::texture_shader_resource_view, &t0_binding);
+    FindGraphicsDescriptorBinding(
+        device, command_state, 1u,
+        reshade::api::descriptor_type::texture_shader_resource_view, &t1_binding);
+    FindGraphicsDescriptorBinding(
+        device, command_state, 0u,
+        reshade::api::descriptor_type::constant_buffer, &cb0_binding);
+
+    auto source = t0_binding.found
+        ? DescribeGammaAuditView(device, t0_binding.slot.resource_view)
+        : GammaAuditResource{};
+    // D3D11 may not expose the layout metadata, but its push-descriptor event
+    // has already captured t0 by the time this draw callback executes.
+    if (source.resource == 0u) {
+      const auto input_it = downstream_capture_t0_views.find(context.cmd_list);
+      if (input_it != downstream_capture_t0_views.end()) {
+        source = DescribeGammaAuditView(device, input_it->second);
+      }
+    }
+    const auto exposure = t1_binding.found
+        ? DescribeGammaAuditView(device, t1_binding.slot.resource_view)
+        : GammaAuditResource{};
+    const auto curve = cb0_binding.found
+        ? DescribeUpscalerCurve(device, cb0_binding.slot.buffer_range)
+        : UpscalerCurveAudit{};
+    const uint64_t generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
+    upscaler_input_audit_state.entries[upscaler_input_audit_state.count++] = {
+        .generation = generation,
+        .api = static_cast<uint32_t>(device->get_api()),
+        .draw_count = draw_count,
+        .instance_count = instance_count,
+        .present_index = upscaler_input_audit_state.presents + 1u,
+        .t0_table = t0_binding.table,
+        .t0_binding = t0_binding.binding,
+        .t1_table = t1_binding.table,
+        .t1_binding = t1_binding.binding,
+        .cb0_table = cb0_binding.table,
+        .cb0_binding = cb0_binding.binding,
+        .source = source,
+        .exposure = exposure,
+        .curve = curve,
+    };
+  }
 
   if (capture_upscaler_color_path && !is_compute && targeted_color_shader && likely_fullscreen_draw) {
     const uint32_t sequence = ++upscaler_audit.sequence;
@@ -2182,6 +2355,55 @@ void OnDownstreamDrawCapturePresent(
   }
 
   std::scoped_lock lock(downstream_draw_capture_mutex);
+  if (upscaler_input_audit_state.active) {
+    auto& audit = upscaler_input_audit_state;
+    ++audit.presents;
+    if (audit.presents >= 4u) {
+      std::ostringstream stream;
+      stream << "DL2 0x3E input/curve audit: capture=" << audit.capture_id
+             << " generations=" << audit.start_generation << "=>"
+             << dlss_fg_swapchain_generation.load(std::memory_order_relaxed)
+             << " presents=" << audit.presents << " count=" << audit.count;
+      for (uint32_t index = 0u; index < audit.count; ++index) {
+        const auto& entry = audit.entries[index];
+        stream << " #" << (index + 1u)
+               << " present=" << entry.present_index
+               << " api=" << entry.api
+               << " gen=" << entry.generation
+               << " draw=" << entry.draw_count << "x" << entry.instance_count
+               << " t0@srv" << entry.t0_table << ":" << entry.t0_binding
+               << "(0x" << std::hex << entry.source.resource << "," << std::dec
+               << static_cast<uint32_t>(entry.source.format) << "=>0x" << std::hex
+               << entry.source.effective << "," << std::dec
+               << static_cast<uint32_t>(entry.source.effective_format) << ","
+               << entry.source.width << "x" << entry.source.height
+               << ",clone=" << (entry.source.view_clone_enabled ? 1 : 0) << ")"
+               << " t1@srv" << entry.t1_table << ":" << entry.t1_binding
+               << "(0x" << std::hex << entry.exposure.resource << "," << std::dec
+               << static_cast<uint32_t>(entry.exposure.format) << "=>0x" << std::hex
+               << entry.exposure.effective << "," << std::dec
+               << static_cast<uint32_t>(entry.exposure.effective_format) << ","
+               << entry.exposure.width << "x" << entry.exposure.height
+               << ",clone=" << (entry.exposure.view_clone_enabled ? 1 : 0) << ")"
+               << " cb0@cbv" << entry.cb0_table << ":" << entry.cb0_binding
+               << "(0x" << std::hex << entry.curve.resource << "+0x" << entry.curve.offset
+               << ",size=0x" << entry.curve.size << std::dec
+               << ",cached=" << (entry.curve.cache_available ? entry.curve.cached_float_count : 0u) << ")";
+        if (entry.curve.cache_available) {
+          stream << " values=[";
+          for (uint32_t value_index = 0u; value_index < entry.curve.cached_float_count; ++value_index) {
+            if (value_index != 0u) stream << ",";
+            stream << "0x" << std::hex << entry.curve.bits[value_index] << std::dec
+                   << ":" << entry.curve.values[value_index];
+          }
+          stream << "]";
+        }
+      }
+      renodx::utils::log::i(stream.str().c_str());
+      audit = {};
+      downstream_capture_t0_views.clear();
+    }
+  }
   if (upscaler_color_path_audit_state.active) {
     auto& audit = upscaler_color_path_audit_state;
     ++audit.presents;
@@ -3020,6 +3242,29 @@ renodx::utils::settings::Settings settings = {
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture 0x3E Inputs and Curve (4 Presents)",
+        .section = "Debug",
+        .tooltip = "One-shot: records the Tonemapper's t0 scene source, t1 auto-exposure source, and b0 SDR-curve binding for four Presents. Where the game's constant upload is cached, it also prints the eight original curve floats. No texture readback, resource mutation, or timing change.",
+        .on_click = []() {
+          std::scoped_lock lock(downstream_draw_capture_mutex);
+          const uint64_t capture_id = ++upscaler_input_audit_capture_serial;
+          const uint64_t generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
+          upscaler_input_audit_state = {
+              .capture_id = capture_id,
+              .start_generation = generation,
+              .active = true,
+          };
+          downstream_capture_t0_views.clear();
+          std::ostringstream stream;
+          stream << "DL2 0x3E input/curve audit armed: capture=" << capture_id
+                 << " generation=" << generation;
+          renodx::utils::log::i(stream.str().c_str());
+          return false;
+        },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
         .key = "DebugMode",
         .binding = &shader_injection.debug_mode,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
@@ -3163,8 +3408,12 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
       // This bounded diagnostic needs the D3D12 descriptor heap and command
       // state mirrors to identify fullscreen color inputs across DLSS modes.
+      // The existing constant cache lets the 0x3E audit compare the original
+      // two-float4 SDR curve without mapping or reading GPU textures.
       renodx::utils::descriptor::trace_descriptor_tables = true;
+      renodx::utils::constants::capture_constant_buffers = true;
       renodx::utils::descriptor::Use(fdw_reason);
+      renodx::utils::constants::Use(fdw_reason);
       renodx::utils::state::Use(fdw_reason);
 
       renodx::utils::command_action::Register(
@@ -3278,6 +3527,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
       RemoveStreamlineHook();
       renodx::utils::state::Use(fdw_reason);
+      renodx::utils::constants::Use(fdw_reason);
       renodx::utils::descriptor::Use(fdw_reason);
       reshade::unregister_addon(h_module);
       break;
