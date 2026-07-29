@@ -36,5 +36,16 @@ float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
     return float4(renodx::draw::SwapChainPass(float3(6.25, 6.25, 6.25), uv, config).rgb, 1.f);
   }
 
+  // Diagnostic only: preserve the normal decode, nit scaling, and PQ encode,
+  // but bypass the HDR10 preset's gamut-compression stage. This isolates
+  // whether it magnifies the small chroma difference in DLSS SR output.
+  if (RENODX_DEBUG_MODE > 23.5 && RENODX_DEBUG_MODE < 24.5) {
+    config.swap_chain_output_preset = renodx::draw::SWAP_CHAIN_OUTPUT_PRESET_NONE;
+    config.swap_chain_clamp_color_space = renodx::color::convert::COLOR_SPACE_NONE;
+    config.swap_chain_compress_color_space = renodx::color::convert::COLOR_SPACE_NONE;
+    config.swap_chain_encoding = renodx::draw::ENCODING_PQ;
+    config.swap_chain_encoding_color_space = renodx::color::convert::COLOR_SPACE_BT2020;
+  }
+
   return float4(renodx::draw::SwapChainPass(t0.Sample(s0, uv).rgb, uv, config).rgb, 1.f);
 }

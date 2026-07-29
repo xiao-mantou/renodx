@@ -3482,7 +3482,7 @@ renodx::utils::settings::Settings settings = {
         .label = "Debug Mode",
         .section = "Debug",
         .tooltip = "False-color visualization and output probes. Luminance Ladder places four known scene values in the lower-right corner.",
-        .labels = {"Off", "HDR Input Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500-nit red)", "Scene Probe (Peak white)", "Output Luminance Ladder", "Raw Output Ladder", "Late LUT Output Ladder", "Source t0 Range", "Auto Exposure t1", "Bypass Late Gamma (Test)", "LUT Output Constant (500-nit white)", "Gamma Output Constant (500-nit white)", "Final Proxy Constant (500-nit white)", "Gamma Input t0 Range", "Gamma Power cb0", "Stability Probe (4 stages; top bypass, bottom Gamma)", "Source t0 Chroma", "Vanilla SDR Chroma", "RenoDRT Output Chroma", "Vanilla SDR Direct", "RenoDRT Output Direct"},
+        .labels = {"Off", "HDR Input Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500-nit red)", "Scene Probe (Peak white)", "Output Luminance Ladder", "Raw Output Ladder", "Late LUT Output Ladder", "Source t0 Range", "Auto Exposure t1", "Bypass Late Gamma (Test)", "LUT Output Constant (500-nit white)", "Gamma Output Constant (500-nit white)", "Final Proxy Constant (500-nit white)", "Gamma Input t0 Range", "Gamma Power cb0", "Stability Probe (4 stages; top bypass, bottom Gamma)", "Source t0 Chroma", "Vanilla SDR Chroma", "RenoDRT Output Chroma", "Vanilla SDR Direct", "RenoDRT Output Direct", "Proxy No Gamut Compression"},
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -3707,9 +3707,17 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .usage_include = reshade::api::resource_usage::render_target,
       });
 
-      // Diagnostic isolation: preserve native sRGB RTV semantics. Promoting an
-      // sRGB view to FP16 removes the hardware encode operation and can make
-      // DLSS and native-resolution paths feed different color values forward.
+      // DL2's SDR scene composite may use the sRGB view format. Promote it
+      // as well, otherwise HDR values emitted by the scene bridge are clipped
+      // to 1.0 before the late UI composite and swapchain proxy can see them.
+      renodx::mods::swapchain::resource_upgrade_infos.push_back({
+          .old_format = reshade::api::format::r8g8b8a8_unorm_srgb,
+          .new_format = reshade::api::format::r16g16b16a16_float,
+          .ignore_size = false,
+          .use_resource_view_cloning = true,
+          .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
+          .usage_include = reshade::api::resource_usage::render_target,
+      });
 
       reshade::register_event<reshade::addon_event::init_device>(OnInitDevice);
 
