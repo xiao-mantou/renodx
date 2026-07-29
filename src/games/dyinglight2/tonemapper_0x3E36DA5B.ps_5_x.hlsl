@@ -23,6 +23,11 @@ float3 DebugFalseColor(float value) {
   return lerp(float3(1.0, 0.0, 0.0), float3(1.0, 1.0, 1.0), saturate(log_v - 2.0));
 }
 
+float3 DebugChroma(float3 color) {
+  const float peak = max(max(color.r, color.g), max(color.b, 0.0001));
+  return saturate(color / peak);
+}
+
 // Exact DL2 SDR curve recovered from the original shader. This is evaluated
 // with the original t1 exposure and passed to RenoDRT as the SDR reference.
 float3 ApplyDL2SDRCurve(float3 color, float4 curve0, float4 curve1) {
@@ -96,8 +101,17 @@ void main(
   // alone. This is a visual fallback when a driver keeps its root-CBV upload
   // buffer persistently mapped outside the generic constant-buffer cache.
   if (RENODX_DEBUG_MODE > 18.5 && RENODX_DEBUG_MODE < 19.5) {
-    const float source_peak = max(max(source.r, source.g), max(source.b, 0.0001));
-    o0 = float4(renodx::draw::RenderIntermediatePass(saturate(source.rgb / source_peak)), 1.0);
+    o0 = float4(renodx::draw::RenderIntermediatePass(DebugChroma(source.rgb)), 1.0);
+    return;
+  }
+  // These two probes distinguish the original DL2 SDR reference from the
+  // HDR bridge. If Vanilla remains invariant across DLSS modes but RenoDRT
+  // does not, the correction belongs in the bridge's color anchor.
+  if (RENODX_DEBUG_MODE > 19.5 && RENODX_DEBUG_MODE < 21.5) {
+    const float3 debug_color = RENODX_DEBUG_MODE < 20.5
+        ? vanilla
+        : renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr);
+    o0 = float4(renodx::draw::RenderIntermediatePass(DebugChroma(debug_color)), 1.0);
     return;
   }
 
