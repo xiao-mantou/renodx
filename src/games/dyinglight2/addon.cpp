@@ -1144,6 +1144,12 @@ struct UpscalerColorPathEntry {
   uint32_t shader_hash = 0u;
   uint32_t api = 0u;
   uint64_t generation = 0u;
+  uint32_t draw_count = 0u;
+  uint32_t instance_count = 0u;
+  uint32_t input_table = UINT_MAX;
+  uint32_t input_binding = UINT_MAX;
+  uint32_t viewport_width = 0u;
+  uint32_t viewport_height = 0u;
   GammaAuditResource input = {};
   GammaAuditResource output = {};
 };
@@ -1490,16 +1496,90 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       shader_state, is_compute ? renodx::utils::shader::COMPUTE_INDEX
                                : renodx::utils::shader::PIXEL_INDEX);
 
-  if (capture_upscaler_color_path && !is_compute && shader_hash != 0u) {
+  uint32_t draw_count = 0u;
+  uint32_t instance_count = 0u;
+  if constexpr (requires { context.arguments.vertex_count; context.arguments.instance_count; }) {
+    draw_count = context.arguments.vertex_count;
+    instance_count = context.arguments.instance_count;
+  } else if constexpr (requires { context.arguments.index_count; context.arguments.instance_count; }) {
+    draw_count = context.arguments.index_count;
+    instance_count = context.arguments.instance_count;
+  }
+  const bool likely_fullscreen_draw = draw_count >= 3u && draw_count <= 6u
+      && instance_count >= 1u && instance_count <= 4u;
+
+  if (capture_upscaler_color_path && !is_compute && shader_hash != 0u && likely_fullscreen_draw) {
     const auto target = downstream_capture_rtvs.find(context.cmd_list);
     if (target != downstream_capture_rtvs.end()) {
       auto* device = context.cmd_list->get_device();
       const auto output = DescribeGammaAuditView(device, target->second);
       if (output.width >= 128u && output.height >= 128u) {
         const auto input_it = downstream_capture_t0_views.find(context.cmd_list);
-        const auto input = input_it != downstream_capture_t0_views.end()
+        auto input = input_it != downstream_capture_t0_views.end()
             ? DescribeGammaAuditView(device, input_it->second)
             : GammaAuditResource{};
+        uint32_t input_table = UINT_MAX;
+        uint32_t input_binding = UINT_MAX;
+        uint32_t viewport_width = 0u;
+        uint32_t viewport_height = 0u;
+        const auto* command_state = renodx::utils::state::GetCurrentState(context.cmd_list);
+        if (command_state != nullptr) {
+          if (!command_state->viewports.empty()) {
+            viewport_width = static_cast<uint32_t>(command_state->viewports[0].width);
+            viewport_height = static_cast<uint32_t>(command_state->viewports[0].height);
+          }
+          uint64_t best_area = static_cast<uint64_t>(input.width) * input.height;
+          auto* descriptor_data = renodx::utils::data::Get<renodx::utils::descriptor::DeviceData>(device);
+          std::vector<std::pair<uint32_t, uint32_t>> descriptor_locations;
+          renodx::utils::pipeline_layout::GetPipelineLayoutData(
+              command_state->graphics_pipeline_layout,
+              [&](const renodx::utils::pipeline_layout::PipelineLayoutData* layout_data) {
+                for (uint32_t table_index = 0u;
+                     table_index < layout_data->params.size()
+                     && table_index < command_state->graphics_descriptor_tables.size(); ++table_index) {
+                  const auto& param = layout_data->params[table_index];
+                  if (param.type != reshade::api::pipeline_layout_param_type::descriptor_table) continue;
+                  for (uint32_t range_index = 0u; range_index < param.descriptor_table.count; ++range_index) {
+                    const auto& range = param.descriptor_table.ranges[range_index];
+                    if (range.type != reshade::api::descriptor_type::sampler_with_resource_view
+                        && range.type != reshade::api::descriptor_type::texture_shader_resource_view
+                        && range.type != reshade::api::descriptor_type::buffer_shader_resource_view) {
+                      continue;
+                    }
+                    const uint32_t count = std::min(range.count, 64u);
+                    for (uint32_t offset = 0u; offset < count; ++offset) {
+                      descriptor_locations.emplace_back(table_index, range.binding + offset);
+                    }
+                  }
+                }
+              });
+          for (const auto& [table_index, binding] : descriptor_locations) {
+            const auto table = command_state->graphics_descriptor_tables[table_index];
+            if (table.handle == 0u) continue;
+            renodx::utils::descriptor::DescriptorHeapSlot slot = {};
+            uint32_t heap_offset = 0u;
+            reshade::api::descriptor_heap heap = {};
+            device->get_descriptor_heap_offset(table, binding, 0u, &heap, &heap_offset);
+            bool found_slot = false;
+            if (descriptor_data != nullptr) {
+              const std::shared_lock descriptor_lock(descriptor_data->mutex);
+              const auto heap_it = descriptor_data->heaps.find(heap.handle);
+              if (heap_it != descriptor_data->heaps.end() && heap_offset < heap_it->second.size()) {
+                slot = heap_it->second[heap_offset];
+                found_slot = true;
+              }
+            }
+            if (!found_slot || !slot.HasResourceView() || slot.resource_view.handle == 0u) continue;
+            const auto candidate_input = DescribeGammaAuditView(device, slot.resource_view);
+            if (candidate_input.resource == 0u || candidate_input.resource == output.resource) continue;
+            const uint64_t area = static_cast<uint64_t>(candidate_input.width) * candidate_input.height;
+            if (area <= best_area || candidate_input.width < 128u || candidate_input.height < 128u) continue;
+            input = candidate_input;
+            best_area = area;
+            input_table = table_index;
+            input_binding = binding;
+          }
+        }
         const uint64_t generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
         bool duplicate = false;
         for (uint32_t index = 0u; index < upscaler_audit.count; ++index) {
@@ -1519,6 +1599,12 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
               .shader_hash = shader_hash,
               .api = static_cast<uint32_t>(device->get_api()),
               .generation = generation,
+              .draw_count = draw_count,
+              .instance_count = instance_count,
+              .input_table = input_table,
+              .input_binding = input_binding,
+              .viewport_width = viewport_width,
+              .viewport_height = viewport_height,
               .input = input,
               .output = output,
           };
@@ -2108,6 +2194,9 @@ void OnDownstreamDrawCapturePresent(
                << " api=" << entry.api
                << " gen=" << entry.generation
                << " ps=0x" << std::hex << std::uppercase << entry.shader_hash
+               << " draw=" << std::dec << entry.draw_count << "x" << entry.instance_count
+               << " viewport=" << entry.viewport_width << "x" << entry.viewport_height
+               << " srv=" << entry.input_table << ":" << entry.input_binding
                << " t0(0x" << entry.input.resource << "," << std::dec << static_cast<uint32_t>(entry.input.format)
                << "=>0x" << std::hex << entry.input.effective << "," << std::dec
                << static_cast<uint32_t>(entry.input.effective_format) << ","
@@ -3067,6 +3156,12 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     case DLL_PROCESS_ATTACH:
       if (!reshade::register_addon(h_module)) return FALSE;
 
+      // This bounded diagnostic needs the D3D12 descriptor heap and command
+      // state mirrors to identify fullscreen color inputs across DLSS modes.
+      renodx::utils::descriptor::trace_descriptor_tables = true;
+      renodx::utils::descriptor::Use(fdw_reason);
+      renodx::utils::state::Use(fdw_reason);
+
       renodx::utils::command_action::Register(
           OnDownstreamDrawCapture,
           {.shader_hash = 0u,
@@ -3177,6 +3272,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
       reshade::unregister_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
       RemoveStreamlineHook();
+      renodx::utils::state::Use(fdw_reason);
+      renodx::utils::descriptor::Use(fdw_reason);
       reshade::unregister_addon(h_module);
       break;
   }
