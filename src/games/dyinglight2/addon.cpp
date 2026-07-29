@@ -3739,7 +3739,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // resource-upgrade rules is responsible for the DLSS Off/Balanced chroma
       // divergence. HDR clipping is expected in this build and is not part of
       // the comparison.
-      // Upgrade targets: R8G8B8A8 -> R16G16B16A16_FLOAT.
+#if 0
+      // Confirmed to change the native DLSS-Off color path relative to DLSS SR.
       renodx::mods::swapchain::resource_upgrade_infos.push_back({
           .old_format = reshade::api::format::r8g8b8a8_typeless,
           .new_format = reshade::api::format::r16g16b16a16_float,
@@ -3748,8 +3749,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::BACK_BUFFER,
           .usage_include = reshade::api::resource_usage::render_target,
       });
+#endif
 
-#if 0
+      // Restore the general UNORM upgrade independently to determine whether
+      // it preserves HDR range without reproducing the color divergence.
       renodx::mods::swapchain::resource_upgrade_infos.push_back({
           .old_format = reshade::api::format::r8g8b8a8_unorm,
           .new_format = reshade::api::format::r16g16b16a16_float,
@@ -3759,6 +3762,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .usage_include = reshade::api::resource_usage::render_target,
       });
 
+#if 0
       // DL2's SDR scene composite may use the sRGB view format. Promote it
       // as well, otherwise HDR values emitted by the scene bridge are clipped
       // to 1.0 before the late UI composite and swapchain proxy can see them.
