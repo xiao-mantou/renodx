@@ -1220,6 +1220,7 @@ std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> dow
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> downstream_capture_t0_views;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> gamma_audit_t0_views;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> dlss_fg_compute_uav_views;
+std::unordered_map<reshade::api::command_list*, reshade::api::buffer_range> upscaler_input_cb0_ranges;
 
 GammaAuditResource DescribeGammaAuditView(
     reshade::api::device* device,
@@ -1372,8 +1373,9 @@ void OnGammaAuditPushDescriptors(
       && !downstream_draw_capture_state.consumed;
   const bool capture_fg_compute_writer = dlss_fg_compute_writer_audit_state.active;
   const bool capture_upscaler_color_path = upscaler_color_path_audit_state.active;
+  const bool capture_upscaler_inputs = upscaler_input_audit_state.active;
   if ((!capture_gamma_input && !capture_downstream_inputs && !capture_fg_compute_writer
-       && !capture_upscaler_color_path) || update.count == 0u) {
+       && !capture_upscaler_color_path && !capture_upscaler_inputs) || update.count == 0u) {
     return;
   }
 
@@ -1397,6 +1399,30 @@ void OnGammaAuditPushDescriptors(
           dlss_fg_compute_uav_views[cmd_list] = view;
           break;
         }
+      }
+    }
+  }
+
+  if (capture_upscaler_inputs
+      && renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::pixel)
+      && update.type == reshade::api::descriptor_type::constant_buffer) {
+    uint32_t register_index = 0u;
+    bool found_register_index = false;
+    renodx::utils::pipeline_layout::GetPipelineLayoutData(layout, [&](const auto* layout_data) {
+      if (layout_param >= layout_data->params.size()) return;
+      const auto& param = layout_data->params[layout_param];
+      if (param.type == reshade::api::pipeline_layout_param_type::push_descriptors) {
+        register_index = param.push_descriptors.dx_register_index;
+        found_register_index = true;
+      }
+    });
+    if (found_register_index) {
+      const auto* ranges = static_cast<const reshade::api::buffer_range*>(update.descriptors);
+      for (uint32_t index = 0u; index < update.count; ++index) {
+        if (register_index + update.binding + index != 0u) continue;
+        std::scoped_lock lock(downstream_draw_capture_mutex);
+        upscaler_input_cb0_ranges[cmd_list] = ranges[index];
+        break;
       }
     }
   }
@@ -1667,9 +1693,15 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
     const auto exposure = t1_binding.found
         ? DescribeGammaAuditView(device, t1_binding.slot.resource_view)
         : GammaAuditResource{};
-    const auto curve = cb0_binding.found
+    auto curve = cb0_binding.found
         ? DescribeUpscalerCurve(device, cb0_binding.slot.buffer_range)
         : UpscalerCurveAudit{};
+    if (curve.resource == 0u) {
+      const auto curve_it = upscaler_input_cb0_ranges.find(context.cmd_list);
+      if (curve_it != upscaler_input_cb0_ranges.end()) {
+        curve = DescribeUpscalerCurve(device, curve_it->second);
+      }
+    }
     const uint64_t generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
     upscaler_input_audit_state.entries[upscaler_input_audit_state.count++] = {
         .generation = generation,
@@ -2405,6 +2437,7 @@ void OnDownstreamDrawCapturePresent(
       renodx::utils::log::i(stream.str().c_str());
       audit = {};
       downstream_capture_t0_views.clear();
+      upscaler_input_cb0_ranges.clear();
     }
   }
   if (upscaler_color_path_audit_state.active) {
@@ -3259,6 +3292,7 @@ renodx::utils::settings::Settings settings = {
               .active = true,
           };
           downstream_capture_t0_views.clear();
+          upscaler_input_cb0_ranges.clear();
           std::ostringstream stream;
           stream << "DL2 0x3E input/curve audit armed: capture=" << capture_id
                  << " generation=" << generation;
