@@ -91,8 +91,10 @@ struct SwapchainProxyPass {
 #endif
 
     reshade::api::resource existing_clone = {0u};
+    reshade::api::resource original_resource = {0u};
     bool destroyed = false;
     const auto found_resource_info = utils::resource::GetResourceInfo(current_back_buffer, [&](const utils::resource::ResourceInfo& info) {
+      original_resource = info.resource;
       existing_clone = info.clone;
       destroyed = info.destroyed;
 #ifdef DEBUG_LEVEL_2
@@ -189,6 +191,30 @@ struct SwapchainProxyPass {
         return false;
       }
       swapchain_clone = existing_clone;
+    }
+
+    // Bounded, read-only source diagnostic. This records the resource actually
+    // sampled by the final proxy so DLSS Off/Balance can be compared without
+    // touching command submission, resource state, or frame-generation hooks.
+    static std::atomic_uint32_t proxy_source_diagnostic_count = 0u;
+    const uint32_t diagnostic_index = proxy_source_diagnostic_count.fetch_add(1u, std::memory_order_relaxed);
+    if (diagnostic_index < 16u) {
+      const auto back_buffer_desc = device->get_resource_desc(current_back_buffer);
+      const auto source_desc = device->get_resource_desc(swapchain_clone);
+      std::stringstream diagnostic;
+      diagnostic << "RenoDX swapchain proxy source diagnostic: #" << (diagnostic_index + 1u)
+                 << " api=" << device->get_api()
+                 << " bb=0x" << std::hex << std::uppercase << current_back_buffer.handle
+                 << " source=0x" << swapchain_clone.handle
+                 << " original=0x" << original_resource.handle
+                 << std::dec << std::nouppercase
+                 << " bb_format=" << back_buffer_desc.texture.format
+                 << " source_format=" << source_desc.texture.format
+                 << " size=" << back_buffer_desc.texture.width << "x" << back_buffer_desc.texture.height
+                 << " compat=" << (use_compatibility_mode ? 1 : 0)
+                 << " source_override=" << ((swapchain_clone_override != nullptr && swapchain_clone_override->handle != 0u) ? 1 : 0)
+                 << " clone_enabled=" << (existing_clone.handle != 0u ? 1 : 0);
+      reshade::log::message(reshade::log::level::info, diagnostic.str().c_str());
     }
 
 #ifdef DEBUG_LEVEL_2
