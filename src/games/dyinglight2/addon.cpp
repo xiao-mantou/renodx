@@ -995,6 +995,7 @@ bool gamma_draw_audit_capture = false;
 bool gamma_native_input_audit_capture = false;
 constexpr uint32_t kGammaFrameAuditDrawCount = 8u;
 constexpr size_t kDownstreamInputViewLimit = 64u;
+constexpr uint32_t kDL2TonemapperCurveFloatCount = 5u;
 
 enum class DownstreamTransferType : uint8_t {
   copy_resource,
@@ -1211,6 +1212,32 @@ struct UpscalerInputAuditState {
   bool active = false;
 };
 
+enum class UpscalerSourceWriterType : uint8_t {
+  draw,
+  dispatch,
+  copy_resource,
+  copy_texture_region,
+  resolve_texture_region,
+};
+
+struct UpscalerSourceWriter {
+  UpscalerSourceWriterType type = UpscalerSourceWriterType::draw;
+  uint32_t shader_hash = 0u;
+  uint32_t present_index = 0u;
+  uint64_t source = 0u;
+  uint64_t target = 0u;
+};
+
+struct UpscalerSourceWriterAuditState {
+  std::array<UpscalerSourceWriter, 32> writers = {};
+  uint64_t capture_id = 0u;
+  uint64_t source = 0u;
+  uint64_t effective_source = 0u;
+  uint32_t count = 0u;
+  uint32_t presents = 0u;
+  bool active = false;
+};
+
 DownstreamDrawCaptureState downstream_draw_capture_state = {};
 GammaDrawAuditState gamma_draw_audit_state = {};
 GammaNativeInputAuditState gamma_native_input_audit_state = {};
@@ -1221,6 +1248,8 @@ UpscalerColorPathAuditState upscaler_color_path_audit_state = {};
 uint64_t upscaler_color_path_capture_serial = 0u;
 UpscalerInputAuditState upscaler_input_audit_state = {};
 uint64_t upscaler_input_audit_capture_serial = 0u;
+UpscalerSourceWriterAuditState upscaler_source_writer_audit_state = {};
+uint64_t upscaler_source_writer_audit_capture_serial = 0u;
 std::mutex downstream_draw_capture_mutex;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> downstream_capture_rtvs;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> downstream_capture_t0_views;
@@ -1337,8 +1366,8 @@ UpscalerCurveAudit DescribeUpscalerCurve(
   if (buffer_range.offset < cache.size()) {
     const size_t available = std::min<size_t>(
         cache.size() - static_cast<size_t>(buffer_range.offset),
-        buffer_range.size == UINT64_MAX ? 8u * sizeof(float) : static_cast<size_t>(buffer_range.size));
-    const uint32_t count = static_cast<uint32_t>(std::min<size_t>(8u, available / sizeof(float)));
+        buffer_range.size == UINT64_MAX ? kDL2TonemapperCurveFloatCount * sizeof(float) : static_cast<size_t>(buffer_range.size));
+    const uint32_t count = static_cast<uint32_t>(std::min<size_t>(kDL2TonemapperCurveFloatCount, available / sizeof(float)));
     if (count != 0u) {
       capture_floats(cache.data() + buffer_range.offset, count);
       return result;
@@ -1353,8 +1382,8 @@ UpscalerCurveAudit DescribeUpscalerCurve(
   const auto& mapped = mapped_it->second;
   if (mapped.data == nullptr || buffer_range.offset < mapped.offset) return result;
   const uint64_t relative_offset = buffer_range.offset - mapped.offset;
-  if (relative_offset > mapped.size || mapped.size - relative_offset < 8u * sizeof(float)) return result;
-  capture_floats(mapped.data + relative_offset, 8u);
+  if (relative_offset > mapped.size || mapped.size - relative_offset < kDL2TonemapperCurveFloatCount * sizeof(float)) return result;
+  capture_floats(mapped.data + relative_offset, kDL2TonemapperCurveFloatCount);
   return result;
 }
 
@@ -1583,6 +1612,7 @@ void OnDownstreamBindRenderTargets(
       || gamma_draw_audit_capture
       || gamma_native_input_audit_capture
       || upscaler_color_path_audit_state.active
+      || upscaler_source_writer_audit_state.active
       || (downstream_draw_capture_state.active && !downstream_draw_capture_state.consumed);
   if (!keep_target_binding || count == 0u || rtvs == nullptr) {
     downstream_capture_rtvs.erase(cmd_list);
@@ -1682,14 +1712,15 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   auto& upscaler_audit = upscaler_color_path_audit_state;
   const bool capture_upscaler_color_path = upscaler_audit.active;
   const bool capture_upscaler_inputs = upscaler_input_audit_state.active;
+  const bool capture_upscaler_source_writers = upscaler_source_writer_audit_state.active;
   if (!capture_commands && !capture_transfers && !capture_fg_producer && !capture_fg_compute_writer
-      && !capture_upscaler_color_path && !capture_upscaler_inputs) {
+      && !capture_upscaler_color_path && !capture_upscaler_inputs && !capture_upscaler_source_writers) {
     capture = {};
     downstream_capture_t0_views.clear();
     return {};
   }
   if (capture.consumed && !capture_fg_producer && !capture_fg_compute_writer
-      && !capture_upscaler_color_path && !capture_upscaler_inputs) return {};
+      && !capture_upscaler_color_path && !capture_upscaler_inputs && !capture_upscaler_source_writers) return {};
 
   auto* shader_state = renodx::utils::command_action::GetShaderState(&context);
   if (shader_state == nullptr) return {};
@@ -1713,8 +1744,11 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       || shader_hash == 0x268BAB6Du
       || shader_hash == 0xAD085E81u;
 
-  if (upscaler_input_audit_state.active && !is_compute && shader_hash == 0x3E36DA5Bu
-      && likely_fullscreen_draw && upscaler_input_audit_state.count < 4u) {
+  const bool capture_tonemapper_inputs = upscaler_input_audit_state.active
+      || upscaler_source_writer_audit_state.active;
+  if (capture_tonemapper_inputs && !is_compute && shader_hash == 0x3E36DA5Bu
+      && likely_fullscreen_draw
+      && (upscaler_input_audit_state.count < 4u || upscaler_source_writer_audit_state.active)) {
     auto* device = context.cmd_list->get_device();
     const auto* command_state = renodx::utils::state::GetCurrentState(context.cmd_list);
     DescriptorBindingAudit t0_binding = {};
@@ -1741,6 +1775,11 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
         source = DescribeGammaAuditView(device, input_it->second);
       }
     }
+    auto& source_writer_audit = upscaler_source_writer_audit_state;
+    if (source_writer_audit.active && source_writer_audit.source == 0u && source.resource != 0u) {
+      source_writer_audit.source = source.resource;
+      source_writer_audit.effective_source = source.effective;
+    }
     const auto exposure = t1_binding.found
         ? DescribeGammaAuditView(device, t1_binding.slot.resource_view)
         : GammaAuditResource{};
@@ -1753,23 +1792,44 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
         curve = DescribeUpscalerCurve(device, curve_it->second);
       }
     }
-    const uint64_t generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
-    upscaler_input_audit_state.entries[upscaler_input_audit_state.count++] = {
-        .generation = generation,
-        .api = static_cast<uint32_t>(device->get_api()),
-        .draw_count = draw_count,
-        .instance_count = instance_count,
-        .present_index = upscaler_input_audit_state.presents + 1u,
-        .t0_table = t0_binding.table,
-        .t0_binding = t0_binding.binding,
-        .t1_table = t1_binding.table,
-        .t1_binding = t1_binding.binding,
-        .cb0_table = cb0_binding.table,
-        .cb0_binding = cb0_binding.binding,
-        .source = source,
-        .exposure = exposure,
-        .curve = curve,
-    };
+    if (upscaler_input_audit_state.active && upscaler_input_audit_state.count < 4u) {
+      const uint64_t generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
+      upscaler_input_audit_state.entries[upscaler_input_audit_state.count++] = {
+          .generation = generation,
+          .api = static_cast<uint32_t>(device->get_api()),
+          .draw_count = draw_count,
+          .instance_count = instance_count,
+          .present_index = upscaler_input_audit_state.presents + 1u,
+          .t0_table = t0_binding.table,
+          .t0_binding = t0_binding.binding,
+          .t1_table = t1_binding.table,
+          .t1_binding = t1_binding.binding,
+          .cb0_table = cb0_binding.table,
+          .cb0_binding = cb0_binding.binding,
+          .source = source,
+          .exposure = exposure,
+          .curve = curve,
+      };
+    }
+  }
+
+  if (upscaler_source_writer_audit_state.active && !is_compute
+      && upscaler_source_writer_audit_state.source != 0u
+      && upscaler_source_writer_audit_state.count < upscaler_source_writer_audit_state.writers.size()) {
+    const auto target_it = downstream_capture_rtvs.find(context.cmd_list);
+    if (target_it != downstream_capture_rtvs.end()) {
+      const auto output = DescribeGammaAuditView(context.cmd_list->get_device(), target_it->second);
+      auto& audit = upscaler_source_writer_audit_state;
+      if ((output.resource != 0u && output.resource == audit.source)
+          || (output.effective != 0u && output.effective == audit.effective_source)) {
+        audit.writers[audit.count++] = {
+            .type = UpscalerSourceWriterType::draw,
+            .shader_hash = shader_hash,
+            .present_index = audit.presents + 1u,
+            .target = output.resource,
+        };
+      }
+    }
   }
 
   if (capture_upscaler_color_path && !is_compute && targeted_color_shader && likely_fullscreen_draw) {
@@ -2172,6 +2232,22 @@ bool IsDlssFgFinalHdr10Copy(
   return compatible;
 }
 
+void RecordUpscalerSourceTransfer(
+    UpscalerSourceWriterType type,
+    reshade::api::resource source,
+    reshade::api::resource dest) {
+  std::scoped_lock lock(downstream_draw_capture_mutex);
+  auto& audit = upscaler_source_writer_audit_state;
+  if (!audit.active || audit.source == 0u || audit.count >= audit.writers.size()) return;
+  if (dest.handle != audit.source && dest.handle != audit.effective_source) return;
+  audit.writers[audit.count++] = {
+      .type = type,
+      .present_index = audit.presents + 1u,
+      .source = source.handle,
+      .target = dest.handle,
+  };
+}
+
 bool OnDownstreamCopyResource(
     reshade::api::command_list* cmd_list,
     reshade::api::resource source,
@@ -2191,6 +2267,7 @@ bool OnDownstreamCopyResource(
   MarkDlssFgCommandListSwapchainWrite(cmd_list, source, dest, false, true, preserve_native_copy);
   RecordDlssFgTagTransfer(DownstreamTransferType::copy_resource, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::copy_resource, cmd_list, source, dest);
+  RecordUpscalerSourceTransfer(UpscalerSourceWriterType::copy_resource, source, dest);
   if (preserve_native_copy) {
     // Streamline has already produced the final RGB10 frame. Keep this copy on
     // the real backbuffer instead of letting resource upgrading redirect it to
@@ -2215,6 +2292,7 @@ bool OnDownstreamCopyTextureRegion(
   MarkDlssFgCommandListSwapchainWrite(cmd_list, source, dest, false, true);
   RecordDlssFgTagTransfer(DownstreamTransferType::copy_texture_region, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::copy_texture_region, cmd_list, source, dest);
+  RecordUpscalerSourceTransfer(UpscalerSourceWriterType::copy_texture_region, source, dest);
   return false;
 }
 
@@ -2232,6 +2310,7 @@ bool OnDownstreamResolveTextureRegion(
   MarkDlssFgCommandListSwapchainWrite(cmd_list, source, dest, false, true);
   RecordDlssFgTagTransfer(DownstreamTransferType::resolve_texture_region, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::resolve_texture_region, cmd_list, source, dest);
+  RecordUpscalerSourceTransfer(UpscalerSourceWriterType::resolve_texture_region, source, dest);
   return false;
 }
 
@@ -2489,6 +2568,34 @@ void OnDownstreamDrawCapturePresent(
       audit = {};
       downstream_capture_t0_views.clear();
       upscaler_input_cb0_ranges.clear();
+    }
+  }
+  if (upscaler_source_writer_audit_state.active) {
+    auto& audit = upscaler_source_writer_audit_state;
+    ++audit.presents;
+    if (audit.source != 0u && audit.presents >= 16u) {
+      std::ostringstream stream;
+      stream << "DL2 0x3E source-writer audit: capture=" << audit.capture_id
+             << " source=0x" << std::hex << audit.source
+             << " effective=0x" << audit.effective_source << std::dec
+             << " presents=" << audit.presents << " count=" << audit.count;
+      for (uint32_t index = 0u; index < audit.count; ++index) {
+        const auto& writer = audit.writers[index];
+        const char* type = writer.type == UpscalerSourceWriterType::draw ? "draw"
+                         : writer.type == UpscalerSourceWriterType::dispatch ? "dispatch"
+                         : writer.type == UpscalerSourceWriterType::copy_resource ? "CopyResource"
+                         : writer.type == UpscalerSourceWriterType::copy_texture_region ? "CopyTexture"
+                                                                                       : "ResolveTexture";
+        stream << " #" << (index + 1u) << " present=" << writer.present_index
+               << " " << type;
+        if (writer.shader_hash != 0u) {
+          stream << " shader=0x" << std::hex << std::uppercase << writer.shader_hash << std::dec;
+        }
+        if (writer.source != 0u) stream << " source=0x" << std::hex << writer.source << std::dec;
+        if (writer.target != 0u) stream << " target=0x" << std::hex << writer.target << std::dec;
+      }
+      renodx::utils::log::i(stream.str().c_str());
+      audit = {};
     }
   }
   if (upscaler_color_path_audit_state.active) {
@@ -3332,7 +3439,7 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture 0x3E Inputs and Curve (4 Draws)",
         .section = "Debug",
-        .tooltip = "One-shot: records four Tonemapper draws (waiting up to 32 Presents), including t0 scene source, t1 auto-exposure source, and b0 SDR-curve binding. Where the game's constant upload is cached, it also prints the eight original curve floats. No texture readback, resource mutation, or timing change.",
+        .tooltip = "One-shot: records four Tonemapper draws (waiting up to 32 Presents), including t0 scene source, t1 auto-exposure source, and b0 SDR-curve binding. Where the game's constant upload is cached, it also prints the five curve floats referenced by the original shader. No texture readback, resource mutation, or timing change.",
         .on_click = []() {
           std::scoped_lock lock(downstream_draw_capture_mutex);
           const uint64_t capture_id = ++upscaler_input_audit_capture_serial;
@@ -3347,6 +3454,25 @@ renodx::utils::settings::Settings settings = {
           std::ostringstream stream;
           stream << "DL2 0x3E input/curve audit armed: capture=" << capture_id
                  << " generation=" << generation;
+          renodx::utils::log::i(stream.str().c_str());
+          return false;
+        },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture 0x3E Source Writers (16 Presents)",
+        .section = "Debug",
+        .tooltip = "One-shot: identifies the resource sampled as t0 by the Tonemapper, then records any pixel draw, copy, or resolve that writes it during the next 16 Presents. No resource mutation or readback.",
+        .on_click = []() {
+          std::scoped_lock lock(downstream_draw_capture_mutex);
+          const uint64_t capture_id = ++upscaler_source_writer_audit_capture_serial;
+          upscaler_source_writer_audit_state = {
+              .capture_id = capture_id,
+              .active = true,
+          };
+          std::ostringstream stream;
+          stream << "DL2 0x3E source-writer audit armed: capture=" << capture_id;
           renodx::utils::log::i(stream.str().c_str());
           return false;
         },
