@@ -2928,12 +2928,8 @@ void OnDownstreamDrawCapturePresent(
 
 renodx::mods::shader::CustomShaders custom_shaders = {
     CustomDirectXShaders(0x3E36DA5B),
-    // A later LUT/color-grade composite. Its normal path below remains the
-    // original game code; it is registered only to expose a late-output probe.
-    CustomDirectXShaders(0x268BAB6D),
-    // A visible gamma/power pass after the LUT composite. Its debug branch
-    // isolates whether it remaps HDR highlights after the scene bridge.
-    CustomDirectXShaders(0xAD085E81),
+    // Diagnostic isolation build: leave the game's later LUT and Gamma passes
+    // native so a DLSS Off/Balance color comparison can locate the boundary.
     // Disabled: guessed hashes caused crashes because the copied tonemapper
     // template shader has mismatched inputs/outputs.
     // CustomDirectXShaders(0x4d2b3f4d),
