@@ -24,6 +24,7 @@
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>
 #include <sl_core_api.h>
+#include <sl_dlss.h>
 #include <sl_dlss_g.h>
 
 #include "../../mods/shader.hpp"
@@ -95,6 +96,7 @@ sl::Result (*real_sl_set_tag)(
 
 decltype(&slSetTagForFrame) real_sl_set_tag_for_frame = nullptr;
 decltype(&slDLSSGSetOptions) real_sl_dlssg_set_options = nullptr;
+decltype(&slDLSSSetOptions) real_sl_dlss_set_options = nullptr;
 decltype(&slDLSSGGetState) real_sl_dlssg_get_state = nullptr;
 using SlDlssGHookPresent = HRESULT(IDXGISwapChain*, UINT, UINT, bool&);
 using SlDlssGHookPresent1 = HRESULT(IDXGISwapChain*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*, bool&);
@@ -102,6 +104,8 @@ SlDlssGHookPresent* real_sl_dlssg_hook_present = nullptr;
 SlDlssGHookPresent1* real_sl_dlssg_hook_present1 = nullptr;
 bool dlss_fg_options_logged = false;
 bool dlss_fg_options_hook_installed = false;
+bool dlss_sr_options_hook_installed = false;
+bool dlss_sr_options_logged = false;
 bool dlss_fg_options_hook_wait_logged = false;
 bool dlss_fg_state_hook_installed = false;
 bool dlss_fg_state_hook_wait_logged = false;
@@ -735,6 +739,48 @@ sl::Result HookedSlDLSSGSetOptions(
   return result;
 }
 
+sl::Result HookedSlDLSSSetOptions(
+    const sl::ViewportHandle& viewport,
+    const sl::DLSSOptions& options) {
+  if (!dlss_sr_options_logged) {
+    dlss_sr_options_logged = true;
+    std::stringstream stream;
+    stream << "DL2 DLSS SR options (read-only): mode=" << static_cast<int32_t>(options.mode)
+           << " size=" << options.outputWidth << "x" << options.outputHeight
+           << " preExposure=" << options.preExposure
+           << " exposureScale=" << options.exposureScale
+           << " colorBuffersHDR=" << static_cast<int32_t>(options.colorBuffersHDR)
+           << " useAutoExposure=" << static_cast<int32_t>(options.useAutoExposure)
+           << " sharpness=" << options.sharpness
+           << " result=forwarded";
+    renodx::utils::log::i(stream.str().c_str());
+  }
+  return real_sl_dlss_set_options(viewport, options);
+}
+
+bool TryInstallDlssSrOptionsHook(HMODULE module) {
+  if (dlss_sr_options_hook_installed) return true;
+  auto get_feature_function = reinterpret_cast<decltype(&slGetFeatureFunction)>(
+      GetProcAddress(module, "slGetFeatureFunction"));
+  if (get_feature_function == nullptr) return false;
+  void* function = nullptr;
+  if (get_feature_function(sl::kFeatureDLSS, "slDLSSSetOptions", function) != sl::Result::eOk
+      || function == nullptr) return false;
+  real_sl_dlss_set_options = reinterpret_cast<decltype(&slDLSSSetOptions)>(function);
+  if (DetourTransactionBegin() != NO_ERROR) return false;
+  if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR
+      || DetourAttach(reinterpret_cast<void**>(&real_sl_dlss_set_options),
+                      reinterpret_cast<void*>(&HookedSlDLSSSetOptions)) != NO_ERROR
+      || DetourTransactionCommit() != NO_ERROR) {
+    DetourTransactionAbort();
+    real_sl_dlss_set_options = nullptr;
+    return false;
+  }
+  dlss_sr_options_hook_installed = true;
+  renodx::utils::log::i("DL2 DLSS SR: read-only options hook installed.");
+  return true;
+}
+
 const auto& GetStreamlineHooks() {
   static const std::array<renodx::utils::vtable::HookItem, 2> hooks = {
       renodx::utils::vtable::HookItem{
@@ -846,7 +892,7 @@ bool TryInstallDlssGPresentHook() {
 
 void TryInstallStreamlineHook() {
   if (dlss_fg_hook_installed && dlss_fg_options_hook_installed && dlss_fg_state_hook_installed
-      && dlss_fg_present_hook_installed) return;
+      && dlss_fg_present_hook_installed && dlss_sr_options_hook_installed) return;
 
   auto* module = GetModuleHandleA("sl.interposer.dll");
   if (module == nullptr) {
@@ -880,6 +926,7 @@ void TryInstallStreamlineHook() {
     dlss_fg_present_hook_wait_logged = true;
     renodx::utils::log::w("DL2 DLSS FG: read-only plugin Present identity hook was not installed.");
   }
+  TryInstallDlssSrOptionsHook(module);
 }
 
 void RemoveStreamlineHook() {
