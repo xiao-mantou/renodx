@@ -131,8 +131,10 @@ std::atomic_bool dlss_fg_mode_active = false;
 std::atomic_uint32_t dlss_fg_execute_candidate_remaining = 0u;
 std::atomic_uint32_t dlss_fg_final_copy_diagnostic_count = 0u;
 std::atomic_uint32_t dlss_fg_final_copy_match_diagnostic_count = 0u;
+std::atomic_uint64_t dlss_fg_swapchain_generation = 1u;
 
 struct DlssFgCommandListCandidate {
+  uint64_t swapchain_generation = 0u;
   uint64_t back_buffer = 0u;
   uint64_t copy_source = 0u;
   uint32_t transition_count = 0u;
@@ -943,7 +945,17 @@ void RemoveStreamlineHook() {
 }
 
 void OnDestroySwapchain(reshade::api::swapchain*, bool resize) {
+  const uint64_t generation = dlss_fg_swapchain_generation.fetch_add(1u, std::memory_order_acq_rel) + 1u;
+  {
+    std::scoped_lock candidate_lock(dlss_fg_command_list_candidate_mutex);
+    dlss_fg_command_list_candidates.clear();
+  }
+  renodx::mods::swapchain::ClearProxyDrawBackBufferSkips();
   renodx::mods::swapchain::ClearProxySourceOverrides();
+  std::ostringstream generation_message;
+  generation_message << "DL2 swapchain generation advanced to " << generation
+                     << " (resize=" << (resize ? "yes" : "no") << "); stale FG state cleared.";
+  renodx::utils::log::i(generation_message.str().c_str());
   if (!resize) return;
   const uint32_t viewport_value = dlss_fg_viewport.load(std::memory_order_relaxed);
   bool state_updated = false;
@@ -1128,12 +1140,31 @@ struct DlssFgTagTransferAuditState {
   bool active = false;
 };
 
+struct UpscalerColorPathEntry {
+  uint32_t shader_hash = 0u;
+  uint32_t api = 0u;
+  uint64_t generation = 0u;
+  GammaAuditResource input = {};
+  GammaAuditResource output = {};
+};
+
+struct UpscalerColorPathAuditState {
+  std::array<UpscalerColorPathEntry, 64> entries = {};
+  uint64_t capture_id = 0u;
+  uint64_t start_generation = 0u;
+  uint32_t count = 0u;
+  uint32_t presents = 0u;
+  bool active = false;
+};
+
 DownstreamDrawCaptureState downstream_draw_capture_state = {};
 GammaDrawAuditState gamma_draw_audit_state = {};
 GammaNativeInputAuditState gamma_native_input_audit_state = {};
 DlssFgProducerAuditState dlss_fg_producer_audit_state = {};
 DlssFgComputeWriterAuditState dlss_fg_compute_writer_audit_state = {};
 DlssFgTagTransferAuditState dlss_fg_tag_transfer_audit_state = {};
+UpscalerColorPathAuditState upscaler_color_path_audit_state = {};
+uint64_t upscaler_color_path_capture_serial = 0u;
 std::mutex downstream_draw_capture_mutex;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> downstream_capture_rtvs;
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> downstream_capture_t0_views;
@@ -1210,7 +1241,9 @@ void OnGammaAuditPushDescriptors(
   const bool capture_downstream_inputs = downstream_draw_capture >= 0.5f
       && !downstream_draw_capture_state.consumed;
   const bool capture_fg_compute_writer = dlss_fg_compute_writer_audit_state.active;
-  if ((!capture_gamma_input && !capture_downstream_inputs && !capture_fg_compute_writer) || update.count == 0u) {
+  const bool capture_upscaler_color_path = upscaler_color_path_audit_state.active;
+  if ((!capture_gamma_input && !capture_downstream_inputs && !capture_fg_compute_writer
+       && !capture_upscaler_color_path) || update.count == 0u) {
     return;
   }
 
@@ -1238,7 +1271,7 @@ void OnGammaAuditPushDescriptors(
     }
   }
 
-  if ((!capture_gamma_input && !capture_downstream_inputs)
+  if ((!capture_gamma_input && !capture_downstream_inputs && !capture_upscaler_color_path)
       || !renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::pixel)) {
     return;
   }
@@ -1277,7 +1310,7 @@ void OnGammaAuditPushDescriptors(
     const auto view = renodx::utils::descriptor::GetResourceViewFromDescriptorUpdate(update, index);
     std::scoped_lock lock(downstream_draw_capture_mutex);
     if (capture_gamma_input) gamma_audit_t0_views[cmd_list] = view;
-    if (capture_downstream_inputs) {
+    if (capture_downstream_inputs || capture_upscaler_color_path) {
       const auto existing = downstream_capture_t0_views.find(cmd_list);
       if (existing != downstream_capture_t0_views.end()
           || downstream_capture_t0_views.size() < kDownstreamInputViewLimit) {
@@ -1307,6 +1340,7 @@ void MarkDlssFgCommandListSwapchainWrite(
 
   std::scoped_lock lock(dlss_fg_command_list_candidate_mutex);
   auto& candidate = dlss_fg_command_list_candidates[reinterpret_cast<uintptr_t>(cmd_list)];
+  candidate.swapchain_generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
   candidate.back_buffer = resource.handle;
   if (copy_dest) candidate.copy_source = source.handle;
   candidate.tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_relaxed);
@@ -1341,6 +1375,7 @@ void OnDownstreamBindRenderTargets(
       || dlss_fg_producer_audit_state.active
       || gamma_draw_audit_capture
       || gamma_native_input_audit_capture
+      || upscaler_color_path_audit_state.active
       || (downstream_draw_capture_state.active && !downstream_draw_capture_state.consumed);
   if (!keep_target_binding || count == 0u || rtvs == nullptr) {
     downstream_capture_rtvs.erase(cmd_list);
@@ -1437,12 +1472,16 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   const bool capture_fg_producer = fg_producer_audit.active;
   auto& fg_compute_writer_audit = dlss_fg_compute_writer_audit_state;
   const bool capture_fg_compute_writer = fg_compute_writer_audit.active;
-  if (!capture_commands && !capture_transfers && !capture_fg_producer && !capture_fg_compute_writer) {
+  auto& upscaler_audit = upscaler_color_path_audit_state;
+  const bool capture_upscaler_color_path = upscaler_audit.active;
+  if (!capture_commands && !capture_transfers && !capture_fg_producer && !capture_fg_compute_writer
+      && !capture_upscaler_color_path) {
     capture = {};
     downstream_capture_t0_views.clear();
     return {};
   }
-  if (capture.consumed && !capture_fg_producer && !capture_fg_compute_writer) return {};
+  if (capture.consumed && !capture_fg_producer && !capture_fg_compute_writer
+      && !capture_upscaler_color_path) return {};
 
   auto* shader_state = renodx::utils::command_action::GetShaderState(&context);
   if (shader_state == nullptr) return {};
@@ -1450,6 +1489,43 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   const uint32_t shader_hash = renodx::utils::shader::GetCurrentShaderHash(
       shader_state, is_compute ? renodx::utils::shader::COMPUTE_INDEX
                                : renodx::utils::shader::PIXEL_INDEX);
+
+  if (capture_upscaler_color_path && !is_compute && shader_hash != 0u) {
+    const auto target = downstream_capture_rtvs.find(context.cmd_list);
+    if (target != downstream_capture_rtvs.end()) {
+      auto* device = context.cmd_list->get_device();
+      const auto output = DescribeGammaAuditView(device, target->second);
+      if (output.width >= 128u && output.height >= 128u) {
+        const auto input_it = downstream_capture_t0_views.find(context.cmd_list);
+        const auto input = input_it != downstream_capture_t0_views.end()
+            ? DescribeGammaAuditView(device, input_it->second)
+            : GammaAuditResource{};
+        const uint64_t generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
+        bool duplicate = false;
+        for (uint32_t index = 0u; index < upscaler_audit.count; ++index) {
+          const auto& entry = upscaler_audit.entries[index];
+          duplicate = entry.shader_hash == shader_hash
+              && entry.generation == generation
+              && entry.input.format == input.format
+              && entry.input.effective_format == input.effective_format
+              && entry.input.width == input.width && entry.input.height == input.height
+              && entry.output.format == output.format
+              && entry.output.effective_format == output.effective_format
+              && entry.output.width == output.width && entry.output.height == output.height;
+          if (duplicate) break;
+        }
+        if (!duplicate && upscaler_audit.count < upscaler_audit.entries.size()) {
+          upscaler_audit.entries[upscaler_audit.count++] = {
+              .shader_hash = shader_hash,
+              .api = static_cast<uint32_t>(device->get_api()),
+              .generation = generation,
+              .input = input,
+              .output = output,
+          };
+        }
+      }
+    }
+  }
 
   if (capture_fg_producer && !is_compute && shader_hash != 0u) {
     const auto target = downstream_capture_rtvs.find(context.cmd_list);
@@ -1842,6 +1918,7 @@ void OnDlssFgBackbufferBarrier(
     if (submission_audit_active) {
       std::scoped_lock lock(dlss_fg_command_list_candidate_mutex);
       auto& candidate = dlss_fg_command_list_candidates[reinterpret_cast<uintptr_t>(cmd_list)];
+      candidate.swapchain_generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
       candidate.back_buffer = resource.handle;
       candidate.tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_relaxed);
       if (candidate.transition_count == 0u) {
@@ -1896,6 +1973,10 @@ void OnDlssFgExecuteCommandList(
     if (iterator == dlss_fg_command_list_candidates.end()) return;
     candidate = iterator->second;
     dlss_fg_command_list_candidates.erase(iterator);
+  }
+  if (candidate.swapchain_generation
+      != dlss_fg_swapchain_generation.load(std::memory_order_acquire)) {
+    return;
   }
   if (!candidate.entered_render_target && !candidate.returned_to_present
       && !candidate.bound_swapchain_rtv && !candidate.copied_to_swapchain) return;
@@ -2012,6 +2093,38 @@ void OnDownstreamDrawCapturePresent(
   }
 
   std::scoped_lock lock(downstream_draw_capture_mutex);
+  if (upscaler_color_path_audit_state.active) {
+    auto& audit = upscaler_color_path_audit_state;
+    ++audit.presents;
+    if (audit.presents >= 4u) {
+      std::ostringstream stream;
+      stream << "DL2 upscaler color path audit: capture=" << audit.capture_id
+             << " generations=" << audit.start_generation << "=>"
+             << dlss_fg_swapchain_generation.load(std::memory_order_relaxed)
+             << " presents=" << audit.presents << " count=" << audit.count;
+      for (uint32_t index = 0u; index < audit.count; ++index) {
+        const auto& entry = audit.entries[index];
+        stream << " #" << (index + 1u)
+               << " api=" << entry.api
+               << " gen=" << entry.generation
+               << " ps=0x" << std::hex << std::uppercase << entry.shader_hash
+               << " t0(0x" << entry.input.resource << "," << std::dec << static_cast<uint32_t>(entry.input.format)
+               << "=>0x" << std::hex << entry.input.effective << "," << std::dec
+               << static_cast<uint32_t>(entry.input.effective_format) << ","
+               << entry.input.width << "x" << entry.input.height
+               << ",clone=" << (entry.input.view_clone_enabled ? 1 : 0) << ")"
+               << " rtv(0x" << std::hex << entry.output.resource << "," << std::dec
+               << static_cast<uint32_t>(entry.output.format) << "=>0x" << std::hex
+               << entry.output.effective << "," << std::dec
+               << static_cast<uint32_t>(entry.output.effective_format) << ","
+               << entry.output.width << "x" << entry.output.height
+               << ",clone=" << (entry.output.view_clone_enabled ? 1 : 0) << ")";
+      }
+      renodx::utils::log::i(stream.str().c_str());
+      audit = {};
+      downstream_capture_t0_views.clear();
+    }
+  }
   if (dlss_fg_tag_transfer_audit_state.active) {
     const auto& audit = dlss_fg_tag_transfer_audit_state;
     std::stringstream stream;
@@ -2785,6 +2898,29 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "One-shot: records up to 128 barriers for full-size swapchain backbuffers and clones, including old/new states and the current Streamline tag serial. No mutation or readback.",
         .on_click = []() {
           dlss_fg_backbuffer_barrier_capture.store(128u, std::memory_order_release);
+          return false;
+        },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture Current Upscaler Color Path (4 Presents)",
+        .section = "Debug",
+        .tooltip = "One-shot: records unique full-size pixel-shader passes for four Presents, including t0 and RTV resource formats, dimensions, clone state, API, and swapchain generation. Click once after each DLSS mode has settled; no readback or resource mutation.",
+        .on_click = []() {
+          std::scoped_lock lock(downstream_draw_capture_mutex);
+          const uint64_t capture_id = ++upscaler_color_path_capture_serial;
+          const uint64_t generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
+          upscaler_color_path_audit_state = {
+              .capture_id = capture_id,
+              .start_generation = generation,
+              .active = true,
+          };
+          downstream_capture_t0_views.clear();
+          std::ostringstream stream;
+          stream << "DL2 upscaler color path audit armed: capture=" << capture_id
+                 << " generation=" << generation;
+          renodx::utils::log::i(stream.str().c_str());
           return false;
         },
         .is_visible = []() { return current_settings_mode >= 2; },
