@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <d3d11.h>
 #include <d3d12.h>
 #include <mutex>
@@ -1572,6 +1573,12 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
             if (!found_slot || !slot.HasResourceView() || slot.resource_view.handle == 0u) continue;
             const auto candidate_input = DescribeGammaAuditView(device, slot.resource_view);
             if (candidate_input.resource == 0u || candidate_input.resource == output.resource) continue;
+            if (candidate_input.width < output.width / 2u || candidate_input.height < output.height / 2u
+                || candidate_input.width == 0u || candidate_input.height == 0u
+                || output.width == 0u || output.height == 0u) continue;
+            const float output_aspect = static_cast<float>(output.width) / output.height;
+            const float input_aspect = static_cast<float>(candidate_input.width) / candidate_input.height;
+            if (std::abs(input_aspect - output_aspect) > output_aspect * 0.12f) continue;
             const uint64_t area = static_cast<uint64_t>(candidate_input.width) * candidate_input.height;
             if (area <= best_area || candidate_input.width < 128u || candidate_input.height < 128u) continue;
             input = candidate_input;
