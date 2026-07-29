@@ -3734,6 +3734,12 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::swapchain::proxy_source_is_hdr10_index =
           offsetof(ShaderInjectData, renodrt_padding_2) / sizeof(float);
 
+      // Diagnostic isolation: temporarily leave every scene render target in
+      // its native format. This determines whether any of the three FP16
+      // resource-upgrade rules is responsible for the DLSS Off/Balanced chroma
+      // divergence. HDR clipping is expected in this build and is not part of
+      // the comparison.
+#if 0
       // Upgrade targets: R8G8B8A8 -> R16G16B16A16_FLOAT.
       renodx::mods::swapchain::resource_upgrade_infos.push_back({
           .old_format = reshade::api::format::r8g8b8a8_typeless,
@@ -3764,6 +3770,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
           .usage_include = reshade::api::resource_usage::render_target,
       });
+#endif
 
       reshade::register_event<reshade::addon_event::init_device>(OnInitDevice);
 
