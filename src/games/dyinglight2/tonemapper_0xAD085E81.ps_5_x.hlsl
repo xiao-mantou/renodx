@@ -27,6 +27,14 @@ void main(
     out float4 o0 : SV_TARGET0) {
   const float4 input_color = t0.SampleLevel(s0_s, v1.xy, 0);
 
+  // Preserve the 0x3E source/Vanilla/RenoDRT comparison probes verbatim.
+  // Their purpose is to isolate that pass from both this power operation and
+  // the preceding LUT replacement.
+  if (RENODX_DEBUG_MODE > 18.5 && RENODX_DEBUG_MODE < 23.5) {
+    o0 = input_color;
+    return;
+  }
+
   // The original pass is a per-channel power operation. Bypassing it for
   // this one diagnostic mode establishes whether it remaps HDR highlights
   // after the LUT composite.
