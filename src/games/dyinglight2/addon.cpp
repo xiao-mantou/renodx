@@ -3739,7 +3739,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // resource-upgrade rules is responsible for the DLSS Off/Balanced chroma
       // divergence. HDR clipping is expected in this build and is not part of
       // the comparison.
-#if 0
       // Upgrade targets: R8G8B8A8 -> R16G16B16A16_FLOAT.
       renodx::mods::swapchain::resource_upgrade_infos.push_back({
           .old_format = reshade::api::format::r8g8b8a8_typeless,
@@ -3750,6 +3749,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .usage_include = reshade::api::resource_usage::render_target,
       });
 
+#if 0
       renodx::mods::swapchain::resource_upgrade_infos.push_back({
           .old_format = reshade::api::format::r8g8b8a8_unorm,
           .new_format = reshade::api::format::r16g16b16a16_float,
