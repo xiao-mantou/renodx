@@ -1604,14 +1604,15 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   const bool capture_fg_compute_writer = fg_compute_writer_audit.active;
   auto& upscaler_audit = upscaler_color_path_audit_state;
   const bool capture_upscaler_color_path = upscaler_audit.active;
+  const bool capture_upscaler_inputs = upscaler_input_audit_state.active;
   if (!capture_commands && !capture_transfers && !capture_fg_producer && !capture_fg_compute_writer
-      && !capture_upscaler_color_path) {
+      && !capture_upscaler_color_path && !capture_upscaler_inputs) {
     capture = {};
     downstream_capture_t0_views.clear();
     return {};
   }
   if (capture.consumed && !capture_fg_producer && !capture_fg_compute_writer
-      && !capture_upscaler_color_path) return {};
+      && !capture_upscaler_color_path && !capture_upscaler_inputs) return {};
 
   auto* shader_state = renodx::utils::command_action::GetShaderState(&context);
   if (shader_state == nullptr) return {};
