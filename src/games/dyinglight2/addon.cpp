@@ -1636,7 +1636,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       || shader_hash == 0xAD085E81u;
 
   if (upscaler_input_audit_state.active && !is_compute && shader_hash == 0x3E36DA5Bu
-      && likely_fullscreen_draw && upscaler_input_audit_state.count < upscaler_input_audit_state.entries.size()) {
+      && likely_fullscreen_draw && upscaler_input_audit_state.count < 4u) {
     auto* device = context.cmd_list->get_device();
     const auto* command_state = renodx::utils::state::GetCurrentState(context.cmd_list);
     DescriptorBindingAudit t0_binding = {};
@@ -2358,7 +2358,9 @@ void OnDownstreamDrawCapturePresent(
   if (upscaler_input_audit_state.active) {
     auto& audit = upscaler_input_audit_state;
     ++audit.presents;
-    if (audit.presents >= 4u) {
+    // DLSS-G can interleave generated Presents with real rendering. Complete
+    // on four actual 0x3E draws, with a bounded timeout for a genuine miss.
+    if (audit.count >= 4u || audit.presents >= 32u) {
       std::ostringstream stream;
       stream << "DL2 0x3E input/curve audit: capture=" << audit.capture_id
              << " generations=" << audit.start_generation << "=>"
@@ -3243,9 +3245,9 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
-        .label = "Capture 0x3E Inputs and Curve (4 Presents)",
+        .label = "Capture 0x3E Inputs and Curve (4 Draws)",
         .section = "Debug",
-        .tooltip = "One-shot: records the Tonemapper's t0 scene source, t1 auto-exposure source, and b0 SDR-curve binding for four Presents. Where the game's constant upload is cached, it also prints the eight original curve floats. No texture readback, resource mutation, or timing change.",
+        .tooltip = "One-shot: records four Tonemapper draws (waiting up to 32 Presents), including t0 scene source, t1 auto-exposure source, and b0 SDR-curve binding. Where the game's constant upload is cached, it also prints the eight original curve floats. No texture readback, resource mutation, or timing change.",
         .on_click = []() {
           std::scoped_lock lock(downstream_draw_capture_mutex);
           const uint64_t capture_id = ++upscaler_input_audit_capture_serial;
