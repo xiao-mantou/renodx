@@ -1151,6 +1151,8 @@ struct UpscalerColorPathEntry {
   uint32_t input_binding = UINT_MAX;
   uint32_t viewport_width = 0u;
   uint32_t viewport_height = 0u;
+  uint32_t sequence = 0u;
+  uint32_t present_index = 0u;
   GammaAuditResource input = {};
   GammaAuditResource output = {};
 };
@@ -1161,6 +1163,7 @@ struct UpscalerColorPathAuditState {
   uint64_t start_generation = 0u;
   uint32_t count = 0u;
   uint32_t presents = 0u;
+  uint32_t sequence = 0u;
   bool active = false;
 };
 
@@ -1508,8 +1511,12 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   }
   const bool likely_fullscreen_draw = draw_count >= 3u && draw_count <= 6u
       && instance_count >= 1u && instance_count <= 4u;
+  const bool targeted_color_shader = shader_hash == 0x3E36DA5Bu
+      || shader_hash == 0x268BAB6Du
+      || shader_hash == 0xAD085E81u;
 
-  if (capture_upscaler_color_path && !is_compute && shader_hash != 0u && likely_fullscreen_draw) {
+  if (capture_upscaler_color_path && !is_compute && targeted_color_shader && likely_fullscreen_draw) {
+    const uint32_t sequence = ++upscaler_audit.sequence;
     const auto target = downstream_capture_rtvs.find(context.cmd_list);
     if (target != downstream_capture_rtvs.end()) {
       auto* device = context.cmd_list->get_device();
@@ -1588,20 +1595,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
           }
         }
         const uint64_t generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
-        bool duplicate = false;
-        for (uint32_t index = 0u; index < upscaler_audit.count; ++index) {
-          const auto& entry = upscaler_audit.entries[index];
-          duplicate = entry.shader_hash == shader_hash
-              && entry.generation == generation
-              && entry.input.format == input.format
-              && entry.input.effective_format == input.effective_format
-              && entry.input.width == input.width && entry.input.height == input.height
-              && entry.output.format == output.format
-              && entry.output.effective_format == output.effective_format
-              && entry.output.width == output.width && entry.output.height == output.height;
-          if (duplicate) break;
-        }
-        if (!duplicate && upscaler_audit.count < upscaler_audit.entries.size()) {
+        if (upscaler_audit.count < upscaler_audit.entries.size()) {
           upscaler_audit.entries[upscaler_audit.count++] = {
               .shader_hash = shader_hash,
               .api = static_cast<uint32_t>(device->get_api()),
@@ -1612,6 +1606,8 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
               .input_binding = input_binding,
               .viewport_width = viewport_width,
               .viewport_height = viewport_height,
+              .sequence = sequence,
+              .present_index = upscaler_audit.presents + 1u,
               .input = input,
               .output = output,
           };
@@ -2198,6 +2194,8 @@ void OnDownstreamDrawCapturePresent(
       for (uint32_t index = 0u; index < audit.count; ++index) {
         const auto& entry = audit.entries[index];
         stream << " #" << (index + 1u)
+               << " seq=" << entry.sequence
+               << " present=" << entry.present_index
                << " api=" << entry.api
                << " gen=" << entry.generation
                << " ps=0x" << std::hex << std::uppercase << entry.shader_hash
@@ -3000,9 +2998,9 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
-        .label = "Capture Current Upscaler Color Path (4 Presents)",
+        .label = "Capture Targeted DLSS Color Path (4 Presents)",
         .section = "Debug",
-        .tooltip = "One-shot: records unique full-size pixel-shader passes for four Presents, including t0 and RTV resource formats, dimensions, clone state, API, and swapchain generation. Click once after each DLSS mode has settled; no readback or resource mutation.",
+        .tooltip = "One-shot: records only DL2's known Tonemapper (0x3E36DA5B), LUT (0x268BAB6D), and Gamma (0xAD085E81) passes for four Presents, including execution order, t0/RTV resources, formats, dimensions, clone state, API, and swapchain generation. No readback or resource mutation.",
         .on_click = []() {
           std::scoped_lock lock(downstream_draw_capture_mutex);
           const uint64_t capture_id = ++upscaler_color_path_capture_serial;
