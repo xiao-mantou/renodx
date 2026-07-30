@@ -3135,15 +3135,44 @@ void OnDownstreamDrawCapturePresent(
   downstream_capture_t0_views.clear();
 }
 
+bool ActivateDl2HdrTarget(reshade::api::command_list* cmd_list) {
+  auto rtvs = renodx::utils::swapchain::GetRenderTargets(cmd_list);
+  bool changed = false;
+  for (const auto rtv : rtvs) {
+    changed = renodx::mods::swapchain::ActivateCloneHotSwap(cmd_list->get_device(), rtv) || changed;
+  }
+  if (changed) {
+    renodx::mods::swapchain::FlushDescriptors(cmd_list);
+    renodx::mods::swapchain::RewriteRenderTargets(cmd_list, rtvs.size(), rtvs.data(), {0});
+  }
+  return true;
+}
+
+renodx::mods::shader::CustomShader CreateDl2HdrShader(
+    uint32_t crc32,
+    std::span<const uint8_t> dx11_code,
+    std::span<const uint8_t> dx12_code) {
+  auto shader = renodx::mods::shader::CreateDirectXShader(crc32, dx11_code, dx12_code);
+  shader.on_draw = ActivateDl2HdrTarget;
+  return shader;
+}
+
+#define TargetedDl2HdrShader(__crc32__)                     \
+  {                                                         \
+      __crc32__, CreateDl2HdrShader(                        \
+                     __crc32__,                             \
+                     RENODX_JOIN_MACRO(__##__crc32__, _dx11), \
+                     RENODX_JOIN_MACRO(__##__crc32__, _dx12))}
+
 renodx::mods::shader::CustomShaders custom_shaders = {
     // Primary HDR bridge. Its t0 input was proven to retain scene values above
     // 4.0 (and above 12.0 in outdoor highlights) before the vanilla curve and
     // saturate operation collapse them to SDR.
-    CustomDirectXShaders(0x3E36DA5B),
+    TargetedDl2HdrShader(0x3E36DA5B),
     // The native SDR LUT clamps the bridge back to SDR. Its replacement keeps
     // the vanilla grade below SDR white and reconstructs the HDR magnitude in
     // the now-proven Linear BT.709 intermediate domain.
-    CustomDirectXShaders(0x268BAB6D),
+    TargetedDl2HdrShader(0x268BAB6D),
     // DL2 composites gamma-domain UI through an UNORM view of the same
     // typeless target whose scene pass uses an sRGB view. FP16 cloning removes
     // that view distinction, so decode matched UI to Linear BT.709 and apply
@@ -3926,6 +3955,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .new_format = reshade::api::format::r16g16b16a16_float,
           .ignore_size = false,
           .use_resource_view_cloning = true,
+          .use_resource_view_hot_swap = true,
           .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::BACK_BUFFER,
           .usage_include = reshade::api::resource_usage::render_target,
       });
@@ -3950,6 +3980,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .new_format = reshade::api::format::r16g16b16a16_float,
           .ignore_size = false,
           .use_resource_view_cloning = true,
+          .use_resource_view_hot_swap = true,
           .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
           .usage_include = reshade::api::resource_usage::render_target,
       });

@@ -525,3 +525,18 @@ Balanced, identifying the latter as a compute/UAV-produced input. The bounded
 writer audit now also tracks compute UAVs for both the `0x3E` scene source and
 its 1x1 exposure texture. This remains metadata-only and is intended to locate
 the first actual upstream divergence without changing the working HDR chain.
+
+**Regression boundary and targeted-clone correction:** Historical binaries
+located the visible Off/Balanced split at `bb5a1e1`: `787fe68` was consistent,
+while both `bb5a1e1` and the later `5ebc218` were not. The split remains with
+the current Tone Mapper set to Vanilla and also remains in the legacy
+`RenderIntermediatePass` A/B, ruling out RenoDRT, the later HDR-aware LUT, and
+the removed intermediate encode as primary causes. `bb5a1e1` restored the
+always-enabled full-size typeless/sRGB clone rules at the same time it restored
+the HDR bridge. Those rules are now hot-swap candidates: their FP16 clones are
+activated only when the confirmed `0x3E` or `0x268` HDR shader actually writes
+the bound RTV, followed by the framework's standard descriptor flush and RTV
+rewrite. The general UNORM rule remains unchanged because the earlier isolated
+A/B found it color-consistent. This preserves HDR headroom on the known chain
+without changing unrelated same-format resources before their ownership is
+known.
