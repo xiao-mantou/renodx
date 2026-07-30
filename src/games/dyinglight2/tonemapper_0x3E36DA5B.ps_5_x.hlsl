@@ -28,6 +28,16 @@ float3 DebugChroma(float3 color) {
   return saturate(color / peak);
 }
 
+// DL2's Linear BT.709 intermediate uses a fixed physical unit of
+// 1.0 = 203 nits. RenoDX ToneMapPass returns values relative to the selected
+// Game Brightness, so convert that relative output back into DL2's fixed unit.
+// Without this conversion, changing Game Brightness only changes Peak/Game
+// inside the curve: lowering Game incorrectly brightens the image and raising
+// it compresses/desaturates the midrange.
+float3 ScaleToneMappedScene(float3 color) {
+  return color * (RENODX_DIFFUSE_WHITE_NITS / 203.0);
+}
+
 // Exact DL2 SDR curve recovered from the original shader. This is evaluated
 // with the original t1 exposure and passed to RenoDRT as the SDR reference.
 float3 ApplyDL2SDRCurve(float3 color, float4 curve0, float4 curve1) {
@@ -73,7 +83,8 @@ void main(
   if (RENODX_DEBUG_MODE > 0.5 && RENODX_DEBUG_MODE < 4.5) {
     // Mode 4 runs the actual RenoDRT curve first. It verifies Peak and White
     // Clip before the game's later composite passes.
-    const float3 renodrt_output = renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr);
+    const float3 renodrt_output = ScaleToneMappedScene(
+        renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr));
     const float3 debug_input = RENODX_DEBUG_MODE < 1.5 ? untonemapped
         : RENODX_DEBUG_MODE < 2.5 ? neutral_sdr
         : RENODX_DEBUG_MODE < 3.5 ? vanilla
@@ -110,7 +121,7 @@ void main(
   if (RENODX_DEBUG_MODE > 19.5 && RENODX_DEBUG_MODE < 21.5) {
     const float3 debug_color = RENODX_DEBUG_MODE < 20.5
         ? vanilla
-        : renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr);
+        : ScaleToneMappedScene(renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr));
     o0 = float4(renodx::draw::RenderIntermediatePass(DebugChroma(debug_color)), 1.0);
     return;
   }
@@ -119,7 +130,7 @@ void main(
   if (RENODX_DEBUG_MODE > 21.5 && RENODX_DEBUG_MODE < 23.5) {
     const float3 debug_color = RENODX_DEBUG_MODE < 22.5
         ? vanilla
-        : renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr);
+        : ScaleToneMappedScene(renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr));
     o0 = float4(renodx::draw::RenderIntermediatePass(debug_color), 1.0);
     return;
   }
@@ -181,7 +192,7 @@ void main(
   if (RENODX_DEBUG_MODE > 25.5 && RENODX_DEBUG_MODE < 26.5) {
     o0.rgb = RENODX_TONE_MAP_TYPE == 0.0
         ? vanilla
-        : renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr);
+        : ScaleToneMappedScene(renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr));
     o0.rgb = renodx::draw::RenderIntermediatePass(o0.rgb);
     o0.a = source.a;
     return;
@@ -191,7 +202,7 @@ void main(
   // probe in the swapchain proxy. With Peak=500 and Game=100, the scene area
   // should measure 500 nits if no later pass normalizes it back to SDR.
   if (RENODX_DEBUG_MODE > 5.5) {
-    const float target_white = RENODX_PEAK_WHITE_NITS / max(RENODX_DIFFUSE_WHITE_NITS, 1.0);
+    const float target_white = RENODX_PEAK_WHITE_NITS / 203.0;
     o0.rgb = renodx::draw::RenderIntermediatePass(float3(target_white, target_white, target_white));
     o0.a = 1.0;
     return;
@@ -199,6 +210,6 @@ void main(
 
   o0.rgb = RENODX_TONE_MAP_TYPE == 0.0
       ? vanilla
-      : renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr);
+      : ScaleToneMappedScene(renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr));
   o0.a = source.a;
 }

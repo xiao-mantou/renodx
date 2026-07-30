@@ -472,3 +472,15 @@ enabled, corrected to accept and emit the proven Linear BT.709 intermediate
 directly (no legacy `InvertIntermediatePass`/`RenderIntermediatePass` sRGB
 round-trip). The native 0xAD Gamma pass remains in place because its per-channel
 power operation has no explicit upper-range clamp.
+
+**Game Brightness unit correction:** DL2's final Linear BT.709 proxy uses the
+fixed bridge unit `1.0 = 203 nits`. Generic `ToneMapPass` returns a value
+relative to the selected Game Brightness and sets its curve ceiling to
+`Peak / Game`. Feeding that result directly to the fixed-203 proxy made the
+Game slider behave as an inverse curve control: lowering Game increased the
+available ratio and brightened the mid/high range, while raising it compressed
+and desaturated that range. HDR scene output is now multiplied by
+`Game / 203` immediately after `ToneMapPass`. This preserves an absolute Peak
+because `(Peak / Game) * (Game / 203) * 203 = Peak`, while making Game control
+the physical diffuse-white level as labeled. Vanilla output and later UI
+composition are intentionally not scaled.
