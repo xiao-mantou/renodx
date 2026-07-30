@@ -3746,8 +3746,17 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .usage_include = reshade::api::resource_usage::render_target,
       });
 
-      // The sRGB view upgrade is also omitted. It was not required for the
-      // confirmed DLSS color-path fix and can alter the game's SDR composite.
+      // Preserve the sRGB composite's HDR headroom as well. Removing this rule
+      // caps the proxy input near 1.0 (about the 203-nit reference white). The
+      // typeless rule above, not this sRGB rule, caused the DLSS mode split.
+      renodx::mods::swapchain::resource_upgrade_infos.push_back({
+          .old_format = reshade::api::format::r8g8b8a8_unorm_srgb,
+          .new_format = reshade::api::format::r16g16b16a16_float,
+          .ignore_size = false,
+          .use_resource_view_cloning = true,
+          .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
+          .usage_include = reshade::api::resource_usage::render_target,
+      });
 
       reshade::register_event<reshade::addon_event::init_device>(OnInitDevice);
 

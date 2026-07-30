@@ -431,6 +431,14 @@ gamma setting. The proxy therefore decoded an already-linear composite a second
 time. The DL2 proxy now explicitly selects `ENCODING_NONE` and BT.709; the
 existing HDR10-source override still selects PQ + BT.2020 when required.
 
+**Range follow-up:** With Linear + BT.709 fixed, the measured peak was still
+limited to roughly 256 nits. This is consistent with the proxy source being
+clipped near 1.0 before the 203-nit reference-white conversion. Earlier commit
+`d5954eb` had independently reproduced the same 180-190-nit class limitation
+when only the sRGB-to-FP16 upgrade was removed. The sRGB upgrade is therefore
+restored for range preservation, while the independently proven problematic
+typeless back-buffer upgrade remains omitted.
+
 Focused freeze is not a classic deadlock: tag serials, Presents, and symmetric
 backbuffer barriers continue while the visible frame is stale. A separate
 `DLSS FG Bypass All RenoDX Proxy` A/B now skips only the final proxy draw on
