@@ -3532,7 +3532,7 @@ renodx::utils::settings::Settings settings = {
         .label = "Debug Mode",
         .section = "Debug",
         .tooltip = "False-color visualization and output probes. Luminance Ladder places four known scene values in the lower-right corner.",
-        .labels = {"Off", "HDR Input Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500-nit red)", "Scene Probe (Peak white)", "Output Luminance Ladder", "Raw Output Ladder", "Late LUT Output Ladder", "Source t0 Range", "Auto Exposure t1", "Bypass Late Gamma (Test)", "LUT Output Constant (500-nit white)", "Gamma Output Constant (500-nit white)", "Final Proxy Constant (500-nit white)", "Gamma Input t0 Range", "Gamma Power cb0", "Stability Probe (4 stages; top bypass, bottom Gamma)", "Source t0 Chroma", "Vanilla SDR Chroma", "RenoDRT Output Chroma", "Vanilla SDR Direct", "RenoDRT Output Direct", "Proxy No Gamut Compression", "Proxy Decode Grid (709/2020 x Linear/sRGB/2.2)", "0x3E Linear Output (A/B)"},
+        .labels = {"Off", "HDR Input Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500-nit red)", "Scene Probe (Peak white)", "Output Luminance Ladder", "Raw Output Ladder", "Late LUT Output Ladder", "Source t0 Range", "Auto Exposure t1", "Bypass Late Gamma (Test)", "LUT Output Constant (500-nit white)", "Gamma Output Constant (500-nit white)", "Final Proxy Constant (500-nit white)", "Gamma Input t0 Range", "Gamma Power cb0", "Stability Probe (4 stages; top bypass, bottom Gamma)", "Source t0 Chroma", "Vanilla SDR Chroma", "RenoDRT Output Chroma", "Vanilla SDR Direct", "RenoDRT Output Direct", "Proxy No Gamut Compression", "Proxy Decode Grid (709/2020 x Linear/sRGB/2.2)", "0x3E Legacy sRGB Output (A/B)"},
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -3738,9 +3738,22 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::swapchain::proxy_source_is_hdr10_index =
           offsetof(ShaderInjectData, renodrt_padding_2) / sizeof(float);
 
+      // The 0x3E -> 0x268 -> 0xAD chain uses full-size R8G8B8A8_TYPELESS
+      // resources. Without their FP16 clones, values above 1.0 are clipped
+      // immediately after the HDR bridge and the final output is capped near
+      // the 203-nit reference white.
+      renodx::mods::swapchain::resource_upgrade_infos.push_back({
+          .old_format = reshade::api::format::r8g8b8a8_typeless,
+          .new_format = reshade::api::format::r16g16b16a16_float,
+          .ignore_size = false,
+          .use_resource_view_cloning = true,
+          .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::BACK_BUFFER,
+          .usage_include = reshade::api::resource_usage::render_target,
+      });
+
       // Preserve range for the general UNORM scene targets. The typeless
-      // back-buffer upgrade is intentionally omitted: it changes the native
-      // DLSS-Off color path relative to DLSS SR.
+      // and sRGB variants below carry the same HDR composite through later
+      // native passes.
       renodx::mods::swapchain::resource_upgrade_infos.push_back({
           .old_format = reshade::api::format::r8g8b8a8_unorm,
           .new_format = reshade::api::format::r16g16b16a16_float,

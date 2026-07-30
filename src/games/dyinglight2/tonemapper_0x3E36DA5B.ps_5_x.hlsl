@@ -175,14 +175,14 @@ void main(
     return;
   }
 
-  // Diagnostic: keep the proven 0x3E HDR/exposure/tonemap math, but write the
-  // result as linear BT.709 so it shares the same domain as the native menu/UI
-  // composite and the final proxy. The normal path below still uses the
-  // historical sRGB-shaped RenderIntermediatePass for an immediate A/B.
+  // Legacy A/B: the old bridge encoded an sRGB-shaped intermediate here. The
+  // native menu/UI composite and final proxy are linear BT.709, so this path is
+  // retained only to compare against the corrected default below.
   if (RENODX_DEBUG_MODE > 25.5 && RENODX_DEBUG_MODE < 26.5) {
     o0.rgb = RENODX_TONE_MAP_TYPE == 0.0
         ? vanilla
         : renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr);
+    o0.rgb = renodx::draw::RenderIntermediatePass(o0.rgb);
     o0.a = source.a;
     return;
   }
@@ -200,6 +200,5 @@ void main(
   o0.rgb = RENODX_TONE_MAP_TYPE == 0.0
       ? vanilla
       : renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr);
-  o0.rgb = renodx::draw::RenderIntermediatePass(o0.rgb);
   o0.a = source.a;
 }

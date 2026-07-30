@@ -438,8 +438,19 @@ restored. Native 0x3E applies its SDR curve and `saturate`, so wider FP16
 resources alone cannot create values above 1.0. The proven single 0x3E bridge
 is restored; 0x268/0xAD remain native to avoid double intermediate encoding.
 The sRGB-to-FP16 rule is also retained because earlier `d5954eb` showed that
-removing it clips the bridge output later in the chain. The independently
-problematic typeless back-buffer rule remains omitted.
+removing it clips the bridge output later in the chain. The typeless rule was
+still omitted at this stage pending direct localization of the remaining cap.
+
+**203-nit clamp localization:** With the bridge writing Linear BT.709, both the
+raw and encoded 0x3E test ladders (`0.25, 1, 4, 16`) still measured no higher
+than 203 nits. The targeted color-path audit then showed the exact loss:
+0x3E writes format 27 (`R8G8B8A8_TYPELESS`) with `clone=0`; 0x268 reads and
+writes the same format with `clone=0`; 0xAD reads it before finally writing an
+RGB10 resource whose FP16 clone is active. HDR values are therefore clipped at
+the first post-0x3E target, before reaching the valid final clone. The typeless
+upgrade is restored to preserve this proven HDR chain. Its earlier color A/B
+was confounded by the then-unfixed proxy sRGB double-decode, so it must be
+revalidated with the corrected Linear BT.709 bridge and proxy.
 
 Focused freeze is not a classic deadlock: tag serials, Presents, and symmetric
 backbuffer barriers continue while the visible frame is stale. A separate
