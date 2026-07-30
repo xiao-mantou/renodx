@@ -69,7 +69,10 @@ void main(
   // The scene bridge (0x3E36DA5B) supplies HDR here. The original LUT has
   // an SDR domain and ends in a saturate, so grade its SDR reference only;
   // the HDR magnitude is restored after the original grading code below.
-  const float3 input_hdr = max(renodx::draw::InvertIntermediatePass(r1.xyz), 0.0);
+  // The corrected DL2 chain is already Linear BT.709 here. Do not decode it
+  // as the legacy sRGB-shaped intermediate or HDR values will be remapped a
+  // second time before the LUT bridge.
+  const float3 input_hdr = max(r1.xyz, 0.0);
   const float3 input_sdr = saturate(input_hdr);
   if (RENODX_TONE_MAP_TYPE != 0.0) {
     r1.xyz = input_sdr;
@@ -124,10 +127,9 @@ void main(
     stable_grade = renodx::color::correct::Hue(stable_grade, o0.rgb);
     const float highlight_lut_blend = smoothstep(1.0, 2.0, renodx::color::y::from::BT709(input_hdr));
 
-    // The input was decoded above, so this re-encodes rather than applying a
-    // second intermediate transform.
-    o0.rgb = renodx::draw::RenderIntermediatePass(
-        lerp(upgraded_grade, stable_grade, highlight_lut_blend));
+    // The downstream Gamma pass and final proxy also consume Linear BT.709.
+    // Keep the reconstructed HDR magnitude in that same domain.
+    o0.rgb = lerp(upgraded_grade, stable_grade, highlight_lut_blend);
   }
   return;
 }

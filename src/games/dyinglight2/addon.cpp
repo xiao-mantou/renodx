@@ -2977,8 +2977,12 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     // 4.0 (and above 12.0 in outdoor highlights) before the vanilla curve and
     // saturate operation collapse them to SDR.
     CustomDirectXShaders(0x3E36DA5B),
-    // Keep the later LUT and Gamma passes native; registering only one bridge
-    // avoids double intermediate encoding and preserves their game behavior.
+    // The native SDR LUT clamps the bridge back to SDR. Its replacement keeps
+    // the vanilla grade below SDR white and reconstructs the HDR magnitude in
+    // the now-proven Linear BT.709 intermediate domain.
+    CustomDirectXShaders(0x268BAB6D),
+    // Keep the later Gamma pass native: it is a power operation with no
+    // explicit range clamp, so replacing it is not required for this fix.
     // Disabled: guessed hashes caused crashes because the copied tonemapper
     // template shader has mismatched inputs/outputs.
     // CustomDirectXShaders(0x4d2b3f4d),

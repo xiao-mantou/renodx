@@ -459,3 +459,16 @@ every Present after the first. Its output color is intentionally invalid; the
 test asks only whether focused motion resumes. This distinguishes proxy/
 Streamline backbuffer contention from a failure inside Streamline's HDR10
 swapchain interception.
+
+**Post-clone shader clamp:** A second targeted audit after restoring the
+typeless upgrade showed the complete active chain using FP16 clones: 0x3E
+writes `27=>10`, 0x268 reads/writes `27=>10`, and 0xAD reads that clone before
+writing `24=>10`. The persistent 203-nit result is therefore not a resource
+format clamp. The remaining native 0x268 pass is an SDR 3D-LUT/color-grade
+pass: its input coordinates are built for the `[0,1]` SDR domain and its later
+math explicitly uses `saturate`. It necessarily collapses the 0x3E raw ladder
+values 4 and 16 back to SDR white. The existing 0x268 HDR LUT bridge is now
+enabled, corrected to accept and emit the proven Linear BT.709 intermediate
+directly (no legacy `InvertIntermediatePass`/`RenderIntermediatePass` sRGB
+round-trip). The native 0xAD Gamma pass remains in place because its per-channel
+power operation has no explicit upper-range clamp.
