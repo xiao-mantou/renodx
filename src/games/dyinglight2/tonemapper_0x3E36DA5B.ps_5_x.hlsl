@@ -175,6 +175,18 @@ void main(
     return;
   }
 
+  // Diagnostic: keep the proven 0x3E HDR/exposure/tonemap math, but write the
+  // result as linear BT.709 so it shares the same domain as the native menu/UI
+  // composite and the final proxy. The normal path below still uses the
+  // historical sRGB-shaped RenderIntermediatePass for an immediate A/B.
+  if (RENODX_DEBUG_MODE > 25.5 && RENODX_DEBUG_MODE < 26.5) {
+    o0.rgb = RENODX_TONE_MAP_TYPE == 0.0
+        ? vanilla
+        : renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr);
+    o0.a = source.a;
+    return;
+  }
+
   // This reaches the game's subsequent composite passes, unlike the output
   // probe in the swapchain proxy. With Peak=500 and Game=100, the scene area
   // should measure 500 nits if no later pass normalizes it back to SDR.
