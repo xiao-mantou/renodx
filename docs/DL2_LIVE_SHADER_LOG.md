@@ -432,12 +432,14 @@ time. The DL2 proxy now explicitly selects `ENCODING_NONE` and BT.709; the
 existing HDR10-source override still selects PQ + BT.2020 when required.
 
 **Range follow-up:** With Linear + BT.709 fixed, the measured peak was still
-limited to roughly 256 nits. This is consistent with the proxy source being
-clipped near 1.0 before the 203-nit reference-white conversion. Earlier commit
-`d5954eb` had independently reproduced the same 180-190-nit class limitation
-when only the sRGB-to-FP16 upgrade was removed. The sRGB upgrade is therefore
-restored for range preservation, while the independently proven problematic
-typeless back-buffer upgrade remains omitted.
+limited to 203 nits. The immediate cause was that color-path isolation commit
+`4cd80d7` disabled the primary `0x3E36DA5B` HDR bridge and it had not yet been
+restored. Native 0x3E applies its SDR curve and `saturate`, so wider FP16
+resources alone cannot create values above 1.0. The proven single 0x3E bridge
+is restored; 0x268/0xAD remain native to avoid double intermediate encoding.
+The sRGB-to-FP16 rule is also retained because earlier `d5954eb` showed that
+removing it clips the bridge output later in the chain. The independently
+problematic typeless back-buffer rule remains omitted.
 
 Focused freeze is not a classic deadlock: tag serials, Presents, and symmetric
 backbuffer barriers continue while the visible frame is stale. A separate

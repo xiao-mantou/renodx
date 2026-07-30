@@ -2973,8 +2973,12 @@ void OnDownstreamDrawCapturePresent(
 }
 
 renodx::mods::shader::CustomShaders custom_shaders = {
-    // Diagnostic isolation build: leave the game's color chain fully native
-    // to determine whether RenoDX's 0x3E bridge causes DLSS-mode divergence.
+    // Primary HDR bridge. Its t0 input was proven to retain scene values above
+    // 4.0 (and above 12.0 in outdoor highlights) before the vanilla curve and
+    // saturate operation collapse them to SDR.
+    CustomDirectXShaders(0x3E36DA5B),
+    // Keep the later LUT and Gamma passes native; registering only one bridge
+    // avoids double intermediate encoding and preserves their game behavior.
     // Disabled: guessed hashes caused crashes because the copied tonemapper
     // template shader has mismatched inputs/outputs.
     // CustomDirectXShaders(0x4d2b3f4d),
