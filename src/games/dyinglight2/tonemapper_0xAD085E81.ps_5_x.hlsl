@@ -1,6 +1,7 @@
 #include "./shared.h"
 
 Texture2D<float4> t0 : register(t0);
+Texture2D<float4> renodx_t0_clone : register(t50);
 SamplerState s0_s : register(s0);
 
 cbuffer cb0 : register(b0) {
@@ -25,7 +26,7 @@ void main(
     float4 v0 : SV_POSITION0,
     linear noperspective float2 v1 : TEXCOORD0,
     out float4 o0 : SV_TARGET0) {
-  const float4 input_color = t0.SampleLevel(s0_s, v1.xy, 0);
+  const float4 input_color = renodx_t0_clone.SampleLevel(s0_s, v1.xy, 0);
 
   // Preserve the 0x3E source/Vanilla/RenoDRT comparison probes verbatim.
   // Their purpose is to isolate that pass from both this power operation and

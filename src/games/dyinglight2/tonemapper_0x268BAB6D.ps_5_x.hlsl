@@ -2,6 +2,7 @@
 
 Texture3D<float4> t1 : register(t1);
 Texture2D<float4> t0 : register(t0);
+Texture2D<float4> renodx_t0_clone : register(t50);
 SamplerState s1_s : register(s1);
 SamplerState s0_s : register(s0);
 
@@ -20,7 +21,7 @@ void main(
       (RENODX_DEBUG_MODE > 9.5 && RENODX_DEBUG_MODE < 11.5) ||
       (RENODX_DEBUG_MODE > 17.5 && RENODX_DEBUG_MODE < 18.5) ||
       (RENODX_DEBUG_MODE > 18.5 && RENODX_DEBUG_MODE < 23.5)) {
-    o0 = t0.SampleLevel(s0_s, v1.xy, 0);
+    o0 = renodx_t0_clone.SampleLevel(s0_s, v1.xy, 0);
     return;
   }
 
@@ -63,7 +64,7 @@ void main(
   r0.yzw = saturate(r1.xyz + r0.yzw);
   r1.xyz = float3(1, 1, 1) + -r0.yzw;
   r0.xyz = r0.xxx * r1.xyz + r0.yzw;
-  r1.xyzw = t0.SampleLevel(s0_s, v1.xy, 0).xyzw;
+  r1.xyzw = renodx_t0_clone.SampleLevel(s0_s, v1.xy, 0).xyzw;
   o0.w = r1.w;
 
   // The scene bridge (0x3E36DA5B) supplies HDR here. The original LUT has

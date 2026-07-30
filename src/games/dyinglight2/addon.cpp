@@ -3148,31 +3148,58 @@ bool ActivateDl2HdrTarget(reshade::api::command_list* cmd_list) {
   return true;
 }
 
+reshade::api::resource_view GetDl2T0CloneView(reshade::api::command_list* cmd_list) {
+  const auto* command_state = renodx::utils::state::GetCurrentState(cmd_list);
+  DescriptorBindingAudit binding = {};
+  FindGraphicsDescriptorBinding(
+      cmd_list->get_device(), command_state, 0u,
+      reshade::api::descriptor_type::texture_shader_resource_view, &binding);
+  if (!binding.found || binding.slot.resource_view.handle == 0u) return {0u};
+
+  reshade::api::resource_view selected = binding.slot.resource_view;
+  renodx::utils::resource::GetResourceViewInfo(
+      binding.slot.resource_view,
+      [&](const renodx::utils::resource::ResourceViewInfo& info) {
+        if (info.clone_enabled && info.clone.handle != 0u) selected = info.clone;
+      });
+  return selected;
+}
+
 renodx::mods::shader::CustomShader CreateDl2HdrShader(
     uint32_t crc32,
     std::span<const uint8_t> dx11_code,
-    std::span<const uint8_t> dx12_code) {
+    std::span<const uint8_t> dx12_code,
+    bool bind_clone_input) {
   auto shader = renodx::mods::shader::CreateDirectXShader(crc32, dx11_code, dx12_code);
   shader.on_draw = ActivateDl2HdrTarget;
+  if (bind_clone_input) {
+    shader.views.push_back({
+        .type = reshade::api::descriptor_type::texture_shader_resource_view,
+        .slot = 50u,
+        .space = 0u,
+        .get_view = GetDl2T0CloneView,
+    });
+  }
   return shader;
 }
 
-#define TargetedDl2HdrShader(__crc32__)                     \
+#define TargetedDl2HdrShader(__crc32__, __bind_clone_input__) \
   {                                                         \
       __crc32__, CreateDl2HdrShader(                        \
                      __crc32__,                             \
                      RENODX_JOIN_MACRO(__##__crc32__, _dx11), \
-                     RENODX_JOIN_MACRO(__##__crc32__, _dx12))}
+                     RENODX_JOIN_MACRO(__##__crc32__, _dx12), \
+                     __bind_clone_input__)}
 
 renodx::mods::shader::CustomShaders custom_shaders = {
     // Primary HDR bridge. Its t0 input was proven to retain scene values above
     // 4.0 (and above 12.0 in outdoor highlights) before the vanilla curve and
     // saturate operation collapse them to SDR.
-    TargetedDl2HdrShader(0x3E36DA5B),
+    TargetedDl2HdrShader(0x3E36DA5B, false),
     // The native SDR LUT clamps the bridge back to SDR. Its replacement keeps
     // the vanilla grade below SDR white and reconstructs the HDR magnitude in
     // the now-proven Linear BT.709 intermediate domain.
-    TargetedDl2HdrShader(0x268BAB6D),
+    TargetedDl2HdrShader(0x268BAB6D, true),
     // DL2 composites gamma-domain UI through an UNORM view of the same
     // typeless target whose scene pass uses an sRGB view. FP16 cloning removes
     // that view distinction, so decode matched UI to Linear BT.709 and apply
@@ -3183,8 +3210,9 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     CustomDirectXShaders(0x61DBDE91),
     CustomDirectXShaders(0x2280559E),
     CustomDirectXShaders(0x7D1BA5D4),
-    // Keep the later Gamma pass native: it is a power operation with no
-    // explicit range clamp, so replacing it is not required for this fix.
+    // The Gamma math remains identical, but the replacement explicitly reads
+    // the 0x268 FP16 clone because v2 descriptor flushing is not implemented.
+    TargetedDl2HdrShader(0xAD085E81, true),
     // Disabled: guessed hashes caused crashes because the copied tonemapper
     // template shader has mismatched inputs/outputs.
     // CustomDirectXShaders(0x4d2b3f4d),
