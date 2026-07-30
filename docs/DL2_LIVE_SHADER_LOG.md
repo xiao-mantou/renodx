@@ -516,3 +516,12 @@ chain with all three outputs cloned to FP16. The bounded color-path audit now
 also reports original/effective SRV and RTV view formats so the next Off versus
 Balanced capture can test whether UNORM/sRGB view semantics are being erased by
 the FP16 clone. This is diagnostic-only and does not change rendering.
+
+The view-format capture ruled that hypothesis out: both Off and Balanced use
+the same `0x3E` input view (`26`) and the same sRGB intermediate views
+(`29 => 10`). Their five curve constants are also identical. The source-writer
+audit found many pixel writers for Off but no pixel/copy/resolve writer for
+Balanced, identifying the latter as a compute/UAV-produced input. The bounded
+writer audit now also tracks compute UAVs for both the `0x3E` scene source and
+its 1x1 exposure texture. This remains metadata-only and is intended to locate
+the first actual upstream divergence without changing the working HDR chain.
