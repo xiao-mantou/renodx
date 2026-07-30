@@ -551,3 +551,16 @@ so it also contaminated unrelated compute root signatures. Do not use another
 global `CustomShader.views` binding in `space0` for this path. A future clone
 consumer fix must rewrite the existing t0 descriptor only for the active target
 draw, or first add strict graphics-pipeline/view scoping to the framework.
+
+The replacement approach is intentionally local to DL2 in
+`dl2_descriptor_override.hpp`. It does not enable resource-upgrade v2's global
+DX12 descriptor hooks and does not add a root-signature register. A
+shader-filtered command callback inspects the current graphics layout for
+`0x268BAB6D` and `0xAD085E81`; only when t0 occupies an isolated one-SRV table
+does it allocate a compatible table containing the active FP16 clone. The
+clone table is bound immediately before the replayed draw and the original
+table is restored by the command-action post callback. Unsupported layouts,
+missing tracked descriptors, or missing clones leave the native binding
+untouched and emit only a bounded diagnostic. This tests consumer-side clone
+propagation without changing RenoDX framework behavior or unrelated DL2
+pipelines.

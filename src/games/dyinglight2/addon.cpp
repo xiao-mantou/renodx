@@ -36,6 +36,7 @@
 #include "../../utils/resource.hpp"
 #include "../../utils/settings.hpp"
 #include "../../utils/vtable.hpp"
+#include "./dl2_descriptor_override.hpp"
 #include "./shared.h"
 
 namespace {
@@ -3892,6 +3893,14 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           OnGammaDrawAudit,
           {.shader_hash = 0xAD085E81u,
            .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+      renodx::utils::command_action::Register(
+          renodx::games::dyinglight2::descriptor_override::OnTargetDraw,
+          {.shader_hash = 0x268BAB6Du,
+           .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+      renodx::utils::command_action::Register(
+          renodx::games::dyinglight2::descriptor_override::OnTargetDraw,
+          {.shader_hash = 0xAD085E81u,
+           .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
       reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
       reshade::register_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
       reshade::register_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
@@ -3905,6 +3914,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // Registered before mods::swapchain::Use below so the DLSS-G input
       // fence is observed before proxy clones are released during resize.
       reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
+      reshade::register_event<reshade::addon_event::destroy_device>(
+          renodx::games::dyinglight2::descriptor_override::OnDestroyDevice);
 
       // Shader hook config (applies to both D3D11 and D3D12 custom shaders)
       // DL2 shared.h uses register(b13, space50) for SM5.1+ (D3D12) and
@@ -3991,6 +4002,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     case DLL_PROCESS_DETACH:
       renodx::utils::command_action::Unregister(OnDownstreamDrawCapture);
       renodx::utils::command_action::Unregister(OnGammaDrawAudit);
+      renodx::utils::command_action::Unregister(
+          renodx::games::dyinglight2::descriptor_override::OnTargetDraw);
       reshade::unregister_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
       reshade::unregister_event<reshade::addon_event::barrier>(OnDlssFgBackbufferBarrier);
       reshade::unregister_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
@@ -4005,6 +4018,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::execute_command_list>(OnDlssFgExecuteCommandList);
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
       reshade::unregister_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
+      reshade::unregister_event<reshade::addon_event::destroy_device>(
+          renodx::games::dyinglight2::descriptor_override::OnDestroyDevice);
       RemoveStreamlineHook();
       renodx::utils::state::Use(fdw_reason);
       renodx::utils::constants::Use(fdw_reason);
