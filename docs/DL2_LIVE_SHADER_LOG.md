@@ -421,6 +421,16 @@ omitted because it was not required for this fix and can alter the SDR
 composite. This establishes relative color-path consistency, but absolute
 matching against vanilla should still be checked after the final cleanup build.
 
+**Absolute-color follow-up:** Main-menu comparison showed that the common
+proxy output was still more saturated than vanilla even with all scene upgrades
+disabled. A six-way grid compared Linear/sRGB/Gamma-2.2 decoding under BT.709
+and BT.2020 source assumptions. Only Linear + BT.709 matched the vanilla
+screenshot. `BuildConfig()` had inherited `swap_chain_decoding` from
+`RENODX_INTERMEDIATE_ENCODING`, which defaults to sRGB for the current injected
+gamma setting. The proxy therefore decoded an already-linear composite a second
+time. The DL2 proxy now explicitly selects `ENCODING_NONE` and BT.709; the
+existing HDR10-source override still selects PQ + BT.2020 when required.
+
 Focused freeze is not a classic deadlock: tag serials, Presents, and symmetric
 backbuffer barriers continue while the visible frame is stale. A separate
 `DLSS FG Bypass All RenoDX Proxy` A/B now skips only the final proxy draw on

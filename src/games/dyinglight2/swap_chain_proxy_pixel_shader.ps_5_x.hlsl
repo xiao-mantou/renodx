@@ -6,6 +6,12 @@ SamplerState s0 : register(s0);
 float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
     : SV_TARGET {
   renodx::draw::Config config = renodx::draw::BuildConfig();
+  // The swapchain proxy samples DL2's linear BT.709 composite. BuildConfig's
+  // generic default inherits the intermediate sRGB encoding, which decodes the
+  // already-linear composite a second time and shifts the common menu/scene
+  // color. The six-way proxy grid confirmed Linear + BT.709 against vanilla.
+  config.swap_chain_decoding = renodx::draw::ENCODING_NONE;
+  config.swap_chain_decoding_color_space = renodx::color::convert::COLOR_SPACE_BT709;
   // DL2's FP16 bridge is relative to its fixed 203-nit reference white. This
   // is a unit conversion, not the runtime Game/UI brightness setting.
   config.swap_chain_scaling_nits = RENODX_GRAPHICS_WHITE_NITS;
