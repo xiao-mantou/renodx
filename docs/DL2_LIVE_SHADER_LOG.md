@@ -540,3 +540,14 @@ rewrite. The general UNORM rule remains unchanged because the earlier isolated
 A/B found it color-consistent. This preserves HDR headroom on the known chain
 without changing unrelated same-format resources before their ownership is
 known.
+
+An attempted consumer-side fix injected each selected t0 clone as `t50,
+space0` through `CustomShader.views` for `0x268` and `0xAD`. This build crashed
+at startup. ReShade reported that the injected SRV range overlapped an existing
+unbounded/all-space SRV range, after which D3D12 compute pipeline creation
+failed with `E_INVALIDARG`. The shader view collection is applied while pipeline
+layouts are created and is not sufficiently scoped to these two graphics draws,
+so it also contaminated unrelated compute root signatures. Do not use another
+global `CustomShader.views` binding in `space0` for this path. A future clone
+consumer fix must rewrite the existing t0 descriptor only for the active target
+draw, or first add strict graphics-pipeline/view scoping to the framework.
