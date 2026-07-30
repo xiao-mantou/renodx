@@ -540,13 +540,3 @@ rewrite. The general UNORM rule remains unchanged because the earlier isolated
 A/B found it color-consistent. This preserves HDR headroom on the known chain
 without changing unrelated same-format resources before their ownership is
 known.
-
-The first targeted-clone test restored Off/Balanced color consistency but
-returned the output to 203 nits. Its audit proved hot-swap activation itself
-worked on both writer RTVs (`27 => 10`), while the following consumers still
-sampled the original resources (`27 => 27`) despite `clone=1`. The reason is
-explicit in resource-upgrade v2: `FlushDescriptors()` is currently a no-op.
-`0x268` and the otherwise-faithful `0xAD` replacement now receive the selected
-t0 clone through a dedicated injected `t50` SRV. This creates a fully targeted
-write/read chain without globally rewriting descriptors or re-enabling clones
-for unrelated resources.
