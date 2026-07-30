@@ -508,3 +508,11 @@ The six confirmed UI shaders now decode their final RGB from sRGB to Linear
 BT.709, multiply it by `UI Brightness / 203`, and preserve alpha verbatim.
 The common proxy remains fixed at `1.0 = 203 nits`; therefore Game and UI white
 are finally independent. Fullscreen copy/blur shaders remain native.
+
+**DLSS color regression follow-up:** After the targeted `0x3E` typeless target
+was promoted to FP16 to preserve HDR range, DLSS Off again appeared flatter
+than Balanced. Both modes still traverse the same `0x3E -> 0x268 -> 0xAD`
+chain with all three outputs cloned to FP16. The bounded color-path audit now
+also reports original/effective SRV and RTV view formats so the next Off versus
+Balanced capture can test whether UNORM/sRGB view semantics are being erased by
+the FP16 clone. This is diagnostic-only and does not change rendering.

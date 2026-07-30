@@ -2748,12 +2748,16 @@ void OnDownstreamDrawCapturePresent(
                << "=>0x" << std::hex << entry.input.effective << "," << std::dec
                << static_cast<uint32_t>(entry.input.effective_format) << ","
                << entry.input.width << "x" << entry.input.height
+               << ",view=" << static_cast<uint32_t>(entry.input.view_format)
+               << "=>" << static_cast<uint32_t>(entry.input.effective_view_format)
                << ",clone=" << (entry.input.view_clone_enabled ? 1 : 0) << ")"
                << " rtv(0x" << std::hex << entry.output.resource << "," << std::dec
                << static_cast<uint32_t>(entry.output.format) << "=>0x" << std::hex
                << entry.output.effective << "," << std::dec
                << static_cast<uint32_t>(entry.output.effective_format) << ","
                << entry.output.width << "x" << entry.output.height
+               << ",view=" << static_cast<uint32_t>(entry.output.view_format)
+               << "=>" << static_cast<uint32_t>(entry.output.effective_view_format)
                << ",clone=" << (entry.output.view_clone_enabled ? 1 : 0) << ")";
       }
       renodx::utils::log::i(stream.str().c_str());
