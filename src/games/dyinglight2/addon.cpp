@@ -3734,25 +3734,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::swapchain::proxy_source_is_hdr10_index =
           offsetof(ShaderInjectData, renodrt_padding_2) / sizeof(float);
 
-      // Diagnostic isolation: temporarily leave every scene render target in
-      // its native format. This determines whether any of the three FP16
-      // resource-upgrade rules is responsible for the DLSS Off/Balanced chroma
-      // divergence. HDR clipping is expected in this build and is not part of
-      // the comparison.
-#if 0
-      // Confirmed to change the native DLSS-Off color path relative to DLSS SR.
-      renodx::mods::swapchain::resource_upgrade_infos.push_back({
-          .old_format = reshade::api::format::r8g8b8a8_typeless,
-          .new_format = reshade::api::format::r16g16b16a16_float,
-          .ignore_size = false,
-          .use_resource_view_cloning = true,
-          .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::BACK_BUFFER,
-          .usage_include = reshade::api::resource_usage::render_target,
-      });
-#endif
-
-      // Restore the general UNORM upgrade independently to determine whether
-      // it preserves HDR range without reproducing the color divergence.
+      // Preserve range for the general UNORM scene targets. The typeless
+      // back-buffer upgrade is intentionally omitted: it changes the native
+      // DLSS-Off color path relative to DLSS SR.
       renodx::mods::swapchain::resource_upgrade_infos.push_back({
           .old_format = reshade::api::format::r8g8b8a8_unorm,
           .new_format = reshade::api::format::r16g16b16a16_float,
@@ -3762,19 +3746,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .usage_include = reshade::api::resource_usage::render_target,
       });
 
-#if 0
-      // DL2's SDR scene composite may use the sRGB view format. Promote it
-      // as well, otherwise HDR values emitted by the scene bridge are clipped
-      // to 1.0 before the late UI composite and swapchain proxy can see them.
-      renodx::mods::swapchain::resource_upgrade_infos.push_back({
-          .old_format = reshade::api::format::r8g8b8a8_unorm_srgb,
-          .new_format = reshade::api::format::r16g16b16a16_float,
-          .ignore_size = false,
-          .use_resource_view_cloning = true,
-          .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
-          .usage_include = reshade::api::resource_usage::render_target,
-      });
-#endif
+      // The sRGB view upgrade is also omitted. It was not required for the
+      // confirmed DLSS color-path fix and can alter the game's SDR composite.
 
       reshade::register_event<reshade::addon_event::init_device>(OnInitDevice);
 

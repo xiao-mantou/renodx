@@ -390,6 +390,37 @@ pre-proxy resources while the final output is HDR10/PQ, so an optional
 lets Streamline use its automatically intercepted final color. This is an A/B
 compatibility test and may reduce UI reconstruction quality.
 
+## 2026-07-30: DLSS Off/Balanced color-path isolation
+
+**Symptom:** With RenoDX enabled, DLSS Off looked generally flatter while DLSS
+Balanced looked more saturated. Without the addon, the two DLSS modes were much
+closer. The goal was to separate a normal DLSS reconstruction difference from a
+RenoDX resource-path mutation.
+
+**Evidence:** The original `slDLSSSetOptions` call was captured without
+modification: Balanced used `colorBuffersHDR=1`, `useAutoExposure=0`,
+`preExposure=1`, and `exposureScale=1`. This ruled out a DLSS HDR/exposure
+option mismatch. The custom 0x3E/0x268/0xAD shader replacements and final proxy
+gamut compression were also disabled during isolation.
+
+The following A/B results identified the resource rule:
+
+- `8bf0c15`: all three scene FP16 upgrades disabled; Off and Balanced became
+  broadly consistent, though this build intentionally sacrificed highlight
+  preservation.
+- `4f52c4b`: restoring only `R8G8B8A8_TYPELESS + BACK_BUFFER` reproduced the
+  systematic Off/Balanced color divergence.
+- `bc6f891`: disabling that typeless rule and restoring only
+  `R8G8B8A8_UNORM + ANY` kept the two modes consistent in the user's scene.
+
+**Conclusion:** The typeless back-buffer upgrade incorrectly matches a native
+DLSS-Off color path and changes its interpretation relative to the DLSS SR
+path. It is omitted from the final configuration. The general UNORM upgrade is
+retained as the current range-preservation candidate; the sRGB upgrade remains
+omitted because it was not required for this fix and can alter the SDR
+composite. This establishes relative color-path consistency, but absolute
+matching against vanilla should still be checked after the final cleanup build.
+
 Focused freeze is not a classic deadlock: tag serials, Presents, and symmetric
 backbuffer barriers continue while the visible frame is stale. A separate
 `DLSS FG Bypass All RenoDX Proxy` A/B now skips only the final proxy draw on
