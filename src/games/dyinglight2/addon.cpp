@@ -1082,6 +1082,8 @@ struct DownstreamTarget {
   uint64_t effective = 0u;
   reshade::api::format format = reshade::api::format::unknown;
   reshade::api::format effective_format = reshade::api::format::unknown;
+  reshade::api::format view_format = reshade::api::format::unknown;
+  reshade::api::format effective_view_format = reshade::api::format::unknown;
   uint32_t width = 0u;
   uint32_t height = 0u;
   bool clone_enabled = false;
@@ -1101,6 +1103,8 @@ struct DownstreamDrawCaptureState {
   bool capture_transfers = false;
   uint64_t gamma_target = 0u;
   reshade::api::format gamma_target_format = reshade::api::format::unknown;
+  uint32_t gamma_target_width = 0u;
+  uint32_t gamma_target_height = 0u;
   uint64_t gamma_target_clone = 0u;
   reshade::api::format gamma_target_clone_format = reshade::api::format::unknown;
   bool gamma_target_clone_enabled = false;
@@ -1118,6 +1122,8 @@ struct GammaAuditResource {
   reshade::api::format format = reshade::api::format::unknown;
   reshade::api::format clone_format = reshade::api::format::unknown;
   reshade::api::format effective_format = reshade::api::format::unknown;
+  reshade::api::format view_format = reshade::api::format::unknown;
+  reshade::api::format effective_view_format = reshade::api::format::unknown;
   uint32_t width = 0u;
   uint32_t height = 0u;
   bool clone_enabled = false;
@@ -1320,6 +1326,8 @@ GammaAuditResource DescribeGammaAuditView(
   result.effective_format = desc.texture.format;
   result.width = desc.texture.width;
   result.height = desc.texture.height;
+  result.view_format = device->get_resource_view_desc(view).format;
+  result.effective_view_format = result.view_format;
   renodx::utils::resource::GetResourceInfo(resource, [&result](const renodx::utils::resource::ResourceInfo& info) {
     result.clone = info.clone.handle;
     result.clone_format = info.clone_desc.texture.format;
@@ -1333,8 +1341,60 @@ GammaAuditResource DescribeGammaAuditView(
     const auto effective_desc = device->get_resource_desc(effective_resource);
     result.effective = effective_resource.handle;
     result.effective_format = effective_desc.texture.format;
+    result.effective_view_format = device->get_resource_view_desc(info.clone).format;
   });
   return result;
+}
+
+constexpr bool IsDl2PopupUiShader(uint32_t hash) {
+  return hash == 0x54F3F767u || hash == 0xF34DDC49u || hash == 0x43B22618u;
+}
+
+// Record the actual blend contract for the three popup/UI shaders identified
+// from the first post-Gamma capture. This is read-only and runs only while
+// their pipelines are created, so the eventual UI fix can preserve straight
+// versus premultiplied alpha rather than guessing from shader output alone.
+bool OnCreateDl2UiPipeline(
+    reshade::api::device*,
+    reshade::api::pipeline_layout,
+    uint32_t subobject_count,
+    const reshade::api::pipeline_subobject* subobjects) {
+  uint32_t pixel_hash = 0u;
+  const reshade::api::blend_desc* blend = nullptr;
+  for (uint32_t index = 0u; index < subobject_count; ++index) {
+    const auto& subobject = subobjects[index];
+    if (subobject.type == reshade::api::pipeline_subobject_type::pixel_shader
+        && subobject.count != 0u && subobject.data != nullptr) {
+      const auto& desc = static_cast<const reshade::api::shader_desc*>(subobject.data)[0];
+      if (desc.code != nullptr && desc.code_size != 0u) {
+        pixel_hash = renodx::utils::hash::ComputeCRC32(
+            static_cast<const uint8_t*>(desc.code), desc.code_size);
+      }
+    } else if (subobject.type == reshade::api::pipeline_subobject_type::blend_state
+               && subobject.count != 0u && subobject.data != nullptr) {
+      blend = &static_cast<const reshade::api::blend_desc*>(subobject.data)[0];
+    }
+  }
+  if (!IsDl2PopupUiShader(pixel_hash)) return false;
+
+  std::ostringstream stream;
+  stream << "DL2 popup UI pipeline: ps=0x" << std::hex << std::uppercase << pixel_hash;
+  if (blend == nullptr) {
+    stream << " blend=unavailable";
+  } else {
+    stream << std::dec
+           << " enabled=" << (blend->blend_enable[0] ? "yes" : "no")
+           << " src_color=" << static_cast<uint32_t>(blend->source_color_blend_factor[0])
+           << " dst_color=" << static_cast<uint32_t>(blend->dest_color_blend_factor[0])
+           << " color_op=" << static_cast<uint32_t>(blend->color_blend_op[0])
+           << " src_alpha=" << static_cast<uint32_t>(blend->source_alpha_blend_factor[0])
+           << " dst_alpha=" << static_cast<uint32_t>(blend->dest_alpha_blend_factor[0])
+           << " alpha_op=" << static_cast<uint32_t>(blend->alpha_blend_op[0])
+           << " write_mask=0x" << std::hex << std::uppercase
+           << static_cast<uint32_t>(blend->render_target_write_mask[0]);
+  }
+  renodx::utils::log::i(stream.str().c_str());
+  return false;
 }
 
 struct DescriptorBindingAudit {
@@ -2049,6 +2109,8 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
           const auto desc = device->get_resource_desc(resource);
           capture.gamma_target = resource.handle;
           capture.gamma_target_format = desc.texture.format;
+          capture.gamma_target_width = desc.texture.width;
+          capture.gamma_target_height = desc.texture.height;
           capture.gamma_target_view = target->second.handle;
           if (capture_transfers) renodx::utils::resource::upgrade::ArmCopyResourceAudit(resource);
           renodx::utils::resource::GetResourceInfo(resource, [&capture](const renodx::utils::resource::ResourceInfo& info) {
@@ -2076,6 +2138,34 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   if (!capture.capture_commands) return {};
   if (shader_hash == 0u) return {};
 
+  // The main menu records many low-resolution material/compute passes after
+  // Gamma and used to exhaust all 16 slots before its popup UI was drawn.
+  // Keep the three proven UI shaders regardless of target, otherwise retain
+  // only full-size pixel draws that can actually composite the final menu.
+  if (is_compute) return {};
+  const bool known_popup_ui = IsDl2PopupUiShader(shader_hash);
+  DownstreamTarget candidate_target = {};
+  const auto candidate_target_it = downstream_capture_rtvs.find(context.cmd_list);
+  if (candidate_target_it != downstream_capture_rtvs.end()) {
+    const auto resource = DescribeGammaAuditView(context.cmd_list->get_device(), candidate_target_it->second);
+    candidate_target = {
+        .resource = resource.resource,
+        .effective = resource.effective,
+        .format = resource.format,
+        .effective_format = resource.effective_format,
+        .view_format = resource.view_format,
+        .effective_view_format = resource.effective_view_format,
+        .width = resource.width,
+        .height = resource.height,
+        .clone_enabled = resource.view_clone_enabled,
+    };
+  }
+  const bool full_size_target = candidate_target.width != 0u && candidate_target.height != 0u
+      && (capture.gamma_target == 0u
+          || (candidate_target.width * 10u >= capture.gamma_target_width * 9u
+              && candidate_target.height * 10u >= capture.gamma_target_height * 9u));
+  if (!known_popup_ui && !full_size_target) return {};
+
   // DL2 records late work across multiple command lists. Stay bounded by the
   // next Present, but keep a small unique candidate set rather than assuming
   // CPU command-list recording order is the GPU compositing order.
@@ -2086,19 +2176,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
     capture.hashes[capture.count] = shader_hash;
     capture.is_compute[capture.count] = is_compute;
     if (!is_compute) {
-      const auto target = downstream_capture_rtvs.find(context.cmd_list);
-      if (target != downstream_capture_rtvs.end()) {
-        const auto resource = DescribeGammaAuditView(context.cmd_list->get_device(), target->second);
-        capture.targets[capture.count] = {
-            .resource = resource.resource,
-            .effective = resource.effective,
-            .format = resource.format,
-            .effective_format = resource.effective_format,
-            .width = resource.width,
-            .height = resource.height,
-            .clone_enabled = resource.view_clone_enabled,
-        };
-      }
+      capture.targets[capture.count] = candidate_target;
       const auto input = downstream_capture_t0_views.find(context.cmd_list);
       if (input != downstream_capture_t0_views.end()) {
         const auto resource = DescribeGammaAuditView(context.cmd_list->get_device(), input->second);
@@ -2107,6 +2185,8 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
             .effective = resource.effective,
             .format = resource.format,
             .effective_format = resource.effective_format,
+            .view_format = resource.view_format,
+            .effective_view_format = resource.effective_view_format,
             .width = resource.width,
             .height = resource.height,
             .clone_enabled = resource.view_clone_enabled,
@@ -2867,7 +2947,9 @@ void OnDownstreamDrawCapturePresent(
       if (target.resource != 0u) {
         stream << "->rtv(0x" << target.resource << ", "
                << static_cast<uint32_t>(target.format) << "=>0x" << target.effective << ", "
-               << static_cast<uint32_t>(target.effective_format) << ", clone="
+               << static_cast<uint32_t>(target.effective_format)
+               << ", view=" << static_cast<uint32_t>(target.view_format) << "=>"
+               << static_cast<uint32_t>(target.effective_view_format) << ", clone="
                << (target.clone_enabled ? "on" : "off") << ", " << std::dec
                << target.width << "x" << target.height << ")";
       }
@@ -2881,6 +2963,8 @@ void OnDownstreamDrawCapturePresent(
             || input.effective == capture.gamma_target_effective;
         stream << "<-t0(0x" << input.resource << ", " << static_cast<uint32_t>(input.format)
                << "=>0x" << input.effective << ", " << static_cast<uint32_t>(input.effective_format)
+               << ", view=" << static_cast<uint32_t>(input.view_format) << "=>"
+               << static_cast<uint32_t>(input.effective_view_format)
                << ", gamma=" << (reads_gamma ? "yes" : "no") << ")";
       }
     }
@@ -3545,9 +3629,9 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
         .default_value = 0.f,
         .can_reset = false,
-        .label = "Capture Post-Gamma Command Candidates",
+        .label = "Capture Post-Gamma UI Candidates",
         .section = "Debug",
-        .tooltip = "One-shot, records up to 16 unique graphics or compute shader hashes after 0xAD085E81 until the next Present, then turns itself off. No resource tracing or dumping.",
+        .tooltip = "One-shot, records the three known popup shaders plus full-size pixel composites after 0xAD085E81 until the next Present. Logs original/effective SRV and RTV view formats; filters low-resolution scene and compute work so the main-menu UI cannot be displaced. No mutation, readback, or dumping.",
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -3690,6 +3774,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           {.shader_hash = 0xAD085E81u,
            .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
       reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
+      reshade::register_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
       reshade::register_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
       reshade::register_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
       reshade::register_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
@@ -3788,6 +3873,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
       reshade::unregister_event<reshade::addon_event::barrier>(OnDlssFgBackbufferBarrier);
       reshade::unregister_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
+      reshade::unregister_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
       reshade::unregister_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
       reshade::unregister_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
       reshade::unregister_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);

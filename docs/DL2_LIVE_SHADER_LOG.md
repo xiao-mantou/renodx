@@ -484,3 +484,15 @@ and desaturated that range. HDR scene output is now multiplied by
 because `(Peak / Game) * (Game / 203) * 203 = Peak`, while making Game control
 the physical diffuse-white level as labeled. Vanilla output and later UI
 composition are intentionally not scaled.
+
+**Popup/UI candidates:** Two post-Gamma captures separated the in-game exit
+popup from the main-menu exit popup. The in-game popup exposed three full-size
+pixel shaders (`0x54F3F767`, `0xF34DDC49`, and `0x43B22618`) whose dumped math
+is characteristic of UI: texture times vertex color, texture/mask modulation,
+and fixed RGB with texture-derived alpha. They write a full-size typeless R8
+target through its FP16 clone. The main-menu capture was exhausted by sixteen
+lower-resolution material/compute passes before its popup draw. The diagnostic
+now filters that work, retains known UI and full-size pixel composites, logs
+original/effective SRV and RTV *view* formats, and logs the known shaders'
+pipeline blend factors. This distinguishes an sRGB-view semantic loss during
+FP16 cloning from an incorrect UI-white scale before any rendering mutation.
