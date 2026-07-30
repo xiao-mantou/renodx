@@ -59,6 +59,9 @@ cbuffer shader_injection : register(b13) {
 // intermediate/output reference white fixed until a real UI composite pass
 // is identified; exposing this field made it alter the whole scene.
 #define RENODX_GRAPHICS_WHITE_NITS             203.f
+// Actual UI control. Keep GRAPHICS_WHITE fixed for the common Linear BT.709
+// proxy unit, while matched gamma-domain UI shaders use this value explicitly.
+#define RENODX_UI_WHITE_NITS                   shader_injection.graphics_white_nits
 #define RENODX_GAMMA_CORRECTION                shader_injection.gamma_correction
 #define RENODX_TONE_MAP_HUE_PROCESSOR          shader_injection.tone_map_hue_processor
 #define RENODX_TONE_MAP_HUE_CORRECTION         shader_injection.tone_map_hue_correction

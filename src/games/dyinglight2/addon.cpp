@@ -3065,6 +3065,16 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     // the vanilla grade below SDR white and reconstructs the HDR magnitude in
     // the now-proven Linear BT.709 intermediate domain.
     CustomDirectXShaders(0x268BAB6D),
+    // DL2 composites gamma-domain UI through an UNORM view of the same
+    // typeless target whose scene pass uses an sRGB view. FP16 cloning removes
+    // that view distinction, so decode matched UI to Linear BT.709 and apply
+    // the dedicated UI-white scale before alpha blending into the HDR scene.
+    CustomDirectXShaders(0x54F3F767),
+    CustomDirectXShaders(0xF34DDC49),
+    CustomDirectXShaders(0x43B22618),
+    CustomDirectXShaders(0x61DBDE91),
+    CustomDirectXShaders(0x2280559E),
+    CustomDirectXShaders(0x7D1BA5D4),
     // Keep the later Gamma pass native: it is a power operation with no
     // explicit range clamp, so replacing it is not required for this fix.
     // Disabled: guessed hashes caused crashes because the copied tonemapper

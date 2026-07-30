@@ -496,3 +496,15 @@ now filters that work, retains known UI and full-size pixel composites, logs
 original/effective SRV and RTV *view* formats, and logs the known shaders'
 pipeline blend factors. This distinguishes an sRGB-view semantic loss during
 FP16 cloning from an incorrect UI-white scale before any rendering mutation.
+
+**Popup/UI correction:** The enhanced capture confirmed the shared typeless R8
+target is intentionally written through different views: scene/LUT passes use
+an sRGB RTV (`view=29`), while six popup/button shaders use an UNORM RTV
+(`view=28`). Both become a linear FP16 view (`=>10`) after cloning. The UI
+pipelines use conventional source-alpha/one-minus-source-alpha blending and
+their dumped math produces gamma-domain UI colors. Treating those stored gamma
+values as linear explains the washed-out gray UI and button color banding.
+The six confirmed UI shaders now decode their final RGB from sRGB to Linear
+BT.709, multiply it by `UI Brightness / 203`, and preserve alpha verbatim.
+The common proxy remains fixed at `1.0 = 203 nits`; therefore Game and UI white
+are finally independent. Fullscreen copy/blur shaders remain native.
