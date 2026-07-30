@@ -47,5 +47,25 @@ float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
     config.swap_chain_encoding_color_space = renodx::color::convert::COLOR_SPACE_BT2020;
   }
 
+  // Six-way final-proxy diagnostic. Each tile repeats the full source image so
+  // transfer-function and source-gamut assumptions can be compared in one
+  // capture while sharing the exact same HDR10/PQ output conversion.
+  if (RENODX_DEBUG_MODE > 24.5 && RENODX_DEBUG_MODE < 25.5) {
+    const float2 grid_size = float2(3.f, 2.f);
+    const uint column = min((uint)(uv.x * grid_size.x), 2u);
+    const uint row = min((uint)(uv.y * grid_size.y), 1u);
+    const float2 tile_uv = frac(uv * grid_size);
+
+    config.swap_chain_decoding = column == 0u
+                                     ? renodx::draw::ENCODING_NONE
+                                 : column == 1u
+                                     ? renodx::draw::ENCODING_SRGB
+                                     : renodx::draw::ENCODING_GAMMA_2_2;
+    config.swap_chain_decoding_color_space = row == 0u
+                                                 ? renodx::color::convert::COLOR_SPACE_BT709
+                                                 : renodx::color::convert::COLOR_SPACE_BT2020;
+    return float4(renodx::draw::SwapChainPass(t0.Sample(s0, tile_uv).rgb, tile_uv, config).rgb, 1.f);
+  }
+
   return float4(renodx::draw::SwapChainPass(t0.Sample(s0, uv).rgb, uv, config).rgb, 1.f);
 }
