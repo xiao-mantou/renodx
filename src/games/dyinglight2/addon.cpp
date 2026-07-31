@@ -2166,7 +2166,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   }
 
   if (!capture.active) {
-    if (!is_compute && (shader_hash == 0x268BAB6Du || shader_hash == 0xAD085E81u)) {
+    if (!is_compute && shader_hash == 0x268BAB6Du) {
       capture.count = 0u;
       capture.transfer_count = 0u;
       capture.targets.fill({});
@@ -2252,9 +2252,21 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
     capture.is_compute[capture.count] = is_compute;
     if (!is_compute) {
       capture.targets[capture.count] = candidate_target;
+      reshade::api::resource_view input_view = {0u};
       const auto input = downstream_capture_t0_views.find(context.cmd_list);
-      if (input != downstream_capture_t0_views.end()) {
-        const auto resource = DescribeGammaAuditView(context.cmd_list->get_device(), input->second);
+      if (input != downstream_capture_t0_views.end()) input_view = input->second;
+      if (input_view.handle == 0u) {
+        DescriptorBindingAudit t0_binding = {};
+        FindGraphicsDescriptorBinding(
+            context.cmd_list->get_device(),
+            renodx::utils::state::GetCurrentState(context.cmd_list),
+            0u,
+            reshade::api::descriptor_type::texture_shader_resource_view,
+            &t0_binding);
+        if (t0_binding.found) input_view = t0_binding.slot.resource_view;
+      }
+      if (input_view.handle != 0u) {
+        const auto resource = DescribeGammaAuditView(context.cmd_list->get_device(), input_view);
         capture.inputs[capture.count] = {
             .resource = resource.resource,
             .effective = resource.effective,
@@ -3763,9 +3775,9 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
         .default_value = 0.f,
         .can_reset = false,
-        .label = "Capture Post-Gamma UI Candidates",
+        .label = "Capture Post-LUT Candidates",
         .section = "Debug",
-        .tooltip = "One-shot, records full-size pixel composites after the first scene LUT (0x268BAB6D) or menu Gamma (0xAD085E81) draw until the next Present. Logs original/effective SRV and RTV view formats. No mutation, readback, or dumping.",
+        .tooltip = "One-shot, records full-size pixel composites after the scene LUT (0x268BAB6D) until the next Present. Logs D3D12 descriptor-table t0 inputs and original/effective RTV formats. No mutation, readback, or dumping.",
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -3776,7 +3788,7 @@ renodx::utils::settings::Settings settings = {
         .can_reset = false,
         .label = "Capture Post-Gamma Transfers",
         .section = "Debug",
-        .tooltip = "One-shot, records up to 16 unique copy or resolve operations after the first scene LUT (0x268BAB6D) or menu Gamma (0xAD085E81) draw until the next Present. It records only resource handles and formats, with no readback or interception.",
+        .tooltip = "One-shot, records up to 16 unique copy or resolve operations after the scene LUT (0x268BAB6D) until the next Present. It records only resource handles and formats, with no readback or interception.",
         .is_visible = []() { return current_settings_mode >= 2; },
     },
       new renodx::utils::settings::Setting{

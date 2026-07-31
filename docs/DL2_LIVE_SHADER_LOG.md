@@ -624,3 +624,11 @@ constant probe still ran the native shader. The exact replacement is now
 registered. Its normal branch retains the original per-channel power formula,
 while its debug branches can finally distinguish a pre-Gamma loss from a
 post-Gamma loss.
+
+The D3D12 color-path audit then proved a concrete resource break: `0x268`
+wrote one FP16 resource, while `0xAD` sampled a different FP16 resource. The
+generic downstream button could still be claimed by an earlier-recorded
+`0xAD` command list, and its push-descriptor-only input lookup returned no t0
+for these D3D12 tables. The capture now starts only at `0x268` and falls back
+to the mirrored descriptor-table state for every candidate t0. Its label is
+updated to `Capture Post-LUT Candidates` to reflect the actual boundary.
