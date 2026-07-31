@@ -1202,6 +1202,8 @@ struct DlssFgTagTransferAuditState {
 struct UpscalerColorPathEntry {
   uint32_t shader_hash = 0u;
   uint32_t input_writer_hash = 0u;
+  std::array<uint32_t, 16> input_writer_hashes = {};
+  uint32_t input_writer_count = 0u;
   uint32_t api = 0u;
   uint64_t generation = 0u;
   uint32_t draw_count = 0u;
@@ -1304,6 +1306,7 @@ DlssFgComputeWriterAuditState dlss_fg_compute_writer_audit_state = {};
 DlssFgTagTransferAuditState dlss_fg_tag_transfer_audit_state = {};
 UpscalerColorPathAuditState upscaler_color_path_audit_state = {};
 std::unordered_map<uint64_t, uint32_t> upscaler_color_last_writers;
+std::unordered_map<uint64_t, std::vector<uint32_t>> upscaler_color_writer_chains;
 uint64_t upscaler_color_path_capture_serial = 0u;
 UpscalerInputAuditState upscaler_input_audit_state = {};
 uint64_t upscaler_input_audit_capture_serial = 0u;
@@ -2095,9 +2098,15 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
         }
         const uint64_t generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
         uint32_t input_writer_hash = 0u;
+        std::array<uint32_t, 16> input_writer_hashes = {};
+        uint32_t input_writer_count = 0u;
         const auto find_input_writer = [&](uint64_t resource) {
           const auto writer = upscaler_color_last_writers.find(resource);
           if (writer != upscaler_color_last_writers.end()) input_writer_hash = writer->second;
+          const auto chain = upscaler_color_writer_chains.find(resource);
+          if (chain == upscaler_color_writer_chains.end()) return;
+          input_writer_count = static_cast<uint32_t>(std::min(chain->second.size(), input_writer_hashes.size()));
+          std::copy_n(chain->second.begin(), input_writer_count, input_writer_hashes.begin());
         };
         if (input.effective != 0u) find_input_writer(input.effective);
         if (input_writer_hash == 0u && input.resource != 0u) find_input_writer(input.resource);
@@ -2105,6 +2114,8 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
           upscaler_audit.entries[upscaler_audit.count++] = {
               .shader_hash = shader_hash,
               .input_writer_hash = input_writer_hash,
+              .input_writer_hashes = input_writer_hashes,
+              .input_writer_count = input_writer_count,
               .api = static_cast<uint32_t>(device->get_api()),
               .generation = generation,
               .draw_count = draw_count,
@@ -2128,8 +2139,16 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
     if (target != downstream_capture_rtvs.end()) {
       const auto output = DescribeGammaAuditView(context.cmd_list->get_device(), target->second);
       if (output.width >= 128u && output.height >= 128u) {
-        if (output.resource != 0u) upscaler_color_last_writers[output.resource] = shader_hash;
-        if (output.effective != 0u) upscaler_color_last_writers[output.effective] = shader_hash;
+        const auto record_writer = [&](uint64_t resource) {
+          if (resource == 0u) return;
+          upscaler_color_last_writers[resource] = shader_hash;
+          auto& chain = upscaler_color_writer_chains[resource];
+          if (chain.size() < 16u && (chain.empty() || chain.back() != shader_hash)) {
+            chain.push_back(shader_hash);
+          }
+        };
+        record_writer(output.resource);
+        if (output.effective != output.resource) record_writer(output.effective);
       }
     }
   }
@@ -2854,7 +2873,12 @@ void OnDownstreamDrawCapturePresent(
                << " gen=" << entry.generation
                << " ps=0x" << std::hex << std::uppercase << entry.shader_hash
                << " input_writer=0x" << entry.input_writer_hash
-               << " draw=" << std::dec << entry.draw_count << "x" << entry.instance_count
+               << " input_writers=[";
+        for (uint32_t writer_index = 0u; writer_index < entry.input_writer_count; ++writer_index) {
+          if (writer_index != 0u) stream << ",";
+          stream << "0x" << entry.input_writer_hashes[writer_index];
+        }
+        stream << "] draw=" << std::dec << entry.draw_count << "x" << entry.instance_count
                << " viewport=" << entry.viewport_width << "x" << entry.viewport_height
                << " srv=" << entry.input_table << ":" << entry.input_binding
                << " t0(0x" << entry.input.resource << "," << std::dec << static_cast<uint32_t>(entry.input.format)
@@ -2876,6 +2900,7 @@ void OnDownstreamDrawCapturePresent(
       renodx::utils::log::i(stream.str().c_str());
       audit = {};
       upscaler_color_last_writers.clear();
+      upscaler_color_writer_chains.clear();
       downstream_capture_t0_views.clear();
     }
   }
@@ -3731,6 +3756,7 @@ renodx::utils::settings::Settings settings = {
               .active = true,
           };
           upscaler_color_last_writers.clear();
+          upscaler_color_writer_chains.clear();
           downstream_capture_t0_views.clear();
           std::ostringstream stream;
           stream << "DL2 upscaler color path audit armed: capture=" << capture_id

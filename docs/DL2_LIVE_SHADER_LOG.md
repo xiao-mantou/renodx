@@ -658,3 +658,9 @@ map for the same four-Present window. Each `0x3E`, `0x268`, and `0xAD` entry now
 includes `input_writer`, so the `0xAD` row identifies the shader that most
 recently wrote its actual D3D12 t0 resource. This replaces further speculative
 fullscreen-pass probes with direct resource lineage.
+
+The first capture consistently reported `0xF34DDC49` as the last writer of
+the `0xAD` input. That is a known UI alpha-blend shader, so it identifies the
+final overlay rather than the draw that established the scene underneath. The
+audit now snapshots up to 16 ordered `input_writers` for each target input,
+separating the base writer from subsequent UI overlays in one capture.
