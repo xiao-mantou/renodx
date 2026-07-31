@@ -16,6 +16,7 @@
 #include "../../utils/log.hpp"
 #include "../../utils/pipeline_layout.hpp"
 #include "../../utils/resource.hpp"
+#include "../../utils/resource_upgrade.hpp"
 #include "../../utils/state.hpp"
 
 namespace renodx::games::dyinglight2::descriptor_override {
@@ -211,12 +212,31 @@ inline bool BindCurrentT0Clone(reshade::api::command_list* cmd_list) {
   }
 
   reshade::api::resource_view clone_view = {0u};
+  reshade::api::resource original_resource = {0u};
   renodx::utils::resource::GetLiveResourceViewInfo(
       original_view,
       [&](const renodx::utils::resource::ResourceViewInfo& info) {
-        if (info.clone_enabled && info.clone.handle != 0u) clone_view = info.clone;
+        original_resource = info.original_resource;
+        if (info.clone.handle != 0u) clone_view = info.clone;
       });
-  if (clone_view.handle == 0u || clone_view.handle == original_view.handle) {
+  bool resource_clone_enabled = false;
+  if (original_resource.handle != 0u) {
+    renodx::utils::resource::GetLiveResourceInfo(
+        original_resource,
+        [&](const renodx::utils::resource::ResourceInfo& info) {
+          resource_clone_enabled = info.clone_enabled && info.clone.handle != 0u;
+        });
+  }
+  if (resource_clone_enabled && clone_view.handle == 0u) {
+    clone_view = renodx::utils::resource::upgrade::GetResourceViewClone(
+        original_view,
+        {
+            .require_enabled = false,
+            .allow_create = true,
+            .activate = false,
+        });
+  }
+  if (!resource_clone_enabled || clone_view.handle == 0u || clone_view.handle == original_view.handle) {
     LogSkip("active FP16 t0 clone unavailable");
     return false;
   }

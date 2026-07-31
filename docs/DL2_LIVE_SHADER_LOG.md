@@ -566,3 +566,11 @@ layouts, missing tracked descriptors, or missing clones leave the native
 binding untouched and emit only a bounded diagnostic. This tests consumer-side
 clone propagation without changing RenoDX framework behavior or unrelated DL2
 pipelines.
+
+The next runtime test reached the finite-table path but reported `active FP16
+t0 clone unavailable`. The hot-swap state is authoritative at the resource
+level; a consumer SRV may not have its clone view materialized yet. The helper
+now first requires the underlying resource clone to be active, then uses the
+existing resource-upgrade `GetResourceViewClone` path to create/select the
+matching FP16 SRV on demand. It no longer incorrectly requires the original
+SRV's view-level clone flag to be set before that clone view can exist.
