@@ -639,3 +639,11 @@ game dump, so it now has a fixed `6.25` debug output at mode 27. This creates a
 direct before/after boundary test around the post-LUT blit. The post-LUT draw
 and transfer captures are also real one-shot buttons now: clicking resets and
 arms their bounded state, and the next completed capture ends automatically.
+
+Mode 27 did not brighten the image, but the runtime also reported a
+`shader injection oversized: 37/29` layout. That makes a cbuffer-controlled
+probe at this hash ambiguous even though the replacement registered. The next
+temporary diagnostic removes `shared.h` from `0xBFFC45AC` and writes `6.25`
+unconditionally. It is intentionally not a usable gameplay build: its only
+purpose is to prove whether this exact blit reaches the final scene chain
+without depending on injected settings.
