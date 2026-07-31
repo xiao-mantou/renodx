@@ -1240,6 +1240,8 @@ struct UpscalerColorWriterObservation {
   uint64_t command_list = 0u;
   uint64_t command_list_epoch = 0u;
   uint64_t execute_serial = 0u;
+  GammaAuditResource input = {};
+  GammaAuditResource output = {};
 };
 
 struct UpscalerCurveAudit {
@@ -2973,7 +2975,11 @@ void OnDownstreamDrawCapturePresent(
             if (observation.resource == input_resource) {
               stream << " bffc_writer_cmd=0x" << std::hex << observation.command_list
                      << " epoch=" << std::dec << observation.command_list_epoch
-                     << " execute=" << observation.execute_serial;
+                     << " execute=" << observation.execute_serial
+                     << " bffc_t0=0x" << std::hex << observation.input.resource
+                     << "=>0x" << observation.input.effective
+                     << " bffc_rtv=0x" << observation.output.resource
+                     << "=>0x" << observation.output.effective;
               break;
             }
           }
@@ -3336,6 +3342,43 @@ bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
         cmd_list->bind_pipeline(pixel_state->applied_stage, {replacement_pipeline});
       }
     }
+  }
+  GammaAuditResource input = {};
+  GammaAuditResource output = {};
+  const auto target_it = downstream_capture_rtvs.find(cmd_list);
+  if (target_it != downstream_capture_rtvs.end()) {
+    auto* device = cmd_list->get_device();
+    output = DescribeGammaAuditView(device, target_it->second);
+    const auto input_it = downstream_capture_t0_views.find(cmd_list);
+    if (input_it != downstream_capture_t0_views.end()) {
+      input = DescribeGammaAuditView(device, input_it->second);
+    }
+  }
+  const uint64_t epoch = upscaler_color_command_epochs[reinterpret_cast<uintptr_t>(cmd_list)];
+  std::ostringstream resources;
+  resources << "DL2 BFFC replacement resources: cmd=0x" << std::hex
+            << reinterpret_cast<uintptr_t>(cmd_list)
+            << " epoch=" << std::dec << epoch
+            << " t0=0x" << std::hex << input.resource << "=>0x" << input.effective
+            << " fmt=" << std::dec << static_cast<uint32_t>(input.format)
+            << "=>" << static_cast<uint32_t>(input.effective_format)
+            << " view=" << static_cast<uint32_t>(input.view_format)
+            << "=>" << static_cast<uint32_t>(input.effective_view_format)
+            << " rtv=0x" << std::hex << output.resource << "=>0x" << output.effective
+            << " fmt=" << std::dec << static_cast<uint32_t>(output.format)
+            << "=>" << static_cast<uint32_t>(output.effective_format)
+            << " view=" << static_cast<uint32_t>(output.view_format)
+            << "=>" << static_cast<uint32_t>(output.effective_view_format);
+  renodx::utils::log::i(resources.str().c_str());
+  if (output.resource != 0u && upscaler_color_writer_observations.size() < 128u) {
+    upscaler_color_writer_observations.push_back({
+        .shader_hash = 0xBFFC45ACu,
+        .resource = output.resource,
+        .command_list = reinterpret_cast<uintptr_t>(cmd_list),
+        .command_list_epoch = epoch,
+        .input = input,
+        .output = output,
+    });
   }
   std::ostringstream stream;
   stream << "DL2 BFFC replacement probe: cmd=0x" << std::hex
