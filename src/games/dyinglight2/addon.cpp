@@ -1092,10 +1092,10 @@ struct DownstreamTarget {
 };
 
 struct DownstreamDrawCaptureState {
-  std::array<uint32_t, 16> hashes = {};
-  std::array<bool, 16> is_compute = {};
-  std::array<DownstreamTarget, 16> targets = {};
-  std::array<DownstreamTarget, 16> inputs = {};
+  std::array<uint32_t, 64> hashes = {};
+  std::array<bool, 64> is_compute = {};
+  std::array<DownstreamTarget, 64> targets = {};
+  std::array<DownstreamTarget, 64> inputs = {};
   std::array<DownstreamTransfer, 16> transfers = {};
   uint32_t count = 0u;
   uint32_t transfer_count = 0u;
