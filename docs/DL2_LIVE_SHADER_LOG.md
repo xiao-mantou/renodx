@@ -556,11 +556,13 @@ The replacement approach is intentionally local to DL2 in
 `dl2_descriptor_override.hpp`. It does not enable resource-upgrade v2's global
 DX12 descriptor hooks and does not add a root-signature register. A
 shader-filtered command callback inspects the current graphics layout for
-`0x268BAB6D` and `0xAD085E81`; only when t0 occupies an isolated one-SRV table
-does it allocate a compatible table containing the active FP16 clone. The
-clone table is bound immediately before the replayed draw and the original
-table is restored by the command-action post callback. Unsupported layouts,
-missing tracked descriptors, or missing clones leave the native binding
-untouched and emit only a bounded diagnostic. This tests consumer-side clone
-propagation without changing RenoDX framework behavior or unrelated DL2
+`0x268BAB6D` and `0xAD085E81`. The first runtime test proved t0 shares a table
+with other descriptors, so the helper now accepts a finite multi-range table:
+it allocates a compatible table, copies the complete original table, and then
+overrides only t0 with the active FP16 clone. The clone table is bound
+immediately before the replayed draw and the original table is restored by the
+command-action post callback. Tables with an unbounded range, unsupported
+layouts, missing tracked descriptors, or missing clones leave the native
+binding untouched and emit only a bounded diagnostic. This tests consumer-side
+clone propagation without changing RenoDX framework behavior or unrelated DL2
 pipelines.

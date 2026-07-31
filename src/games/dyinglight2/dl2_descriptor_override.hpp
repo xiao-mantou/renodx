@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -24,6 +25,7 @@ struct TableKey {
   uint64_t layout = 0u;
   uint32_t layout_param = 0u;
   uint32_t binding = 0u;
+  uint64_t original_table = 0u;
   uint64_t clone_view = 0u;
 
   bool operator==(const TableKey&) const = default;
@@ -38,6 +40,7 @@ struct TableKeyHash {
     combine(key.layout);
     combine(key.layout_param);
     combine(key.binding);
+    combine(key.original_table);
     combine(key.clone_view);
     return value;
   }
@@ -66,12 +69,15 @@ inline reshade::api::descriptor_table GetOrCreateCloneTable(
     reshade::api::pipeline_layout layout,
     uint32_t layout_param,
     uint32_t binding,
+    uint32_t descriptor_count,
+    reshade::api::descriptor_table original_table,
     reshade::api::resource_view clone_view) {
   const TableKey key = {
       .device = device,
       .layout = layout.handle,
       .layout_param = layout_param,
       .binding = binding,
+      .original_table = original_table.handle,
       .clone_view = clone_view.handle,
   };
 
@@ -85,6 +91,17 @@ inline reshade::api::descriptor_table GetOrCreateCloneTable(
     LogSkip("replacement table allocation failed");
     return {0u};
   }
+
+  const reshade::api::descriptor_table_copy copy = {
+      .source_table = original_table,
+      .source_binding = 0u,
+      .source_array_offset = 0u,
+      .dest_table = table,
+      .dest_binding = 0u,
+      .dest_array_offset = 0u,
+      .count = descriptor_count,
+  };
+  device->copy_descriptor_tables(1u, &copy);
 
   const reshade::api::descriptor_table_update update = {
       .table = table,
@@ -112,32 +129,49 @@ inline bool BindCurrentT0Clone(reshade::api::command_list* cmd_list) {
 
   uint32_t layout_param = UINT32_MAX;
   uint32_t binding = UINT32_MAX;
+  uint32_t descriptor_count = 0u;
   bool supported_layout = false;
+  bool unbounded_layout = false;
   renodx::utils::pipeline_layout::GetPipelineLayoutData(
       state->graphics_pipeline_layout,
       [&](const renodx::utils::pipeline_layout::PipelineLayoutData* layout_data) {
         for (uint32_t index = 0u;
              index < layout_data->params.size() && index < state->graphics_descriptor_tables.size(); ++index) {
           const auto& param = layout_data->params[index];
-          if (param.type != reshade::api::pipeline_layout_param_type::descriptor_table
-              || param.descriptor_table.count != 1u) {
+          if (param.type != reshade::api::pipeline_layout_param_type::descriptor_table) {
             continue;
           }
-          const auto& range = param.descriptor_table.ranges[0];
-          if (range.type != reshade::api::descriptor_type::texture_shader_resource_view
-              || range.dx_register_index != 0u
-              || range.dx_register_space != 0u
-              || range.count != 1u) {
-            continue;
+
+          bool contains_t0 = false;
+          uint32_t table_descriptor_count = 0u;
+          bool table_unbounded = false;
+          for (uint32_t range_index = 0u; range_index < param.descriptor_table.count; ++range_index) {
+            const auto& range = param.descriptor_table.ranges[range_index];
+            if (range.count == UINT32_MAX) {
+              table_unbounded = true;
+            } else {
+              table_descriptor_count = std::max(table_descriptor_count, range.binding + range.count);
+            }
+            if (range.type == reshade::api::descriptor_type::texture_shader_resource_view
+                && range.dx_register_space == 0u
+                && range.dx_register_index == 0u
+                && range.count != 0u) {
+              contains_t0 = true;
+              binding = range.binding;
+            }
           }
+          if (!contains_t0) continue;
           layout_param = index;
-          binding = range.binding;
-          supported_layout = true;
+          descriptor_count = table_descriptor_count;
+          unbounded_layout = table_unbounded;
+          supported_layout = !table_unbounded && table_descriptor_count != 0u;
           break;
         }
       });
   if (!supported_layout || layout_param >= state->graphics_descriptor_tables.size()) {
-    LogSkip("t0 is not an isolated one-SRV descriptor table");
+    LogSkip(unbounded_layout
+                ? "t0 table contains an unbounded descriptor range"
+                : "finite t0 descriptor table layout unavailable");
     return false;
   }
 
@@ -188,7 +222,13 @@ inline bool BindCurrentT0Clone(reshade::api::command_list* cmd_list) {
   }
 
   const auto replacement_table = GetOrCreateCloneTable(
-      device, state->graphics_pipeline_layout, layout_param, binding, clone_view);
+      device,
+      state->graphics_pipeline_layout,
+      layout_param,
+      binding,
+      descriptor_count,
+      original_table,
+      clone_view);
   if (replacement_table.handle == 0u) return false;
 
   pending_restore = {
