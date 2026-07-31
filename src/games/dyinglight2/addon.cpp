@@ -1201,6 +1201,7 @@ struct DlssFgTagTransferAuditState {
 
 struct UpscalerColorPathEntry {
   uint32_t shader_hash = 0u;
+  uint32_t input_writer_hash = 0u;
   uint32_t api = 0u;
   uint64_t generation = 0u;
   uint32_t draw_count = 0u;
@@ -1302,6 +1303,7 @@ DlssFgProducerAuditState dlss_fg_producer_audit_state = {};
 DlssFgComputeWriterAuditState dlss_fg_compute_writer_audit_state = {};
 DlssFgTagTransferAuditState dlss_fg_tag_transfer_audit_state = {};
 UpscalerColorPathAuditState upscaler_color_path_audit_state = {};
+std::unordered_map<uint64_t, uint32_t> upscaler_color_last_writers;
 uint64_t upscaler_color_path_capture_serial = 0u;
 UpscalerInputAuditState upscaler_input_audit_state = {};
 uint64_t upscaler_input_audit_capture_serial = 0u;
@@ -2092,9 +2094,17 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
           }
         }
         const uint64_t generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
+        uint32_t input_writer_hash = 0u;
+        const auto find_input_writer = [&](uint64_t resource) {
+          const auto writer = upscaler_color_last_writers.find(resource);
+          if (writer != upscaler_color_last_writers.end()) input_writer_hash = writer->second;
+        };
+        if (input.effective != 0u) find_input_writer(input.effective);
+        if (input_writer_hash == 0u && input.resource != 0u) find_input_writer(input.resource);
         if (upscaler_audit.count < upscaler_audit.entries.size()) {
           upscaler_audit.entries[upscaler_audit.count++] = {
               .shader_hash = shader_hash,
+              .input_writer_hash = input_writer_hash,
               .api = static_cast<uint32_t>(device->get_api()),
               .generation = generation,
               .draw_count = draw_count,
@@ -2109,6 +2119,17 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
               .output = output,
           };
         }
+      }
+    }
+  }
+
+  if (capture_upscaler_color_path && !is_compute && shader_hash != 0u) {
+    const auto target = downstream_capture_rtvs.find(context.cmd_list);
+    if (target != downstream_capture_rtvs.end()) {
+      const auto output = DescribeGammaAuditView(context.cmd_list->get_device(), target->second);
+      if (output.width >= 128u && output.height >= 128u) {
+        if (output.resource != 0u) upscaler_color_last_writers[output.resource] = shader_hash;
+        if (output.effective != 0u) upscaler_color_last_writers[output.effective] = shader_hash;
       }
     }
   }
@@ -2832,6 +2853,7 @@ void OnDownstreamDrawCapturePresent(
                << " api=" << entry.api
                << " gen=" << entry.generation
                << " ps=0x" << std::hex << std::uppercase << entry.shader_hash
+               << " input_writer=0x" << entry.input_writer_hash
                << " draw=" << std::dec << entry.draw_count << "x" << entry.instance_count
                << " viewport=" << entry.viewport_width << "x" << entry.viewport_height
                << " srv=" << entry.input_table << ":" << entry.input_binding
@@ -2853,6 +2875,7 @@ void OnDownstreamDrawCapturePresent(
       }
       renodx::utils::log::i(stream.str().c_str());
       audit = {};
+      upscaler_color_last_writers.clear();
       downstream_capture_t0_views.clear();
     }
   }
@@ -3707,6 +3730,7 @@ renodx::utils::settings::Settings settings = {
               .start_generation = generation,
               .active = true,
           };
+          upscaler_color_last_writers.clear();
           downstream_capture_t0_views.clear();
           std::ostringstream stream;
           stream << "DL2 upscaler color path audit armed: capture=" << capture_id

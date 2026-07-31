@@ -652,3 +652,9 @@ The unconditional probe remained at 203, so it was restored immediately to the
 normal blit plus the opt-in mode-27 branch. This rules out `0xBFFC45AC` as the
 effective final writer; future tracing should anchor on the swapchain proxy
 source resource itself.
+
+The next targeted color-path audit maintains a bounded resource-to-last-writer
+map for the same four-Present window. Each `0x3E`, `0x268`, and `0xAD` entry now
+includes `input_writer`, so the `0xAD` row identifies the shader that most
+recently wrote its actual D3D12 t0 resource. This replaces further speculative
+fullscreen-pass probes with direct resource lineage.
