@@ -2210,14 +2210,6 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
           if (chain.size() < 16u && (chain.empty() || chain.back() != shader_hash)) {
             chain.push_back(shader_hash);
           }
-          if (shader_hash == 0xBFFC45ACu && upscaler_color_writer_observations.size() < 128u) {
-            upscaler_color_writer_observations.push_back({
-                .shader_hash = shader_hash,
-                .resource = resource,
-                .command_list = reinterpret_cast<uintptr_t>(context.cmd_list),
-                .command_list_epoch = upscaler_color_command_epochs[reinterpret_cast<uintptr_t>(context.cmd_list)],
-            });
-          }
         };
         record_writer(output.resource);
         if (output.effective != output.resource) record_writer(output.effective);
@@ -3345,13 +3337,11 @@ renodx::mods::shader::CustomShader CreateDl2HdrShader(
 }
 
 bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
-  static std::atomic<uint32_t> remaining{24u};
-  uint32_t expected = remaining.load(std::memory_order_relaxed);
-  while (expected != 0u
-         && !remaining.compare_exchange_weak(
-             expected, expected - 1u, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+  {
+    std::scoped_lock lock(downstream_draw_capture_mutex);
+    if (!upscaler_color_path_audit_state.active
+        || upscaler_color_writer_observations.size() >= 32u) return true;
   }
-  if (expected == 0u) return true;
 
   auto* state = renodx::utils::shader::GetCurrentState(cmd_list);
   uint64_t native_pipeline = 0u;
@@ -3460,7 +3450,7 @@ bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
          << " native=0x" << native_pipeline
          << " replacement=0x" << replacement_pipeline
          << " build=" << std::dec << (build_ok ? 1 : 0)
-         << " remaining=" << (expected - 1u);
+         << " capture=" << upscaler_color_path_audit_state.capture_id;
   renodx::utils::log::i(stream.str().c_str());
   return true;
 }
