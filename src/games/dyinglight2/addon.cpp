@@ -3207,6 +3207,9 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     CustomDirectXShaders(0x61DBDE91),
     CustomDirectXShaders(0x2280559E),
     CustomDirectXShaders(0x7D1BA5D4),
+    // Full-screen post-LUT blit. The normal branch is bytecode-equivalent in
+    // intent; its debug branch isolates the boundary before UI composition.
+    CustomDirectXShaders(0xBFFC45AC),
     // Keep the original power operation in normal rendering, but register the
     // exact replacement so its bounded post-Gamma probes actually execute.
     // Its draw callback also keeps the FP16 output active at this final game
@@ -3766,29 +3769,36 @@ renodx::utils::settings::Settings settings = {
         .label = "Debug Mode",
         .section = "Debug",
         .tooltip = "False-color visualization and output probes. Luminance Ladder places four known scene values in the lower-right corner.",
-        .labels = {"Off", "HDR Input Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500-nit red)", "Scene Probe (Peak white)", "Output Luminance Ladder", "Raw Output Ladder", "Late LUT Output Ladder", "Source t0 Range", "Auto Exposure t1", "Bypass Late Gamma (Test)", "LUT Output Constant (500-nit white)", "Gamma Output Constant (500-nit white)", "Final Proxy Constant (500-nit white)", "Gamma Input t0 Range", "Gamma Power cb0", "Stability Probe (4 stages; top bypass, bottom Gamma)", "Source t0 Chroma", "Vanilla SDR Chroma", "RenoDRT Output Chroma", "Vanilla SDR Direct", "RenoDRT Output Direct", "Proxy No Gamut Compression", "Proxy Decode Grid (709/2020 x Linear/sRGB/2.2)", "0x3E Legacy sRGB Output (A/B)"},
+        .labels = {"Off", "HDR Input Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500-nit red)", "Scene Probe (Peak white)", "Output Luminance Ladder", "Raw Output Ladder", "Late LUT Output Ladder", "Source t0 Range", "Auto Exposure t1", "Bypass Late Gamma (Test)", "LUT Output Constant (500-nit white)", "Gamma Output Constant (500-nit white)", "Final Proxy Constant (500-nit white)", "Gamma Input t0 Range", "Gamma Power cb0", "Stability Probe (4 stages; top bypass, bottom Gamma)", "Source t0 Chroma", "Vanilla SDR Chroma", "RenoDRT Output Chroma", "Vanilla SDR Direct", "RenoDRT Output Direct", "Proxy No Gamut Compression", "Proxy Decode Grid (709/2020 x Linear/sRGB/2.2)", "0x3E Legacy sRGB Output (A/B)", "Post-LUT Blit Constant (6.25x white)"},
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
-        .key = "CaptureDownstreamDraws",
-        .binding = &downstream_draw_capture,
-        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
-        .default_value = 0.f,
-        .can_reset = false,
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture Post-LUT Candidates",
         .section = "Debug",
         .tooltip = "One-shot, records full-size pixel composites after the scene LUT (0x268BAB6D) until the next Present. Logs D3D12 descriptor-table t0 inputs and original/effective RTV formats. No mutation, readback, or dumping.",
+        .on_click = []() {
+          std::scoped_lock lock(downstream_draw_capture_mutex);
+          downstream_draw_capture = 1.f;
+          downstream_draw_capture_state = {};
+          downstream_capture_t0_views.clear();
+          renodx::utils::log::i("DL2 post-LUT candidate capture armed.");
+          return false;
+        },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
-        .key = "CaptureDownstreamTransfers",
-        .binding = &downstream_transfer_capture,
-        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
-        .default_value = 0.f,
-        .can_reset = false,
-        .label = "Capture Post-Gamma Transfers",
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture Post-LUT Transfers",
         .section = "Debug",
         .tooltip = "One-shot, records up to 16 unique copy or resolve operations after the scene LUT (0x268BAB6D) until the next Present. It records only resource handles and formats, with no readback or interception.",
+        .on_click = []() {
+          std::scoped_lock lock(downstream_draw_capture_mutex);
+          downstream_transfer_capture = 1.f;
+          downstream_draw_capture_state = {};
+          renodx::utils::log::i("DL2 post-LUT transfer capture armed.");
+          return false;
+        },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
       new renodx::utils::settings::Setting{

@@ -632,3 +632,10 @@ generic downstream button could still be claimed by an earlier-recorded
 for these D3D12 tables. The capture now starts only at `0x268` and falls back
 to the mirrored descriptor-table state for every candidate t0. Its label is
 updated to `Capture Post-LUT Candidates` to reflect the actual boundary.
+
+The expanded capture found no copy or resolve after `0x268`; the transition is
+draw-only. `0xBFFC45AC` is an exact full-screen sample-and-write blit in the
+game dump, so it now has a fixed `6.25` debug output at mode 27. This creates a
+direct before/after boundary test around the post-LUT blit. The post-LUT draw
+and transfer captures are also real one-shot buttons now: clicking resets and
+arms their bounded state, and the next completed capture ends automatically.
