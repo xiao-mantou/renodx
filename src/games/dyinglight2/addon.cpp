@@ -3195,8 +3195,11 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     CustomDirectXShaders(0x61DBDE91),
     CustomDirectXShaders(0x2280559E),
     CustomDirectXShaders(0x7D1BA5D4),
-    // Keep the later Gamma pass native: it is a power operation with no
-    // explicit range clamp, so replacing it is not required for this fix.
+    // Keep the original power operation in normal rendering, but register the
+    // exact replacement so its bounded post-Gamma probes actually execute.
+    // Its draw callback also keeps the FP16 output active at this final game
+    // color boundary.
+    TargetedDl2HdrShader(0xAD085E81),
     // Disabled: guessed hashes caused crashes because the copied tonemapper
     // template shader has mismatched inputs/outputs.
     // CustomDirectXShaders(0x4d2b3f4d),

@@ -616,3 +616,11 @@ replacement relied only on its custom-shader `on_draw` callback. `0x3E` now
 uses a dedicated output-only command action that performs the same RTV rewrite
 and audit without changing its source descriptor. This both enforces and logs
 the clone binding at the exact ladder draw.
+
+The first boundary comparison reported LUT=203, Gamma=203, and final
+proxy>1300. The Gamma result was not valid: `tonemapper_0xAD085E81` existed in
+the source tree but was not registered in `custom_shaders`, so selecting its
+constant probe still ran the native shader. The exact replacement is now
+registered. Its normal branch retains the original per-channel power formula,
+while its debug branches can finally distinguish a pre-Gamma loss from a
+post-Gamma loss.
