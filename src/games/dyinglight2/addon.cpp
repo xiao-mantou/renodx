@@ -1234,6 +1234,14 @@ struct UpscalerColorPathAuditState {
   bool active = false;
 };
 
+struct UpscalerColorWriterObservation {
+  uint32_t shader_hash = 0u;
+  uint64_t resource = 0u;
+  uint64_t command_list = 0u;
+  uint64_t command_list_epoch = 0u;
+  uint64_t execute_serial = 0u;
+};
+
 struct UpscalerCurveAudit {
   uint64_t resource = 0u;
   uint64_t offset = 0u;
@@ -1315,6 +1323,7 @@ std::unordered_map<uint64_t, uint32_t> upscaler_color_last_writers;
 std::unordered_map<uint64_t, std::vector<uint32_t>> upscaler_color_writer_chains;
 uint64_t upscaler_color_path_capture_serial = 0u;
 std::unordered_map<uint64_t, uint64_t> upscaler_color_command_epochs;
+std::vector<UpscalerColorWriterObservation> upscaler_color_writer_observations;
 uint64_t upscaler_color_execute_serial = 0u;
 UpscalerInputAuditState upscaler_input_audit_state = {};
 uint64_t upscaler_input_audit_capture_serial = 0u;
@@ -2120,10 +2129,6 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
         if (input_writer_hash == 0u && input.resource != 0u) find_input_writer(input.resource);
         if (upscaler_audit.count < upscaler_audit.entries.size()) {
           uint64_t bound_pipeline = 0u;
-          if (command_state != nullptr) {
-            const auto pipeline_it = command_state->pipelines.find(reshade::api::pipeline_stage::all_graphics);
-            if (pipeline_it != command_state->pipelines.end()) bound_pipeline = pipeline_it->second.handle;
-          }
           uint64_t replacement_pipeline = 0u;
           bool replacement_bound = false;
           if (auto* shader_state = renodx::utils::shader::GetCurrentState(context.cmd_list);
@@ -2131,6 +2136,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
             auto* pixel_state = renodx::utils::shader::GetCurrentPixelState(shader_state);
             renodx::utils::shader::PopulateStageState(pixel_state);
             if (pixel_state->pipeline_details != nullptr) {
+              bound_pipeline = pixel_state->pipeline.handle;
               replacement_pipeline = pixel_state->pipeline_details->replacement_pipeline.handle;
               replacement_bound = pixel_state->pipeline_details->is_replacement
                   || (replacement_pipeline != 0u && bound_pipeline == replacement_pipeline);
@@ -2175,6 +2181,14 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
           auto& chain = upscaler_color_writer_chains[resource];
           if (chain.size() < 16u && (chain.empty() || chain.back() != shader_hash)) {
             chain.push_back(shader_hash);
+          }
+          if (shader_hash == 0xBFFC45ACu && upscaler_color_writer_observations.size() < 128u) {
+            upscaler_color_writer_observations.push_back({
+                .shader_hash = shader_hash,
+                .resource = resource,
+                .command_list = reinterpret_cast<uintptr_t>(context.cmd_list),
+                .command_list_epoch = upscaler_color_command_epochs[reinterpret_cast<uintptr_t>(context.cmd_list)],
+            });
           }
         };
         record_writer(output.resource);
@@ -2687,6 +2701,11 @@ void OnDlssFgExecuteCommandList(
           entry.execute_serial = serial;
         }
       }
+      for (auto& observation : upscaler_color_writer_observations) {
+        if (observation.command_list == command_list && observation.command_list_epoch == epoch) {
+          observation.execute_serial = serial;
+        }
+      }
     }
   }
   if (!dlss_fg_mode_active.load(std::memory_order_acquire)) return;
@@ -2948,11 +2967,23 @@ void OnDownstreamDrawCapturePresent(
                << " pipeline=0x" << std::hex << entry.bound_pipeline
                << " replacement=0x" << entry.replacement_pipeline
                << " replacement_bound=" << std::dec << (entry.replacement_bound ? 1 : 0);
+        if (entry.shader_hash == 0xAD085E81u) {
+          const uint64_t input_resource = entry.input.effective != 0u ? entry.input.effective : entry.input.resource;
+          for (const auto& observation : upscaler_color_writer_observations) {
+            if (observation.resource == input_resource) {
+              stream << " bffc_writer_cmd=0x" << std::hex << observation.command_list
+                     << " epoch=" << std::dec << observation.command_list_epoch
+                     << " execute=" << observation.execute_serial;
+              break;
+            }
+          }
+        }
       }
       renodx::utils::log::i(stream.str().c_str());
       audit = {};
       upscaler_color_last_writers.clear();
       upscaler_color_writer_chains.clear();
+      upscaler_color_writer_observations.clear();
       downstream_capture_t0_views.clear();
     }
   }
@@ -3809,6 +3840,7 @@ renodx::utils::settings::Settings settings = {
           };
           upscaler_color_last_writers.clear();
           upscaler_color_writer_chains.clear();
+          upscaler_color_writer_observations.clear();
           downstream_capture_t0_views.clear();
           std::ostringstream stream;
           stream << "DL2 upscaler color path audit armed: capture=" << capture_id
