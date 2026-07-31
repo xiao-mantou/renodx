@@ -1321,8 +1321,22 @@ DlssFgProducerAuditState dlss_fg_producer_audit_state = {};
 DlssFgComputeWriterAuditState dlss_fg_compute_writer_audit_state = {};
 DlssFgTagTransferAuditState dlss_fg_tag_transfer_audit_state = {};
 UpscalerColorPathAuditState upscaler_color_path_audit_state = {};
-std::unordered_map<uint64_t, uint32_t> upscaler_color_last_writers;
-std::unordered_map<uint64_t, std::vector<uint32_t>> upscaler_color_writer_chains;
+struct UpscalerColorWriterKey {
+  uint64_t resource = 0u;
+  uint64_t command_list = 0u;
+  uint64_t epoch = 0u;
+  bool operator==(const UpscalerColorWriterKey&) const = default;
+};
+struct UpscalerColorWriterKeyHash {
+  size_t operator()(const UpscalerColorWriterKey& key) const noexcept {
+    size_t hash = std::hash<uint64_t>{}(key.resource);
+    hash ^= std::hash<uint64_t>{}(key.command_list) + 0x9E3779B97F4A7C15ull + (hash << 6u) + (hash >> 2u);
+    hash ^= std::hash<uint64_t>{}(key.epoch) + 0x9E3779B97F4A7C15ull + (hash << 6u) + (hash >> 2u);
+    return hash;
+  }
+};
+std::unordered_map<UpscalerColorWriterKey, uint32_t, UpscalerColorWriterKeyHash> upscaler_color_last_writers;
+std::unordered_map<UpscalerColorWriterKey, std::vector<uint32_t>, UpscalerColorWriterKeyHash> upscaler_color_writer_chains;
 uint64_t upscaler_color_path_capture_serial = 0u;
 std::unordered_map<uint64_t, uint64_t> upscaler_color_command_epochs;
 std::vector<UpscalerColorWriterObservation> upscaler_color_writer_observations;
@@ -2119,10 +2133,17 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
         uint32_t input_writer_hash = 0u;
         std::array<uint32_t, 16> input_writer_hashes = {};
         uint32_t input_writer_count = 0u;
+        const auto writer_key = UpscalerColorWriterKey{
+            .resource = input.effective != 0u ? input.effective : input.resource,
+            .command_list = reinterpret_cast<uintptr_t>(context.cmd_list),
+            .epoch = upscaler_color_command_epochs[reinterpret_cast<uintptr_t>(context.cmd_list)],
+        };
         const auto find_input_writer = [&](uint64_t resource) {
-          const auto writer = upscaler_color_last_writers.find(resource);
+          auto key = writer_key;
+          key.resource = resource;
+          const auto writer = upscaler_color_last_writers.find(key);
           if (writer != upscaler_color_last_writers.end()) input_writer_hash = writer->second;
-          const auto chain = upscaler_color_writer_chains.find(resource);
+          const auto chain = upscaler_color_writer_chains.find(key);
           if (chain == upscaler_color_writer_chains.end()) return;
           input_writer_count = static_cast<uint32_t>(std::min(chain->second.size(), input_writer_hashes.size()));
           std::copy_n(chain->second.begin(), input_writer_count, input_writer_hashes.begin());
@@ -2179,8 +2200,13 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       if (output.width >= 128u && output.height >= 128u) {
         const auto record_writer = [&](uint64_t resource) {
           if (resource == 0u) return;
-          upscaler_color_last_writers[resource] = shader_hash;
-          auto& chain = upscaler_color_writer_chains[resource];
+          const auto key = UpscalerColorWriterKey{
+              .resource = resource,
+              .command_list = reinterpret_cast<uintptr_t>(context.cmd_list),
+              .epoch = upscaler_color_command_epochs[reinterpret_cast<uintptr_t>(context.cmd_list)],
+          };
+          upscaler_color_last_writers[key] = shader_hash;
+          auto& chain = upscaler_color_writer_chains[key];
           if (chain.size() < 16u && (chain.empty() || chain.back() != shader_hash)) {
             chain.push_back(shader_hash);
           }
