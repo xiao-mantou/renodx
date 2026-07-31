@@ -3332,6 +3332,9 @@ bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
       native_pipeline = pixel_state->pipeline.handle;
       build_ok = renodx::utils::shader::BuildReplacementPipeline(pixel_state->pipeline_details);
       replacement_pipeline = pixel_state->pipeline_details->replacement_pipeline.handle;
+      if (replacement_pipeline != 0u) {
+        cmd_list->bind_pipeline(pixel_state->applied_stage, {replacement_pipeline});
+      }
     }
   }
   std::ostringstream stream;
