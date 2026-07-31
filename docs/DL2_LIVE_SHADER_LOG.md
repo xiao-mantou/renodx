@@ -599,3 +599,12 @@ captured window. Because the scene still measured near 203 nits, the next
 diagnostic starts the existing same-Present writer trace at either `0x268` or
 `0xAD`. This identifies any full-size composite between the scene's proven
 FP16 LUT output and the final proxy without changing shader math or resources.
+
+The raw output ladder then capped its `4.0` and `16.0` patches at the same
+203-nit level as `1.0`, proving that the loss happened at the `0x3E` output
+rather than in the later LUT, composites, or PQ encoder. The target callback
+only rebound render targets when `ActivateCloneHotSwap` changed the activation
+flag. An already-active clone therefore skipped the actual RTV rewrite and
+could leave `0x3E` writing the original UNORM target. The callback now rewrites
+the RTV whenever a live active clone exists, independent of whether activation
+changed on that draw.
