@@ -10,6 +10,7 @@
 
 #include <include/reshade.hpp>
 
+#include "../../mods/swapchain.hpp"
 #include "../../utils/command_action.hpp"
 #include "../../utils/data.hpp"
 #include "../../utils/descriptor.hpp"
@@ -276,6 +277,26 @@ inline bool BindCurrentT0Clone(reshade::api::command_list* cmd_list) {
   return true;
 }
 
+inline void RewriteActiveRenderTargets(reshade::api::command_list* cmd_list) {
+  auto& rtvs = renodx::utils::swapchain::GetRenderTargets(cmd_list);
+  if (rtvs.empty()) return;
+
+  bool has_active_clone = false;
+  for (const auto rtv : rtvs) {
+    if (rtv.handle == 0u) continue;
+    renodx::mods::swapchain::ActivateCloneHotSwap(cmd_list->get_device(), rtv);
+    renodx::utils::resource::GetLiveResourceViewInfo(
+        rtv,
+        [&](const renodx::utils::resource::ResourceViewInfo& info) {
+          has_active_clone = has_active_clone || (info.clone_enabled && info.clone.handle != 0u);
+        });
+  }
+  if (has_active_clone) {
+    renodx::mods::swapchain::RewriteRenderTargets(
+        cmd_list, static_cast<uint32_t>(rtvs.size()), rtvs.data(), {0u});
+  }
+}
+
 template <typename Context>
 inline void RestoreOriginalT0(Context& context, const void*) {
   if (!pending_restore.active) return;
@@ -291,6 +312,7 @@ inline void RestoreOriginalT0(Context& context, const void*) {
 inline constexpr auto OnTargetDraw = []<typename Context>(
                                          Context& context)
     -> renodx::utils::command_action::CallbackResult<Context> {
+  RewriteActiveRenderTargets(context.cmd_list);
   if (!BindCurrentT0Clone(context.cmd_list)) return {};
   return {
       .post_callback = RestoreOriginalT0<Context>,

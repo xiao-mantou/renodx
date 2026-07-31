@@ -574,3 +574,10 @@ now first requires the underlying resource clone to be active, then uses the
 existing resource-upgrade `GetResourceViewClone` path to create/select the
 matching FP16 SRV on demand. It no longer incorrectly requires the original
 SRV's view-level clone flag to be set before that clone view can exist.
+
+The first successful bind log showed the consumer fix was active (`param=7`,
+original t0 view to FP16 clone) while output remained capped at 203 nit. The
+remaining gap is the native `0xAD085E81` Gamma draw: unlike the custom `0x3E`
+and `0x268` replacements, it did not run the DL2 output RTV hot-swap path. The
+target callback now rewrites active render-target views before both target
+draws, so the Gamma output cannot silently return to the original 8-bit RTV.
