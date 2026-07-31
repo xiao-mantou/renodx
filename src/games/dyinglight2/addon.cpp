@@ -55,6 +55,7 @@ float dlss_fg_suppress_color_tags = 0.f;
 float dlss_fg_skip_generated_proxy = 0.f;
 float dlss_fg_bypass_all_proxy = 0.f;
 float dlss_fg_final_color_mode = 0.f;
+float bypass_ui_writers_probe = 0.f;
 bool dlss_fg_tag_capture = false;
 bool dlss_fg_present_cadence_capture = false;
 std::atomic_uint32_t dlss_fg_backbuffer_barrier_capture = 0u;
@@ -3475,6 +3476,32 @@ renodx::mods::shader::CustomShader CreateDl2BffcProbeShader() {
   return shader;
 }
 
+bool OnDl2UiWriterProbeDraw(reshade::api::command_list*) {
+  return bypass_ui_writers_probe < 0.5f;
+}
+
+renodx::mods::shader::CustomShader CreateDl2UiWriterProbeShader(
+    uint32_t crc32,
+    std::span<const uint8_t> dx11_code,
+    std::span<const uint8_t> dx12_code) {
+  auto shader = renodx::mods::shader::CreateDirectXShader(crc32, dx11_code, dx12_code);
+  shader.on_draw = &OnDl2UiWriterProbeDraw;
+  return shader;
+}
+
+renodx::mods::shader::CustomShader CreateDl2UiBypassOnlyProbeShader(uint32_t crc32) {
+  renodx::mods::shader::CustomShader shader = {.crc32 = crc32};
+  shader.on_draw = &OnDl2UiWriterProbeDraw;
+  return shader;
+}
+
+#define Dl2UiWriterProbeShader(__crc32__)                                \
+  {                                                                      \
+      __crc32__, CreateDl2UiWriterProbeShader(                           \
+                     __crc32__,                                          \
+                     RENODX_JOIN_MACRO(__##__crc32__, _dx11),            \
+                     RENODX_JOIN_MACRO(__##__crc32__, _dx12))}
+
 #define TargetedDl2HdrShader(__crc32__)                     \
   {                                                         \
       __crc32__, CreateDl2HdrShader(                        \
@@ -3495,12 +3522,15 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     // typeless target whose scene pass uses an sRGB view. FP16 cloning removes
     // that view distinction, so decode matched UI to Linear BT.709 and apply
     // the dedicated UI-white scale before alpha blending into the HDR scene.
-    CustomDirectXShaders(0x54F3F767),
-    CustomDirectXShaders(0xF34DDC49),
-    CustomDirectXShaders(0x43B22618),
-    CustomDirectXShaders(0x61DBDE91),
-    CustomDirectXShaders(0x2280559E),
-    CustomDirectXShaders(0x7D1BA5D4),
+    Dl2UiWriterProbeShader(0x54F3F767),
+    Dl2UiWriterProbeShader(0xF34DDC49),
+    Dl2UiWriterProbeShader(0x43B22618),
+    Dl2UiWriterProbeShader(0x61DBDE91),
+    Dl2UiWriterProbeShader(0x2280559E),
+    Dl2UiWriterProbeShader(0x7D1BA5D4),
+    {0xEDC2563Au, CreateDl2UiBypassOnlyProbeShader(0xEDC2563Au)},
+    {0x2BECAD9Cu, CreateDl2UiBypassOnlyProbeShader(0x2BECAD9Cu)},
+    {0xC6ADA2E9u, CreateDl2UiBypassOnlyProbeShader(0xC6ADA2E9u)},
     // Full-screen post-LUT blit. The normal branch is bytecode-equivalent in
     // intent; its debug branch isolates the boundary before UI composition.
     {0xBFFC45ACu, CreateDl2BffcProbeShader()},
@@ -3955,6 +3985,17 @@ renodx::utils::settings::Settings settings = {
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
+        .key = "BypassUIWritersProbe",
+        .binding = &bypass_ui_writers_probe,
+        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "Bypass UI Writers (BFFC Probe)",
+        .section = "Debug",
+        .tooltip = "Diagnostic only. With the fixed-bright BFFC probe active, skips the known UI composite writers to determine whether they overwrite the scene base. UI disappearance is expected.",
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
         .key = "DLSSFGBypassAllProxy",
         .binding = &dlss_fg_bypass_all_proxy,
         .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
@@ -4167,6 +4208,7 @@ void OnPresetOff() {
       {"DLSSFGSuppressPrePQTags", 0.f},
       {"DLSSFGSkipGeneratedProxy", 0.f},
       {"DLSSFGBypassAllProxy", 0.f},
+      {"BypassUIWritersProbe", 0.f},
       {"DebugMode", 0.f},
       {"CaptureDownstreamDraws", 0.f},
       {"CaptureDownstreamTransfers", 0.f},
