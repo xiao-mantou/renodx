@@ -3312,6 +3312,59 @@ renodx::mods::shader::CustomShader CreateDl2HdrShader(
   return shader;
 }
 
+bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
+  static std::atomic<uint32_t> remaining{24u};
+  uint32_t expected = remaining.load(std::memory_order_relaxed);
+  while (expected != 0u
+         && !remaining.compare_exchange_weak(
+             expected, expected - 1u, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+  }
+  if (expected == 0u) return true;
+
+  auto* state = renodx::utils::shader::GetCurrentState(cmd_list);
+  uint64_t native_pipeline = 0u;
+  uint64_t replacement_pipeline = 0u;
+  bool build_ok = false;
+  if (state != nullptr) {
+    auto* pixel_state = renodx::utils::shader::GetCurrentPixelState(state);
+    renodx::utils::shader::PopulateStageState(pixel_state);
+    if (pixel_state->pipeline_details != nullptr) {
+      native_pipeline = pixel_state->pipeline.handle;
+      build_ok = renodx::utils::shader::BuildReplacementPipeline(pixel_state->pipeline_details);
+      replacement_pipeline = pixel_state->pipeline_details->replacement_pipeline.handle;
+    }
+  }
+  std::ostringstream stream;
+  stream << "DL2 BFFC replacement probe: cmd=0x" << std::hex
+         << reinterpret_cast<uintptr_t>(cmd_list)
+         << " native=0x" << native_pipeline
+         << " replacement=0x" << replacement_pipeline
+         << " build=" << std::dec << (build_ok ? 1 : 0)
+         << " remaining=" << (expected - 1u);
+  renodx::utils::log::i(stream.str().c_str());
+  return true;
+}
+
+void OnDl2BffcProbeDrawn(reshade::api::command_list* cmd_list) {
+  auto* state = renodx::utils::shader::GetCurrentState(cmd_list);
+  std::ostringstream stream;
+  stream << "DL2 BFFC replacement probe post-draw: cmd=0x"
+         << std::hex << reinterpret_cast<uintptr_t>(cmd_list);
+  if (state != nullptr) {
+    auto* pixel_state = renodx::utils::shader::GetCurrentPixelState(state);
+    stream << " pipeline=0x" << pixel_state->pipeline.handle;
+  }
+  renodx::utils::log::i(stream.str().c_str());
+}
+
+renodx::mods::shader::CustomShader CreateDl2BffcProbeShader() {
+  auto shader = renodx::mods::shader::CreateDirectXShader(
+      0xBFFC45ACu, __0xBFFC45AC_dx11, __0xBFFC45AC_dx12);
+  shader.on_draw = &OnDl2BffcProbeDraw;
+  shader.on_drawn = &OnDl2BffcProbeDrawn;
+  return shader;
+}
+
 #define TargetedDl2HdrShader(__crc32__)                     \
   {                                                         \
       __crc32__, CreateDl2HdrShader(                        \
@@ -3340,7 +3393,7 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     CustomDirectXShaders(0x7D1BA5D4),
     // Full-screen post-LUT blit. The normal branch is bytecode-equivalent in
     // intent; its debug branch isolates the boundary before UI composition.
-    CustomDirectXShaders(0xBFFC45AC),
+    {0xBFFC45ACu, CreateDl2BffcProbeShader()},
     // Keep the original power operation in normal rendering, but register the
     // exact replacement so its bounded post-Gamma probes actually execute.
     // Its draw callback also keeps the FP16 output active at this final game
