@@ -608,3 +608,11 @@ flag. An already-active clone therefore skipped the actual RTV rewrite and
 could leave `0x3E` writing the original UNORM target. The callback now rewrites
 the RTV whenever a live active clone exists, independent of whether activation
 changed on that draw.
+
+That callback change alone did not lift the raw ladder above 203 nits. The
+remaining asymmetry was callback placement: `0x268` and `0xAD` also used the
+verified `command_action` draw boundary, while the ladder-producing `0x3E`
+replacement relied only on its custom-shader `on_draw` callback. `0x3E` now
+uses a dedicated output-only command action that performs the same RTV rewrite
+and audit without changing its source descriptor. This both enforces and logs
+the clone binding at the exact ladder draw.

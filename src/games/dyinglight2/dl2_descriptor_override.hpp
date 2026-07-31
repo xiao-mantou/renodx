@@ -372,6 +372,13 @@ inline constexpr auto OnTargetDraw = []<typename Context>(
   };
 };
 
+inline constexpr auto OnTargetOutputDraw = []<typename Context>(
+                                               Context& context)
+    -> renodx::utils::command_action::CallbackResult<Context> {
+  RewriteActiveRenderTargets(context.cmd_list, context.matched_shader_hash);
+  return {};
+};
+
 inline void OnDestroyDevice(reshade::api::device* device) {
   if (device == nullptr) return;
   std::scoped_lock lock(table_mutex);
