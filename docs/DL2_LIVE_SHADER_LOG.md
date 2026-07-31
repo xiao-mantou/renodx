@@ -647,3 +647,8 @@ temporary diagnostic removes `shared.h` from `0xBFFC45AC` and writes `6.25`
 unconditionally. It is intentionally not a usable gameplay build: its only
 purpose is to prove whether this exact blit reaches the final scene chain
 without depending on injected settings.
+
+The unconditional probe remained at 203, so it was restored immediately to the
+normal blit plus the opt-in mode-27 branch. This rules out `0xBFFC45AC` as the
+effective final writer; future tracing should anchor on the swapchain proxy
+source resource itself.
