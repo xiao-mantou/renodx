@@ -3345,13 +3345,61 @@ bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
   }
   GammaAuditResource input = {};
   GammaAuditResource output = {};
-  const auto target_it = downstream_capture_rtvs.find(cmd_list);
-  if (target_it != downstream_capture_rtvs.end()) {
-    auto* device = cmd_list->get_device();
-    output = DescribeGammaAuditView(device, target_it->second);
-    const auto input_it = downstream_capture_t0_views.find(cmd_list);
-    if (input_it != downstream_capture_t0_views.end()) {
-      input = DescribeGammaAuditView(device, input_it->second);
+  auto* device = cmd_list->get_device();
+  if (state != nullptr) {
+    auto* command_state = renodx::utils::state::GetCurrentState(cmd_list);
+    if (command_state != nullptr && !command_state->render_targets.empty()) {
+      output = DescribeGammaAuditView(device, command_state->render_targets[0]);
+      auto* descriptor_data = renodx::utils::data::Get<renodx::utils::descriptor::DeviceData>(device);
+      uint64_t best_area = 0u;
+      if (descriptor_data != nullptr) {
+        renodx::utils::pipeline_layout::GetPipelineLayoutData(
+            command_state->graphics_pipeline_layout,
+            [&](const renodx::utils::pipeline_layout::PipelineLayoutData* layout_data) {
+              for (uint32_t table_index = 0u;
+                   table_index < layout_data->params.size()
+                   && table_index < command_state->graphics_descriptor_tables.size(); ++table_index) {
+                const auto& param = layout_data->params[table_index];
+                if (param.type != reshade::api::pipeline_layout_param_type::descriptor_table) continue;
+                for (uint32_t range_index = 0u; range_index < param.descriptor_table.count; ++range_index) {
+                  const auto& range = param.descriptor_table.ranges[range_index];
+                  if (range.type != reshade::api::descriptor_type::sampler_with_resource_view
+                      && range.type != reshade::api::descriptor_type::texture_shader_resource_view) continue;
+                  const uint32_t count = std::min(range.count, 64u);
+                  for (uint32_t offset = 0u; offset < count; ++offset) {
+                    const auto table = command_state->graphics_descriptor_tables[table_index];
+                    if (table.handle == 0u) continue;
+                    reshade::api::descriptor_heap heap = {};
+                    uint32_t heap_offset = 0u;
+                    device->get_descriptor_heap_offset(table, range.binding + offset, 0u, &heap, &heap_offset);
+                    renodx::utils::descriptor::DescriptorHeapSlot slot = {};
+                    bool found_slot = false;
+                    {
+                      const std::shared_lock descriptor_lock(descriptor_data->mutex);
+                      const auto heap_it = descriptor_data->heaps.find(heap.handle);
+                      if (heap_it != descriptor_data->heaps.end() && heap_offset < heap_it->second.size()) {
+                        slot = heap_it->second[heap_offset];
+                        found_slot = true;
+                      }
+                    }
+                    if (!found_slot || !slot.HasResourceView()) continue;
+                    const auto candidate = DescribeGammaAuditView(device, slot.resource_view);
+                    if (candidate.resource == 0u || candidate.resource == output.resource
+                        || candidate.width < output.width / 2u || candidate.height < output.height / 2u
+                        || candidate.width == 0u || candidate.height == 0u) continue;
+                    const float output_aspect = static_cast<float>(output.width) / output.height;
+                    const float input_aspect = static_cast<float>(candidate.width) / candidate.height;
+                    if (std::abs(input_aspect - output_aspect) > output_aspect * 0.12f) continue;
+                    const uint64_t area = static_cast<uint64_t>(candidate.width) * candidate.height;
+                    if (area > best_area) {
+                      best_area = area;
+                      input = candidate;
+                    }
+                  }
+                }
+              }
+            });
+      }
     }
   }
   const uint64_t epoch = upscaler_color_command_epochs[reinterpret_cast<uintptr_t>(cmd_list)];
