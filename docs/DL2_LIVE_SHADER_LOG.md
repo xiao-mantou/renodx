@@ -581,3 +581,12 @@ remaining gap is the native `0xAD085E81` Gamma draw: unlike the custom `0x3E`
 and `0x268` replacements, it did not run the DL2 output RTV hot-swap path. The
 target callback now rewrites active render-target views before both target
 draws, so the Gamma output cannot silently return to the original 8-bit RTV.
+
+Because the output rewrite did not visibly move the 203-nit cap and the main
+menu alternated between normal and white-model frames, the next build adds a
+bounded per-resource output audit for both target hashes. It records original,
+clone, and rebound RTV handles; resource/view formats; resource/view clone
+activation; and whether a rewrite was issued. The same build therefore
+distinguishes menu-only resource reuse from a scene Gamma output that never
+actually reaches its FP16 RTV. `output-audit-v1` is logged at addon attach so a
+runtime log can identify this build unambiguously.

@@ -7,6 +7,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <include/reshade.hpp>
 
@@ -60,6 +61,8 @@ inline std::unordered_map<TableKey, reshade::api::descriptor_table, TableKeyHash
 inline thread_local RestoreBinding pending_restore = {};
 inline std::atomic_uint32_t success_log_count = 0u;
 inline std::atomic_uint32_t skip_log_count = 0u;
+inline std::mutex output_audit_mutex;
+inline std::unordered_set<uint64_t> output_audit_keys;
 
 inline void LogSkip(const char* reason) {
   if (skip_log_count.fetch_add(1u, std::memory_order_relaxed) >= 12u) return;
@@ -118,7 +121,7 @@ inline reshade::api::descriptor_table GetOrCreateCloneTable(
   return table;
 }
 
-inline bool BindCurrentT0Clone(reshade::api::command_list* cmd_list) {
+inline bool BindCurrentT0Clone(reshade::api::command_list* cmd_list, uint32_t shader_hash) {
   if (cmd_list == nullptr) return false;
   auto* device = cmd_list->get_device();
   if (device == nullptr || device->get_api() != reshade::api::device_api::d3d12) return false;
@@ -266,7 +269,8 @@ inline bool BindCurrentT0Clone(reshade::api::command_list* cmd_list) {
 
   if (success_log_count.fetch_add(1u, std::memory_order_relaxed) < 12u) {
     renodx::utils::log::i(
-        "DL2 targeted t0 clone bind: layout=", renodx::utils::log::AsPtr(state->graphics_pipeline_layout.handle),
+        "DL2 targeted t0 clone bind: shader=", renodx::utils::log::AsHex(shader_hash),
+        " layout=", renodx::utils::log::AsPtr(state->graphics_pipeline_layout.handle),
         " param=", layout_param,
         " binding=", binding,
         " table=", renodx::utils::log::AsPtr(original_table.handle),
@@ -277,23 +281,70 @@ inline bool BindCurrentT0Clone(reshade::api::command_list* cmd_list) {
   return true;
 }
 
-inline void RewriteActiveRenderTargets(reshade::api::command_list* cmd_list) {
-  auto& rtvs = renodx::utils::swapchain::GetRenderTargets(cmd_list);
+inline void RewriteActiveRenderTargets(reshade::api::command_list* cmd_list, uint32_t shader_hash) {
+  const auto rtvs = renodx::utils::swapchain::GetRenderTargets(cmd_list);
   if (rtvs.empty()) return;
 
   bool has_active_clone = false;
+  reshade::api::resource_view first_clone = {0u};
+  reshade::api::resource first_resource = {0u};
+  reshade::api::format first_resource_format = reshade::api::format::unknown;
+  reshade::api::format first_view_format = reshade::api::format::unknown;
+  bool first_resource_clone_enabled = false;
+  bool first_view_clone_enabled = false;
   for (const auto rtv : rtvs) {
     if (rtv.handle == 0u) continue;
     renodx::mods::swapchain::ActivateCloneHotSwap(cmd_list->get_device(), rtv);
+    if (first_resource.handle == 0u) {
+      first_resource = cmd_list->get_device()->get_resource_from_view(rtv);
+      first_resource_format = cmd_list->get_device()->get_resource_desc(first_resource).texture.format;
+      first_view_format = cmd_list->get_device()->get_resource_view_desc(rtv).format;
+      renodx::utils::resource::GetLiveResourceInfo(
+          first_resource,
+          [&](const renodx::utils::resource::ResourceInfo& info) {
+            first_resource_clone_enabled = info.clone_enabled;
+          });
+    }
     renodx::utils::resource::GetLiveResourceViewInfo(
         rtv,
         [&](const renodx::utils::resource::ResourceViewInfo& info) {
           has_active_clone = has_active_clone || (info.clone_enabled && info.clone.handle != 0u);
+          if (first_clone.handle == 0u && info.clone.handle != 0u) first_clone = info.clone;
+          if (rtv == rtvs.front()) first_view_clone_enabled = info.clone_enabled;
         });
   }
   if (has_active_clone) {
     renodx::mods::swapchain::RewriteRenderTargets(
         cmd_list, static_cast<uint32_t>(rtvs.size()), rtvs.data(), {0u});
+  }
+
+  const auto& rebound_rtvs = renodx::utils::swapchain::GetRenderTargets(cmd_list);
+  const auto rebound = rebound_rtvs.empty() ? reshade::api::resource_view{0u} : rebound_rtvs.front();
+  uint64_t audit_key = shader_hash;
+  const auto combine = [&audit_key](uint64_t value) {
+    audit_key ^= value + 0x9E3779B97F4A7C15ull + (audit_key << 6u) + (audit_key >> 2u);
+  };
+  combine(rtvs.front().handle);
+  combine(first_clone.handle);
+  combine(rebound.handle);
+  combine(first_resource_clone_enabled ? 1u : 0u);
+  bool should_log = false;
+  {
+    std::scoped_lock lock(output_audit_mutex);
+    should_log = output_audit_keys.size() < 64u && output_audit_keys.insert(audit_key).second;
+  }
+  if (should_log) {
+    renodx::utils::log::i(
+        "DL2 target output audit: shader=", renodx::utils::log::AsHex(shader_hash),
+        " rtv=", renodx::utils::log::AsPtr(rtvs.front().handle),
+        " clone=", renodx::utils::log::AsPtr(first_clone.handle),
+        " rebound=", renodx::utils::log::AsPtr(rebound.handle),
+        " resource=", renodx::utils::log::AsPtr(first_resource.handle),
+        " format=", static_cast<uint32_t>(first_resource_format),
+        " view_format=", static_cast<uint32_t>(first_view_format),
+        " resource_active=", first_resource_clone_enabled ? 1 : 0,
+        " view_active=", first_view_clone_enabled ? 1 : 0,
+        " rewrite=", has_active_clone ? 1 : 0);
   }
 }
 
@@ -312,8 +363,9 @@ inline void RestoreOriginalT0(Context& context, const void*) {
 inline constexpr auto OnTargetDraw = []<typename Context>(
                                          Context& context)
     -> renodx::utils::command_action::CallbackResult<Context> {
-  RewriteActiveRenderTargets(context.cmd_list);
-  if (!BindCurrentT0Clone(context.cmd_list)) return {};
+  const uint32_t shader_hash = context.matched_shader_hash;
+  RewriteActiveRenderTargets(context.cmd_list, shader_hash);
+  if (!BindCurrentT0Clone(context.cmd_list, shader_hash)) return {};
   return {
       .post_callback = RestoreOriginalT0<Context>,
       .post_data = nullptr,

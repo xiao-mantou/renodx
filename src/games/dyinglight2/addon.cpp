@@ -3901,6 +3901,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           renodx::games::dyinglight2::descriptor_override::OnTargetDraw,
           {.shader_hash = 0xAD085E81u,
            .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+      renodx::utils::log::i("DL2 scoped clone diagnostic: output-audit-v1");
       reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
       reshade::register_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
       reshade::register_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
