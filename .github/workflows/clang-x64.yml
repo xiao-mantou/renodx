@@ -50,8 +50,12 @@ jobs:
         with:
           arch: amd64
 
+      - name: Set build revision
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value "RENODX_BUILD_VERSION=$($env:GITHUB_SHA.Substring(0, 7))"
+
       - name: Configure CMake (x64)
-        run: cmake --preset clang-x64 -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+        run: cmake --preset clang-x64 -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DRENODX_BUILD_VERSION=$env:RENODX_BUILD_VERSION
 
       - name: Build (x64)
         run: cmake --build --preset clang-x64-release --target dyinglight2 --verbose

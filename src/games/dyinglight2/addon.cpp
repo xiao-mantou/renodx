@@ -29,6 +29,7 @@
 
 #include "../../mods/shader.hpp"
 #include "../../mods/swapchain.hpp"
+#include "../../utils/build_info.hpp"
 #include "../../utils/descriptor.hpp"
 #include "../../utils/constants.hpp"
 #include "../../utils/log.hpp"
@@ -1102,6 +1103,7 @@ struct DownstreamDrawCaptureState {
   bool consumed = false;
   bool capture_commands = false;
   bool capture_transfers = false;
+  uint32_t anchor_shader_hash = 0u;
   uint64_t gamma_target = 0u;
   reshade::api::format gamma_target_format = reshade::api::format::unknown;
   uint32_t gamma_target_width = 0u;
@@ -2164,7 +2166,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   }
 
   if (!capture.active) {
-    if (!is_compute && shader_hash == 0xAD085E81u) {
+    if (!is_compute && (shader_hash == 0x268BAB6Du || shader_hash == 0xAD085E81u)) {
       capture.count = 0u;
       capture.transfer_count = 0u;
       capture.targets.fill({});
@@ -2173,6 +2175,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       capture.active = true;
       capture.capture_commands = capture_commands;
       capture.capture_transfers = capture_transfers;
+      capture.anchor_shader_hash = shader_hash;
       if (capture_commands || capture_transfers) {
         const auto target = downstream_capture_rtvs.find(context.cmd_list);
         if (target != downstream_capture_rtvs.end()) {
@@ -3019,7 +3022,9 @@ void OnDownstreamDrawCapturePresent(
 
   if (capture.capture_commands) {
     std::stringstream stream;
-    stream << "DL2 same-Present command candidates after 0xAD085E81 (" << capture.count << "):";
+    stream << "DL2 same-Present command candidates after 0x"
+           << std::hex << std::uppercase << capture.anchor_shader_hash
+           << std::dec << std::nouppercase << " (" << capture.count << "):";
     for (uint32_t index = 0u; index < capture.count; ++index) {
       stream << " " << (capture.is_compute[index] ? "CS" : "PS") << ":0x"
              << std::hex << std::uppercase << capture.hashes[index];
@@ -3035,7 +3040,7 @@ void OnDownstreamDrawCapturePresent(
       }
       const auto& input = capture.inputs[index];
       if (input.resource != 0u) {
-        const bool reads_gamma = input.resource == capture.gamma_target
+        const bool reads_anchor = input.resource == capture.gamma_target
             || input.resource == capture.gamma_target_clone
             || input.resource == capture.gamma_target_effective
             || input.effective == capture.gamma_target
@@ -3045,7 +3050,7 @@ void OnDownstreamDrawCapturePresent(
                << "=>0x" << input.effective << ", " << static_cast<uint32_t>(input.effective_format)
                << ", view=" << static_cast<uint32_t>(input.view_format) << "=>"
                << static_cast<uint32_t>(input.effective_view_format)
-               << ", gamma=" << (reads_gamma ? "yes" : "no") << ")";
+               << ", anchor=" << (reads_anchor ? "yes" : "no") << ")";
       }
     }
     reshade::log::message(reshade::log::level::info, stream.str().c_str());
@@ -3751,7 +3756,7 @@ renodx::utils::settings::Settings settings = {
         .can_reset = false,
         .label = "Capture Post-Gamma UI Candidates",
         .section = "Debug",
-        .tooltip = "One-shot, records the three known popup shaders plus full-size pixel composites after 0xAD085E81 until the next Present. Logs original/effective SRV and RTV view formats; filters low-resolution scene and compute work so the main-menu UI cannot be displaced. No mutation, readback, or dumping.",
+        .tooltip = "One-shot, records full-size pixel composites after the first scene LUT (0x268BAB6D) or menu Gamma (0xAD085E81) draw until the next Present. Logs original/effective SRV and RTV view formats. No mutation, readback, or dumping.",
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -3762,7 +3767,7 @@ renodx::utils::settings::Settings settings = {
         .can_reset = false,
         .label = "Capture Post-Gamma Transfers",
         .section = "Debug",
-        .tooltip = "One-shot, records up to 16 unique copy or resolve operations after 0xAD085E81 until the next Present. It records only resource handles and formats, with no readback or interception.",
+        .tooltip = "One-shot, records up to 16 unique copy or resolve operations after the first scene LUT (0x268BAB6D) or menu Gamma (0xAD085E81) draw until the next Present. It records only resource handles and formats, with no readback or interception.",
         .is_visible = []() { return current_settings_mode >= 2; },
     },
       new renodx::utils::settings::Setting{
@@ -3901,6 +3906,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           renodx::games::dyinglight2::descriptor_override::OnTargetDraw,
           {.shader_hash = 0xAD085E81u,
            .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+      renodx::utils::log::i("DL2 build: ", renodx::build_info::kBuildVersion);
       renodx::utils::log::i("DL2 scoped clone diagnostic: output-audit-v1");
       reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
       reshade::register_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);

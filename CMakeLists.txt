@@ -38,6 +38,8 @@ endif()
 
 project(renodx VERSION 0.1.0 LANGUAGES CXX)
 
+set(RENODX_BUILD_VERSION "unknown" CACHE STRING "Source revision embedded in addon diagnostics")
+
 include(CTest)
 enable_testing()
 
@@ -671,6 +673,9 @@ foreach(FILE ${ADDON_FILES})
   add_compile_options(/bigobj)
   add_compile_definitions(NOMINMAX)
   add_library(${ADDON} MODULE ${FILE})
+  if(ADDON STREQUAL "dyinglight2")
+    target_compile_definitions(${ADDON} PRIVATE RENODX_BUILD_VERSION="${RENODX_BUILD_VERSION}")
+  endif()
   build_shader_target(${ADDON} ${ADDON_PATH})
   generate_resource_rc(${ADDON})
   add_dependencies(${ADDON} ${ADDON}-shaders)

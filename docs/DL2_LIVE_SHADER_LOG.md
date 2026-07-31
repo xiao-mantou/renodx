@@ -590,3 +590,12 @@ activation; and whether a rewrite was issued. The same build therefore
 distinguishes menu-only resource reuse from a scene Gamma output that never
 actually reaches its FP16 RTV. `output-audit-v1` is logged at addon attach so a
 runtime log can identify this build unambiguously.
+
+The first `output-audit-v1` capture separated two runtime branches that had
+previously been treated as one fixed chain. Initial main-menu frames reached
+`0xAD085E81` with an active R10/FP16 clone pair, while the game scene reached
+`0x268BAB6D` on an FP16 output and did not execute the same Gamma draw in the
+captured window. Because the scene still measured near 203 nits, the next
+diagnostic starts the existing same-Present writer trace at either `0x268` or
+`0xAD`. This identifies any full-size composite between the scene's proven
+FP16 LUT output and the final proxy without changing shader math or resources.
