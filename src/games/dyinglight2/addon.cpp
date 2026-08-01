@@ -4359,7 +4359,7 @@ extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION = "RenoDX for
 
 BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   switch (fdw_reason) {
-    case DLL_PROCESS_ATTACH:
+    case DLL_PROCESS_ATTACH: {
       if (!reshade::register_addon(h_module)) return FALSE;
 
       // This bounded diagnostic needs the D3D12 descriptor heap and command
@@ -4511,6 +4511,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::register_event<reshade::addon_event::init_device>(OnInitDevice);
 
       break;
+    }
     case DLL_PROCESS_DETACH:
       renodx::utils::command_action::Unregister(OnDownstreamDrawCapture);
       renodx::utils::command_action::Unregister(OnGammaDrawAudit);
