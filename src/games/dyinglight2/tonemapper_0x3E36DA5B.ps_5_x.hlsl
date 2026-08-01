@@ -204,6 +204,28 @@ void main(
     return;
   }
 
+  // DLSS Off color grid. All quadrants start from the same tone-mapped HDR
+  // value so this compares only the missing color treatment, not exposure or
+  // peak brightness. Top-left is the current path; top-right blends half of
+  // the legacy intermediate encoding; bottom-left/right apply progressively
+  // stronger linear-light chroma recovery while preserving BT.709 luminance.
+  if (RENODX_DEBUG_MODE > 27.5 && RENODX_DEBUG_MODE < 28.5) {
+    const float3 current = RENODX_TONE_MAP_TYPE == 0.0
+        ? vanilla
+        : ScaleToneMappedScene(renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr));
+    const float luminance = renodx::color::y::from::BT709(max(current, 0.0));
+    const float3 chroma_115 = lerp(luminance.xxx, current, 1.15);
+    const float3 chroma_130 = lerp(luminance.xxx, current, 1.30);
+    const bool right = v1.x >= 0.5;
+    const bool bottom = v1.y >= 0.5;
+    o0.rgb = !bottom && !right ? current
+        : !bottom && right ? lerp(current, renodx::draw::RenderIntermediatePass(current), 0.5)
+        : bottom && !right ? chroma_115
+        : chroma_130;
+    o0.a = source.a;
+    return;
+  }
+
   // This reaches the game's subsequent composite passes, unlike the output
   // probe in the swapchain proxy. With Peak=500 and Game=100, the scene area
   // should measure 500 nits if no later pass normalizes it back to SDR.
