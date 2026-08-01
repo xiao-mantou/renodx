@@ -26,9 +26,9 @@ namespace renodx::games::dyinglight2::descriptor_override {
 struct TableKey {
   reshade::api::device* device = nullptr;
   uint64_t layout = 0u;
+  uint64_t command_list = 0u;
   uint32_t layout_param = 0u;
   uint32_t binding = 0u;
-  uint64_t original_table = 0u;
   uint64_t clone_view = 0u;
 
   bool operator==(const TableKey&) const = default;
@@ -41,9 +41,9 @@ struct TableKeyHash {
       value ^= std::hash<uint64_t>{}(item) + 0x9E3779B97F4A7C15ull + (value << 6u) + (value >> 2u);
     };
     combine(key.layout);
+    combine(key.command_list);
     combine(key.layout_param);
     combine(key.binding);
-    combine(key.original_table);
     combine(key.clone_view);
     return value;
   }
@@ -70,6 +70,7 @@ inline void LogSkip(const char* reason) {
 }
 
 inline reshade::api::descriptor_table GetOrCreateCloneTable(
+    reshade::api::command_list* cmd_list,
     reshade::api::device* device,
     reshade::api::pipeline_layout layout,
     uint32_t layout_param,
@@ -80,21 +81,22 @@ inline reshade::api::descriptor_table GetOrCreateCloneTable(
   const TableKey key = {
       .device = device,
       .layout = layout.handle,
+      .command_list = reinterpret_cast<uintptr_t>(cmd_list),
       .layout_param = layout_param,
       .binding = binding,
-      .original_table = original_table.handle,
       .clone_view = clone_view.handle,
   };
 
   std::scoped_lock lock(table_mutex);
-  if (const auto existing = clone_tables.find(key); existing != clone_tables.end()) {
-    return existing->second;
-  }
-
   reshade::api::descriptor_table table = {0u};
-  if (!device->allocate_descriptor_table(layout, layout_param, &table) || table.handle == 0u) {
-    LogSkip("replacement table allocation failed");
-    return {0u};
+  if (const auto existing = clone_tables.find(key); existing != clone_tables.end()) {
+    table = existing->second;
+  } else {
+    if (!device->allocate_descriptor_table(layout, layout_param, &table) || table.handle == 0u) {
+      LogSkip("replacement table allocation failed");
+      return {0u};
+    }
+    clone_tables.emplace(key, table);
   }
 
   const reshade::api::descriptor_table_copy copy = {
@@ -117,7 +119,6 @@ inline reshade::api::descriptor_table GetOrCreateCloneTable(
       .descriptors = &clone_view,
   };
   device->update_descriptor_tables(1u, &update);
-  clone_tables.emplace(key, table);
   return table;
 }
 
@@ -246,6 +247,7 @@ inline bool BindCurrentT0Clone(reshade::api::command_list* cmd_list, uint32_t sh
   }
 
   const auto replacement_table = GetOrCreateCloneTable(
+      cmd_list,
       device,
       state->graphics_pipeline_layout,
       layout_param,
