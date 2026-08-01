@@ -295,6 +295,23 @@ inline void RewriteActiveRenderTargets(reshade::api::command_list* cmd_list, uin
   for (const auto rtv : rtvs) {
     if (rtv.handle == 0u) continue;
     renodx::mods::swapchain::ActivateCloneHotSwap(cmd_list->get_device(), rtv);
+    // The 0x268 output resource can already be clone-active while this exact
+    // sRGB RTV has no clone view. In that state RewriteRenderTargets silently
+    // keeps the original UNORM view and clamps HDR values above 1. Create only
+    // the missing view here; do not change resource activation or other draws.
+    if (shader_hash == 0x268BAB6Du) {
+      const auto created_clone = renodx::utils::resource::upgrade::GetResourceViewClone(
+          rtv,
+          {
+              .require_enabled = false,
+              .allow_create = true,
+              .activate = false,
+          });
+      if (created_clone.handle != 0u) {
+        has_active_clone = true;
+        if (first_clone.handle == 0u) first_clone = created_clone;
+      }
+    }
     if (first_resource.handle == 0u) {
       first_resource = cmd_list->get_device()->get_resource_from_view(rtv);
       first_resource_format = cmd_list->get_device()->get_resource_desc(first_resource).texture.format;
