@@ -4382,8 +4382,12 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .new_format = reshade::api::format::r16g16b16a16_float,
           .ignore_size = false,
           .use_resource_view_cloning = true,
-          .use_resource_view_hot_swap = true,
-          .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::BACK_BUFFER,
+          .use_resource_view_hot_swap = false,
+          // The 0x3E -> 0x268 -> 0xAD intermediate is typeless but is not the
+          // swapchain backbuffer. Keep the size gate so unrelated render
+          // targets are excluded while allowing this full-size chain to get a
+          // coherent FP16 resource and all of its views.
+          .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
           .usage_include = reshade::api::resource_usage::render_target,
       });
 
