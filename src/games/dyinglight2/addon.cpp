@@ -4023,6 +4023,36 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture 268 Resource Lifecycle (4 Presents)",
+        .section = "Debug",
+        .tooltip = "One-shot read-only capture. Arms the 268 post-LUT target snapshot and the four-Present 3E/268/AD path audit together, including clone/effective RTV views, downstream readers, copies, formats, and rotating resources.",
+        .on_click = []() {
+          std::scoped_lock lock(downstream_draw_capture_mutex);
+          downstream_draw_capture = 1.f;
+          downstream_transfer_capture = 1.f;
+          downstream_draw_capture_state = {};
+          downstream_capture_t0_views.clear();
+
+          const uint64_t capture_id = ++upscaler_color_path_capture_serial;
+          const uint64_t generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
+          upscaler_color_path_audit_state = {
+              .capture_id = capture_id,
+              .start_generation = generation,
+              .active = true,
+          };
+          upscaler_color_last_writers.clear();
+          upscaler_color_writer_chains.clear();
+          upscaler_color_writer_observations.clear();
+          std::ostringstream stream;
+          stream << "DL2 268 resource lifecycle audit armed: capture=" << capture_id
+                 << " generation=" << generation;
+          renodx::utils::log::i(stream.str().c_str());
+          return false;
+        },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture Targeted DLSS Color Path (4 Presents)",
         .section = "Debug",
         .tooltip = "One-shot: records only DL2's known Tonemapper (0x3E36DA5B), LUT (0x268BAB6D), and Gamma (0xAD085E81) passes for four Presents, including execution order, t0/RTV resources, formats, dimensions, clone state, API, and swapchain generation. No readback or resource mutation.",
