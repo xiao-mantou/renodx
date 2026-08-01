@@ -83,5 +83,11 @@ void main(
   }
 
   o0.rgb = exp2(cb0[0].xxx * log2(abs(input_color.rgb)));
+  if (RENODX_DEBUG_MODE > 29.5 && RENODX_DEBUG_MODE < 30.5) {
+    const float luminance = renodx::color::y::from::BT709(max(o0.rgb, 0.0));
+    const uint quadrant = (v1.x >= 0.5 ? 1u : 0u) + (v1.y >= 0.5 ? 2u : 0u);
+    const float strengths[4] = {1.0, 1.1, 1.2, 1.3};
+    o0.rgb = lerp(luminance.xxx, o0.rgb, strengths[quadrant]);
+  }
   o0.a = input_color.a;
 }

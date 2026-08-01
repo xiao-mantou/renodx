@@ -78,5 +78,14 @@ float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
     return float4(renodx::draw::SwapChainPass(t0.Sample(s0, tile_uv).rgb, tile_uv, config).rgb, 1.f);
   }
 
+  if (RENODX_DEBUG_MODE > 30.5 && RENODX_DEBUG_MODE < 31.5) {
+    float3 input_color = t0.Sample(s0, uv).rgb;
+    const float luminance = renodx::color::y::from::BT709(max(input_color, 0.0));
+    const uint quadrant = (uv.x >= 0.5 ? 1u : 0u) + (uv.y >= 0.5 ? 2u : 0u);
+    const float strengths[4] = {1.0, 1.1, 1.2, 1.3};
+    input_color = lerp(luminance.xxx, input_color, strengths[quadrant]);
+    return float4(renodx::draw::SwapChainPass(input_color, uv, config).rgb, 1.f);
+  }
+
   return float4(renodx::draw::SwapChainPass(t0.Sample(s0, uv).rgb, uv, config).rgb, 1.f);
 }
