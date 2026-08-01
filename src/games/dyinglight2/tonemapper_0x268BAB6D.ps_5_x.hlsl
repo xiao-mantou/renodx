@@ -16,6 +16,8 @@ void main(
   o0 = t0.SampleLevel(s0_s, v1.xy, 0);
   return;
 
+#if 0
+
   // This writes immediately before the LUT pass returns. It determines
   // whether this late output target can preserve HDR independently from the
   // earlier scene bridge and its intermediate target.
@@ -124,4 +126,5 @@ void main(
     o0.rgb = lerp(upgraded_grade, stable_grade, highlight_lut_blend);
   }
   return;
+#endif
 }
