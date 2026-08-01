@@ -3621,6 +3621,7 @@ renodx::mods::shader::CustomShaders custom_shaders = {
 ShaderInjectData shader_injection;
 
 float current_settings_mode = 0;
+float resource_upgrade_test_setting = 0.f;
 
 renodx::utils::settings::Settings settings = {
     new renodx::utils::settings::Setting{
@@ -3924,6 +3925,17 @@ renodx::utils::settings::Settings settings = {
         .labels = {"HDR10 (PQ, DLSS FG)", "scRGB (FP16, no FG)"},
         .is_global = true,
         .is_visible = []() { return current_settings_mode >= 1; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "ResourceUpgradeTest",
+        .binding = &resource_upgrade_test_setting,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Resource Upgrade Matrix",
+        .section = "Debug",
+        .tooltip = "Requires a game restart. Diagnostic only: isolates which FP16 resource upgrade family changes the DLSS Off upstream color path.",
+        .labels = {"All (current HDR)", "Typeless only", "UNORM + sRGB only", "None (native formats)"},
+        .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
         .key = "FrameGenerationCompatibility",
@@ -4440,11 +4452,21 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::swapchain::proxy_source_is_hdr10_index =
           offsetof(ShaderInjectData, renodrt_padding_2) / sizeof(float);
 
+      int32_t resource_upgrade_test = 0;
+      reshade::get_config_value(
+          nullptr,
+          renodx::utils::settings::global_name.c_str(),
+          "ResourceUpgradeTest",
+          resource_upgrade_test);
+      resource_upgrade_test_setting = static_cast<float>(resource_upgrade_test);
+      renodx::utils::log::i("DL2 resource upgrade matrix: ", resource_upgrade_test);
+
       // The 0x3E -> 0x268 -> 0xAD chain uses full-size R8G8B8A8_TYPELESS
       // resources. Without their FP16 clones, values above 1.0 are clipped
       // immediately after the HDR bridge and the final output is capped near
       // the 203-nit reference white.
-      renodx::mods::swapchain::resource_upgrade_infos.push_back({
+      if (resource_upgrade_test == 0 || resource_upgrade_test == 1) {
+        renodx::mods::swapchain::resource_upgrade_infos.push_back({
           .old_format = reshade::api::format::r8g8b8a8_typeless,
           .new_format = reshade::api::format::r16g16b16a16_float,
           .ignore_size = false,
@@ -4456,24 +4478,26 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           // coherent FP16 resource and all of its views.
           .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
           .usage_include = reshade::api::resource_usage::render_target,
-      });
+        });
+      }
 
       // Preserve range for the general UNORM scene targets. The typeless
       // and sRGB variants below carry the same HDR composite through later
       // native passes.
-      renodx::mods::swapchain::resource_upgrade_infos.push_back({
+      if (resource_upgrade_test == 0 || resource_upgrade_test == 2) {
+        renodx::mods::swapchain::resource_upgrade_infos.push_back({
           .old_format = reshade::api::format::r8g8b8a8_unorm,
           .new_format = reshade::api::format::r16g16b16a16_float,
           .ignore_size = false,
           .use_resource_view_cloning = true,
           .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
           .usage_include = reshade::api::resource_usage::render_target,
-      });
+        });
 
       // Preserve the sRGB composite's HDR headroom as well. Removing this rule
       // caps the proxy input near 1.0 (about the 203-nit reference white). The
       // typeless rule above, not this sRGB rule, caused the DLSS mode split.
-      renodx::mods::swapchain::resource_upgrade_infos.push_back({
+        renodx::mods::swapchain::resource_upgrade_infos.push_back({
           .old_format = reshade::api::format::r8g8b8a8_unorm_srgb,
           .new_format = reshade::api::format::r16g16b16a16_float,
           .ignore_size = false,
@@ -4481,7 +4505,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           .use_resource_view_hot_swap = true,
           .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
           .usage_include = reshade::api::resource_usage::render_target,
-      });
+        });
+      }
 
       reshade::register_event<reshade::addon_event::init_device>(OnInitDevice);
 
