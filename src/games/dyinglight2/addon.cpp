@@ -1309,6 +1309,7 @@ struct UpscalerSourceWriterAuditState {
   uint64_t effective_source = 0u;
   uint64_t exposure = 0u;
   uint64_t effective_exposure = 0u;
+  GammaAuditResource source_info = {};
   std::array<uint64_t, 8> recent_sources = {};
   std::array<uint64_t, 8> recent_effective_sources = {};
   uint32_t recent_source_count = 0u;
@@ -1957,6 +1958,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       if (source_writer_audit.source == 0u) {
         source_writer_audit.source = source.resource;
         source_writer_audit.effective_source = source.effective;
+        source_writer_audit.source_info = source;
       }
       const bool known_source = std::any_of(
           source_writer_audit.recent_sources.begin(),
@@ -2938,6 +2940,12 @@ void OnDownstreamDrawCapturePresent(
              << " effective=0x" << audit.effective_source
              << " exposure=0x" << audit.exposure
              << " effective_exposure=0x" << audit.effective_exposure << std::dec
+             << " source_desc=format=" << static_cast<uint32_t>(audit.source_info.format)
+             << "=>" << static_cast<uint32_t>(audit.source_info.effective_format)
+             << " view=" << static_cast<uint32_t>(audit.source_info.view_format)
+             << "=>" << static_cast<uint32_t>(audit.source_info.effective_view_format)
+             << " size=" << audit.source_info.width << "x" << audit.source_info.height
+             << " clone=" << (audit.source_info.view_clone_enabled ? 1 : 0)
              << " presents=" << audit.presents << " count=" << audit.count;
       for (uint32_t index = 0u; index < audit.count; ++index) {
         const auto& writer = audit.writers[index];
