@@ -1304,6 +1304,7 @@ struct UpscalerSourceWriter {
 
 struct UpscalerSourceWriterAuditState {
   std::array<UpscalerSourceWriter, 64> writers = {};
+  std::array<GammaAuditResource, 128> compute_candidates = {};
   uint64_t capture_id = 0u;
   uint64_t source = 0u;
   uint64_t effective_source = 0u;
@@ -1314,6 +1315,7 @@ struct UpscalerSourceWriterAuditState {
   std::array<uint64_t, 8> recent_effective_sources = {};
   uint32_t recent_source_count = 0u;
   uint32_t count = 0u;
+  uint32_t compute_candidate_count = 0u;
   uint32_t presents = 0u;
   bool active = false;
 };
@@ -1654,6 +1656,22 @@ void OnGammaAuditPushDescriptors(
           return candidate.handle == view.handle;
         });
         if (!known) views.push_back(view);
+        if (upscaler_source_writer_audit_state.compute_candidate_count
+            < upscaler_source_writer_audit_state.compute_candidates.size()) {
+          auto* device = cmd_list->get_device();
+          const auto candidate = DescribeGammaAuditView(device, view);
+          const bool known_candidate = std::any_of(
+              upscaler_source_writer_audit_state.compute_candidates.begin(),
+              upscaler_source_writer_audit_state.compute_candidates.begin()
+                  + upscaler_source_writer_audit_state.compute_candidate_count,
+              [&](const auto& existing) {
+                return existing.resource == candidate.resource && existing.view_format == candidate.view_format;
+              });
+          if (!known_candidate && candidate.resource != 0u) {
+            upscaler_source_writer_audit_state.compute_candidates[
+                upscaler_source_writer_audit_state.compute_candidate_count++] = candidate;
+          }
+        }
       }
     }
   }
@@ -2946,7 +2964,20 @@ void OnDownstreamDrawCapturePresent(
              << "=>" << static_cast<uint32_t>(audit.source_info.effective_view_format)
              << " size=" << audit.source_info.width << "x" << audit.source_info.height
              << " clone=" << (audit.source_info.view_clone_enabled ? 1 : 0)
-             << " presents=" << audit.presents << " count=" << audit.count;
+             << " compute_candidates=" << audit.compute_candidate_count;
+      for (uint32_t candidate_index = 0u; candidate_index < audit.compute_candidate_count; ++candidate_index) {
+        const auto& candidate = audit.compute_candidates[candidate_index];
+        if (candidate.resource == audit.source || candidate.effective == audit.source
+            || candidate.resource == audit.effective_source || candidate.effective == audit.effective_source) {
+          stream << " match=resource=0x" << std::hex << candidate.resource
+                 << "=>0x" << candidate.effective << std::dec
+                 << " format=" << static_cast<uint32_t>(candidate.format)
+                 << "=>" << static_cast<uint32_t>(candidate.effective_format)
+                 << " view=" << static_cast<uint32_t>(candidate.view_format)
+                 << "=>" << static_cast<uint32_t>(candidate.effective_view_format);
+        }
+      }
+      stream << " presents=" << audit.presents << " count=" << audit.count;
       for (uint32_t index = 0u; index < audit.count; ++index) {
         const auto& writer = audit.writers[index];
         const char* type = writer.type == UpscalerSourceWriterType::draw ? "draw"
