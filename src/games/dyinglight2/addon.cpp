@@ -55,9 +55,6 @@ float dlss_fg_suppress_color_tags = 0.f;
 float dlss_fg_skip_generated_proxy = 0.f;
 float dlss_fg_bypass_all_proxy = 0.f;
 float dlss_fg_final_color_mode = 0.f;
-float bypass_ui_writers_probe = 0.f;
-float bypass_3e_last_writer_probe = 0.f;
-float bypass_3e_previous_writer_probe = 0.f;
 bool dlss_fg_tag_capture = false;
 bool dlss_fg_present_cadence_capture = false;
 std::atomic_uint32_t dlss_fg_backbuffer_barrier_capture = 0u;
@@ -3497,30 +3494,11 @@ renodx::mods::shader::CustomShader CreateDl2BffcProbeShader() {
   return shader;
 }
 
-bool OnDl2UiWriterProbeDraw(reshade::api::command_list*) {
-  return bypass_ui_writers_probe < 0.5f;
-}
-
-bool OnDl2ThreeELastWriterProbeDraw(reshade::api::command_list*) {
-  return bypass_3e_last_writer_probe < 0.5f;
-}
-
-bool OnDl2ThreeEPreviousWriterProbeDraw(reshade::api::command_list*) {
-  return bypass_3e_previous_writer_probe < 0.5f;
-}
-
 renodx::mods::shader::CustomShader CreateDl2UiWriterProbeShader(
     uint32_t crc32,
     std::span<const uint8_t> dx11_code,
     std::span<const uint8_t> dx12_code) {
   auto shader = renodx::mods::shader::CreateDirectXShader(crc32, dx11_code, dx12_code);
-  shader.on_draw = &OnDl2UiWriterProbeDraw;
-  return shader;
-}
-
-renodx::mods::shader::CustomShader CreateDl2UiBypassOnlyProbeShader(uint32_t crc32) {
-  renodx::mods::shader::CustomShader shader = {.crc32 = crc32};
-  shader.on_draw = &OnDl2UiWriterProbeDraw;
   return shader;
 }
 
@@ -3557,15 +3535,6 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     Dl2UiWriterProbeShader(0x61DBDE91),
     Dl2UiWriterProbeShader(0x2280559E),
     Dl2UiWriterProbeShader(0x7D1BA5D4),
-    {0xEDC2563Au, CreateDl2UiBypassOnlyProbeShader(0xEDC2563Au)},
-    {0x2BECAD9Cu, CreateDl2UiBypassOnlyProbeShader(0x2BECAD9Cu)},
-    {0xC6ADA2E9u, CreateDl2UiBypassOnlyProbeShader(0xC6ADA2E9u)},
-    {0xB5B67AE9u, renodx::mods::shader::CustomShader{
-                         .crc32 = 0xB5B67AE9u,
-                         .on_draw = &OnDl2ThreeELastWriterProbeDraw}},
-    {0xB0761F24u, renodx::mods::shader::CustomShader{
-                         .crc32 = 0xB0761F24u,
-                         .on_draw = &OnDl2ThreeEPreviousWriterProbeDraw}},
     // Full-screen post-LUT blit. The normal branch is bytecode-equivalent in
     // intent; its debug branch isolates the boundary before UI composition.
     {0xBFFC45ACu, CreateDl2BffcProbeShader()},
@@ -4017,39 +3986,6 @@ renodx::utils::settings::Settings settings = {
           dlss_fg_present_cadence_capture = true;
           return false;
         },
-        .is_visible = []() { return current_settings_mode >= 2; },
-    },
-    new renodx::utils::settings::Setting{
-        .key = "Bypass3EPreviousWriterProbe",
-        .binding = &bypass_3e_previous_writer_probe,
-        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
-        .default_value = 0.f,
-        .can_reset = false,
-        .label = "Bypass 3E Previous Writer (0xB0761F24)",
-        .section = "Debug",
-        .tooltip = "Diagnostic only. Skips the writer immediately before 0xB5B67AE9 in the observed 0x3E input chain.",
-        .is_visible = []() { return current_settings_mode >= 2; },
-    },
-    new renodx::utils::settings::Setting{
-        .key = "Bypass3ELastWriterProbe",
-        .binding = &bypass_3e_last_writer_probe,
-        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
-        .default_value = 0.f,
-        .can_reset = false,
-        .label = "Bypass 3E Last Writer (0xB5B67AE9)",
-        .section = "Debug",
-        .tooltip = "Diagnostic only. Skips the final observed writer of the resource sampled by 0x3E. Missing or stale scene content is expected.",
-        .is_visible = []() { return current_settings_mode >= 2; },
-    },
-    new renodx::utils::settings::Setting{
-        .key = "BypassUIWritersProbe",
-        .binding = &bypass_ui_writers_probe,
-        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
-        .default_value = 0.f,
-        .can_reset = false,
-        .label = "Bypass UI Writers (BFFC Probe)",
-        .section = "Debug",
-        .tooltip = "Diagnostic only. With the fixed-bright BFFC probe active, skips the known UI composite writers to determine whether they overwrite the scene base. UI disappearance is expected.",
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{

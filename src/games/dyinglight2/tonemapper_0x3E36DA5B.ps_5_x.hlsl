@@ -50,10 +50,6 @@ void main(
     float4 v0 : SV_POSITION0,
     linear noperspective float2 v1 : TEXCOORD0,
     out float4 o0 : SV_TARGET0) {
-  o0 = t0.SampleLevel(s0_s, v1.xy, 0);
-  return;
-
-#if 0
   const float4 source = t0.SampleLevel(s0_s, v1.xy, 0);
   const float exposure = t1.SampleLevel(s0_s, float2(0.0, 0.0), 0).x;
   const float3 scene_linear = source.rgb * 0.6;
@@ -216,5 +212,4 @@ void main(
       ? vanilla
       : ScaleToneMappedScene(renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr));
   o0.a = source.a;
-#endif
 }
