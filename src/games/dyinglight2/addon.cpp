@@ -3519,6 +3519,11 @@ bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
 }
 
 void OnDl2BffcProbeDrawn(reshade::api::command_list* cmd_list) {
+  if (!upscaler_color_path_audit_state.active
+      && !upscaler_input_audit_state.active
+      && !upscaler_source_writer_audit_state.active) {
+    return;
+  }
   auto* state = renodx::utils::shader::GetCurrentState(cmd_list);
   std::ostringstream stream;
   stream << "DL2 BFFC replacement probe post-draw: cmd=0x"
