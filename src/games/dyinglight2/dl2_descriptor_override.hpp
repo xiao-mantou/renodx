@@ -215,6 +215,15 @@ inline bool BindCurrentT0Clone(reshade::api::command_list* cmd_list, uint32_t sh
     return false;
   }
 
+  // The AD pass is the first consumer that must read the extended-range
+  // scene value. Its source resource can have a valid FP16 clone target while
+  // still being inactive because no render-target hook touched that view.
+  // Activate only this shader's input hot-swap before resolving the clone view;
+  // the descriptor-table replacement below remains draw-local and reversible.
+  if (shader_hash == 0xAD085E81u) {
+    renodx::mods::swapchain::ActivateCloneHotSwap(device, original_view);
+  }
+
   reshade::api::resource_view clone_view = {0u};
   reshade::api::resource original_resource = {0u};
   renodx::utils::resource::GetLiveResourceViewInfo(
@@ -239,6 +248,19 @@ inline bool BindCurrentT0Clone(reshade::api::command_list* cmd_list, uint32_t sh
             .allow_create = true,
             .activate = false,
         });
+  }
+  if (shader_hash == 0xAD085E81u) {
+    const auto ad_clone_view = renodx::utils::resource::upgrade::GetResourceViewClone(
+        original_view,
+        {
+            .require_enabled = false,
+            .allow_create = true,
+            .activate = true,
+        });
+    if (ad_clone_view.handle != 0u) {
+      clone_view = ad_clone_view;
+      resource_clone_enabled = true;
+    }
   }
   if (!resource_clone_enabled || clone_view.handle == 0u || clone_view.handle == original_view.handle) {
     LogSkip("active FP16 t0 clone unavailable");
