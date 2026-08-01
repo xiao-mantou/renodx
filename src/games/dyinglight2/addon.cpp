@@ -1310,6 +1310,9 @@ struct UpscalerSourceWriterAuditState {
   uint64_t effective_source = 0u;
   uint64_t exposure = 0u;
   uint64_t effective_exposure = 0u;
+  std::array<uint64_t, 8> recent_sources = {};
+  std::array<uint64_t, 8> recent_effective_sources = {};
+  uint32_t recent_source_count = 0u;
   uint32_t count = 0u;
   uint32_t presents = 0u;
   bool active = false;
@@ -1951,9 +1954,20 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
         ? DescribeGammaAuditView(device, t1_binding.slot.resource_view)
         : GammaAuditResource{};
     auto& source_writer_audit = upscaler_source_writer_audit_state;
-    if (source_writer_audit.active && source_writer_audit.source == 0u && source.resource != 0u) {
-      source_writer_audit.source = source.resource;
-      source_writer_audit.effective_source = source.effective;
+    if (source_writer_audit.active && source.resource != 0u) {
+      if (source_writer_audit.source == 0u) {
+        source_writer_audit.source = source.resource;
+        source_writer_audit.effective_source = source.effective;
+      }
+      const bool known_source = std::any_of(
+          source_writer_audit.recent_sources.begin(),
+          source_writer_audit.recent_sources.begin() + source_writer_audit.recent_source_count,
+          [&](uint64_t value) { return value == source.resource; });
+      if (!known_source && source_writer_audit.recent_source_count < source_writer_audit.recent_sources.size()) {
+        const uint32_t index = source_writer_audit.recent_source_count++;
+        source_writer_audit.recent_sources[index] = source.resource;
+        source_writer_audit.recent_effective_sources[index] = source.effective;
+      }
       source_writer_audit.exposure = exposure.resource;
       source_writer_audit.effective_exposure = exposure.effective;
     }
@@ -2001,11 +2015,9 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
     for (const auto target_view : writer_targets) {
       const auto output = DescribeGammaAuditView(context.cmd_list->get_device(), target_view);
       auto& audit = upscaler_source_writer_audit_state;
-      const bool matched = (output.resource != 0u
-                            && (output.resource == audit.source || output.resource == audit.exposure))
-          || (output.effective != 0u
-              && (output.effective == audit.effective_source
-                  || output.effective == audit.effective_exposure));
+      const bool matched = std::any_of(
+          audit.recent_sources.begin(), audit.recent_sources.begin() + audit.recent_source_count,
+          [&](uint64_t value) { return output.resource == value || output.effective == value; });
       if (matched) {
         const bool known = std::any_of(
             audit.writers.begin(), audit.writers.begin() + audit.count,
@@ -2033,11 +2045,9 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       auto* device = context.cmd_list->get_device();
       for (const auto view : views_it->second) {
         const auto output = DescribeGammaAuditView(device, view);
-        const bool matched = (output.resource != 0u
-                              && (output.resource == audit.source || output.resource == audit.exposure))
-            || (output.effective != 0u
-                && (output.effective == audit.effective_source
-                    || output.effective == audit.effective_exposure));
+        const bool matched = std::any_of(
+            audit.recent_sources.begin(), audit.recent_sources.begin() + audit.recent_source_count,
+            [&](uint64_t value) { return output.resource == value || output.effective == value; });
         if (!matched) continue;
         const bool known = std::any_of(
             audit.writers.begin(), audit.writers.begin() + audit.count,
@@ -2563,9 +2573,11 @@ void RecordUpscalerSourceTransfer(
     reshade::api::resource dest) {
   std::scoped_lock lock(downstream_draw_capture_mutex);
   auto& audit = upscaler_source_writer_audit_state;
-  if (!audit.active || audit.source == 0u || audit.count >= audit.writers.size()) return;
-  if (dest.handle != audit.source && dest.handle != audit.effective_source
-      && dest.handle != audit.exposure && dest.handle != audit.effective_exposure) return;
+  if (!audit.active || audit.recent_source_count == 0u || audit.count >= audit.writers.size()) return;
+  const bool matches_recent = std::any_of(
+      audit.recent_sources.begin(), audit.recent_sources.begin() + audit.recent_source_count,
+      [&](uint64_t value) { return dest.handle == value; });
+  if (!matches_recent && dest.handle != audit.exposure && dest.handle != audit.effective_exposure) return;
   audit.writers[audit.count++] = {
       .type = type,
       .present_index = audit.presents + 1u,
