@@ -34,6 +34,11 @@ float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
     config.swap_chain_scaling_nits = 1.f;
   }
 
+  float3 stage_probe;
+  if (Dl2RenderLuminanceStageProbe(uv, 6.0, stage_probe)) {
+    return float4(renodx::draw::SwapChainPass(stage_probe, uv, config).rgb, 1.f);
+  }
+
   if (RENODX_DEBUG_MODE > 4.5 && RENODX_DEBUG_MODE < 5.5) {
     return float4(renodx::draw::SwapChainPass(float3(6.25, 0.0, 0.0), uv, config).rgb, 1.f);
   }

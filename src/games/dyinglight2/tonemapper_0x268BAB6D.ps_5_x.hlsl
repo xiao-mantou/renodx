@@ -131,5 +131,11 @@ void main(
     // Keep the reconstructed HDR magnitude in that same domain.
     o0.rgb = lerp(upgraded_grade, stable_grade, highlight_lut_blend);
   }
+
+  float3 stage_probe;
+  if (Dl2RenderLuminanceStageProbe(v1.xy, 2.0, stage_probe)
+      || Dl2RenderLuminanceStageProbe(v1.xy, 3.0, stage_probe)) {
+    o0 = float4(stage_probe, 1.0);
+  }
   return;
 }

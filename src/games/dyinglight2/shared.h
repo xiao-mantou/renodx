@@ -41,6 +41,9 @@ struct ShaderInjectData {
   float swap_chain_output_preset;
   float renodrt_padding_1;
   float renodrt_padding_2;
+  float luminance_stage_probe;
+  float luminance_stage_padding_1;
+  float luminance_stage_padding_2;
 };
 
 #ifndef __cplusplus
@@ -91,9 +94,43 @@ cbuffer shader_injection : register(b13) {
 #define CUSTOM_LENS_FLARE                      shader_injection.custom_lens_flare
 #define CUSTOM_LUT_SCALING                     shader_injection.custom_lut_scaling
 #define RENODX_DEBUG_MODE                      shader_injection.debug_mode
+#define RENODX_LUMINANCE_STAGE_PROBE           shader_injection.luminance_stage_probe
 #define RENODX_RENO_DRT_WHITE_CLIP             shader_injection.tone_map_white_clip
 
 #include "../../shaders/renodx.hlsl"
+
+// Shared stage signature for the DL2 HDR path. Each participating shader only
+// responds to its own stage, so a missing replacement cannot be mistaken for
+// a successful downstream probe.
+bool Dl2RenderLuminanceStageProbe(float2 uv, float stage, out float3 output) {
+  if (abs(RENODX_LUMINANCE_STAGE_PROBE - stage) > 0.25) {
+    output = 0.0;
+    return false;
+  }
+
+  if (uv.x > 0.02 && uv.x < 0.08 && uv.y > 0.02 && uv.y < 0.08) {
+    const float3 stage_colors[6] = {
+        float3(1.0, 0.0, 0.0),
+        float3(0.0, 1.0, 0.0),
+        float3(0.0, 0.4, 1.0),
+        float3(1.0, 1.0, 0.0),
+        float3(1.0, 0.0, 1.0),
+        float3(0.0, 1.0, 1.0),
+    };
+    output = stage_colors[min((uint)stage - 1u, 5u)];
+    return true;
+  }
+
+  if (uv.x > 0.55 && uv.x < 0.95 && uv.y > 0.82 && uv.y < 0.92) {
+    const uint index = min((uint)((uv.x - 0.55) * 10.0), 3u);
+    const float levels[4] = {0.25, 1.0, 4.0, 16.0};
+    output = levels[index].xxx;
+    return true;
+  }
+
+  output = 0.0;
+  return false;
+}
 
 #endif
 

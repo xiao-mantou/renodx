@@ -27,6 +27,16 @@ void main(
     out float4 o0 : SV_TARGET0) {
   const float4 input_color = t0.SampleLevel(s0_s, v1.xy, 0);
 
+  float3 stage_probe;
+  if (Dl2RenderLuminanceStageProbe(v1.xy, 3.0, stage_probe)) {
+    o0 = input_color;
+    return;
+  }
+  if (Dl2RenderLuminanceStageProbe(v1.xy, 4.0, stage_probe)) {
+    o0 = float4(stage_probe, 1.0);
+    return;
+  }
+
   // Preserve the 0x3E source/Vanilla/RenoDRT comparison probes verbatim.
   // Their purpose is to isolate that pass from both this power operation and
   // the preceding LUT replacement.

@@ -78,6 +78,12 @@ void main(
   const float3 untonemapped = scene_linear * adaptive_exposure;
   const float3 neutral_sdr = renodx::tonemap::renodrt::NeutralSDR(untonemapped);
 
+  float3 stage_probe;
+  if (Dl2RenderLuminanceStageProbe(v1.xy, 1.0, stage_probe)) {
+    o0 = float4(stage_probe, 1.0);
+    return;
+  }
+
   // Mode 5 belongs to the swapchain proxy. Let the scene pass through so it
   // can prove whether the final HDR output path is actually being executed.
   if (RENODX_DEBUG_MODE > 0.5 && RENODX_DEBUG_MODE < 4.5) {
