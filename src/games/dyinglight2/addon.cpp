@@ -2199,7 +2199,6 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
         }
       }
     }
-    writer_targets.clear();
   }
 
   if (capture_upscaler_color_path && !is_compute && shader_hash != 0u) {
