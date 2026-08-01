@@ -31,3 +31,17 @@ This is consistent with a transient clone/descriptor-table gap during resize, an
 ## Next diagnostic boundary
 
 Do not change DLSS Balanced or the HDR clone format. First determine whether the Off color mismatch is caused by the unbound `0x3E` replacement or by the native source content. Separately, make resize-time descriptor allocation resilient before treating the green flash as a color issue.
+
+## 2026-08-01 Follow-up
+
+### Replacement audit limitation
+
+The post-bind state mirror continued to report the native pipeline for `0x3E`, `0x268`, and `0xAD` even though their replacement pipelines existed and replacement debug modes visibly executed. Direct pipeline binding is not reflected back into this state mirror, so `replacement_bound=0` is not evidence that the replacement shader failed to run.
+
+### Legacy sRGB A/B result
+
+With DLSS SR Off, `0x3E Legacy sRGB Output (A/B)` made the image visibly washed out rather than matching the correct DLSS Balanced appearance. Restoring the old `RenderIntermediatePass` at `0x3E` is therefore rejected as a direct fix. The Off mismatch is not a simple missing legacy sRGB encode.
+
+### Runtime DLSS mode switch crash
+
+Changing DLSS mode while already in gameplay caused an immediate crash. Treat runtime DLSS mode switching as unsafe until resource lifetime handling is fixed. This likely shares the settings-save resize boundary: the upscaler output resource changes while FP16 clone views and replacement descriptor tables still refer to the previous generation.
