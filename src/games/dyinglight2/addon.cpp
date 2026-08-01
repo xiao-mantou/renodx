@@ -2964,6 +2964,11 @@ void OnDownstreamDrawCapturePresent(
              << "=>" << static_cast<uint32_t>(audit.source_info.effective_view_format)
              << " size=" << audit.source_info.width << "x" << audit.source_info.height
              << " clone=" << (audit.source_info.view_clone_enabled ? 1 : 0)
+             << " latest_tag_original=0x" << std::hex
+             << dlss_fg_latest_color_original.load(std::memory_order_relaxed)
+             << " latest_tag_clone=0x"
+             << dlss_fg_latest_color_clone.load(std::memory_order_relaxed)
+             << std::dec
              << " compute_candidates=" << audit.compute_candidate_count;
       for (uint32_t candidate_index = 0u; candidate_index < audit.compute_candidate_count; ++candidate_index) {
         const auto& candidate = audit.compute_candidates[candidate_index];
