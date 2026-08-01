@@ -73,8 +73,10 @@ void main(
   // as the legacy sRGB-shaped intermediate or HDR values will be remapped a
   // second time before the LUT bridge.
   float3 input_hdr = max(r1.xyz, 0.0);
-  if (RENODX_DEBUG_MODE > 32.5 && RENODX_DEBUG_MODE < 33.5 && v1.y >= 0.5) {
-    input_hdr = renodx::color::srgb::DecodeSafe(input_hdr);
+  if (RENODX_DEBUG_MODE > 32.5 && RENODX_DEBUG_MODE < 33.5) {
+    const uint quadrant = (v1.x >= 0.5 ? 1u : 0u) + (v1.y >= 0.5 ? 2u : 0u);
+    const float strengths[4] = {0.0, 0.25, 0.5, 0.75};
+    input_hdr = lerp(input_hdr, renodx::color::srgb::DecodeSafe(input_hdr), strengths[quadrant]);
   }
   const float3 input_sdr = saturate(input_hdr);
   if (RENODX_TONE_MAP_TYPE != 0.0) {
