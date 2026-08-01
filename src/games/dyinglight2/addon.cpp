@@ -1990,9 +1990,16 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   if (upscaler_source_writer_audit_state.active && !is_compute
       && upscaler_source_writer_audit_state.source != 0u
       && upscaler_source_writer_audit_state.count < upscaler_source_writer_audit_state.writers.size()) {
-    const auto target_it = downstream_capture_rtvs.find(context.cmd_list);
-    if (target_it != downstream_capture_rtvs.end()) {
-      const auto output = DescribeGammaAuditView(context.cmd_list->get_device(), target_it->second);
+    std::vector<reshade::api::resource_view> writer_targets;
+    if (const auto target_it = downstream_capture_rtvs.find(context.cmd_list);
+        target_it != downstream_capture_rtvs.end()) {
+      writer_targets.push_back(target_it->second);
+    } else if (const auto* command_state = renodx::utils::state::GetCurrentState(context.cmd_list);
+               command_state != nullptr) {
+      writer_targets = command_state->render_targets;
+    }
+    for (const auto target_view : writer_targets) {
+      const auto output = DescribeGammaAuditView(context.cmd_list->get_device(), target_view);
       auto& audit = upscaler_source_writer_audit_state;
       const bool matched = (output.resource != 0u
                             && (output.resource == audit.source || output.resource == audit.exposure))
@@ -2192,6 +2199,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
         }
       }
     }
+    writer_targets.clear();
   }
 
   if (capture_upscaler_color_path && !is_compute && shader_hash != 0u) {
