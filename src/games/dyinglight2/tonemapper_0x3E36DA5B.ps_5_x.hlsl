@@ -279,7 +279,24 @@ void main(
   // This reaches the game's subsequent composite passes, unlike the output
   // probe in the swapchain proxy. With Peak=500 and Game=100, the scene area
   // should measure 500 nits if no later pass normalizes it back to SDR.
-  const bool downstream_color_grid = RENODX_DEBUG_MODE > 28.5 && RENODX_DEBUG_MODE < 31.5;
+  if (RENODX_DEBUG_MODE > 33.5 && RENODX_DEBUG_MODE < 34.5) {
+    const float3 scene = source.rgb * 0.6;
+    const float3 exposed = scene * adaptive_exposure;
+    const float3 neutral = renodx::tonemap::renodrt::NeutralSDR(exposed);
+    const float3 scaled_hdr = ScaleToneMappedScene(
+        renodx::draw::ToneMapPass(exposed, vanilla, neutral));
+    const float3 unscaled_hdr = renodx::draw::ToneMapPass(exposed, vanilla, neutral);
+    const uint quadrant = (v1.x >= 0.5 ? 1u : 0u) + (v1.y >= 0.5 ? 2u : 0u);
+    o0.rgb = quadrant == 0u ? scene
+        : quadrant == 1u ? vanilla
+        : quadrant == 2u ? scaled_hdr
+        : unscaled_hdr;
+    o0.a = source.a;
+    return;
+  }
+
+  const bool downstream_color_grid = (RENODX_DEBUG_MODE > 28.5 && RENODX_DEBUG_MODE < 31.5)
+      || (RENODX_DEBUG_MODE > 34.5 && RENODX_DEBUG_MODE < 35.5);
   if (RENODX_DEBUG_MODE > 5.5 && !downstream_color_grid) {
     const float target_white = RENODX_PEAK_WHITE_NITS / 203.0;
     o0.rgb = renodx::draw::RenderIntermediatePass(float3(target_white, target_white, target_white));

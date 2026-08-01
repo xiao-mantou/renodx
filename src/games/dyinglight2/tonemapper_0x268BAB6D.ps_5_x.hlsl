@@ -120,6 +120,9 @@ void main(
   r1.xyz = r0.www ? float3(0, 0, 0) : r0.xyz;
   r0.w = cmp(0 < cb0[0].z);
   o0.xyz = r0.www ? r1.xyz : r0.xyz;
+  const float3 native_lut_grade = o0.rgb;
+  float3 upgraded_grade = native_lut_grade;
+  float3 stable_grade = native_lut_grade;
 
   if (RENODX_TONE_MAP_TYPE != 0.0) {
     // The original SDR LUT can vary its luminance as its dynamic constants
@@ -127,14 +130,22 @@ void main(
     // when it is added to HDR highlights. Keep full LUT grading below SDR
     // white, then preserve the stable HDR luminance while transferring only
     // its chroma and hue above it.
-    const float3 upgraded_grade = renodx::tonemap::UpgradeToneMap(input_hdr, input_sdr, o0.rgb, 1.0);
-    float3 stable_grade = renodx::color::correct::Chrominance(input_hdr, o0.rgb);
+    upgraded_grade = renodx::tonemap::UpgradeToneMap(input_hdr, input_sdr, o0.rgb, 1.0);
+    stable_grade = renodx::color::correct::Chrominance(input_hdr, o0.rgb);
     stable_grade = renodx::color::correct::Hue(stable_grade, o0.rgb);
     const float highlight_lut_blend = smoothstep(1.0, 2.0, renodx::color::y::from::BT709(input_hdr));
 
     // The downstream Gamma pass and final proxy also consume Linear BT.709.
     // Keep the reconstructed HDR magnitude in that same domain.
     o0.rgb = lerp(upgraded_grade, stable_grade, highlight_lut_blend);
+  }
+
+  if (RENODX_DEBUG_MODE > 34.5 && RENODX_DEBUG_MODE < 35.5) {
+    const uint quadrant = (v1.x >= 0.5 ? 1u : 0u) + (v1.y >= 0.5 ? 2u : 0u);
+    o0.rgb = quadrant == 0u ? native_lut_grade
+        : quadrant == 1u ? upgraded_grade
+        : quadrant == 2u ? stable_grade
+        : o0.rgb;
   }
 
   // Compare luminance-preserving chroma recovery after the game's LUT. This
