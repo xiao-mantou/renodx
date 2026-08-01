@@ -72,7 +72,10 @@ void main(
   // The corrected DL2 chain is already Linear BT.709 here. Do not decode it
   // as the legacy sRGB-shaped intermediate or HDR values will be remapped a
   // second time before the LUT bridge.
-  const float3 input_hdr = max(r1.xyz, 0.0);
+  float3 input_hdr = max(r1.xyz, 0.0);
+  if (RENODX_DEBUG_MODE > 32.5 && RENODX_DEBUG_MODE < 33.5 && v1.y >= 0.5) {
+    input_hdr = renodx::color::srgb::DecodeSafe(input_hdr);
+  }
   const float3 input_sdr = saturate(input_hdr);
   if (RENODX_TONE_MAP_TYPE != 0.0) {
     r1.xyz = input_sdr;

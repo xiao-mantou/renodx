@@ -256,6 +256,31 @@ void main(
     return;
   }
 
+  // Exact sRGB-view semantics grid modeled after RenoDX's Alien Isolation
+  // upgrade: TL linear, TR encode on write, BL decode on read, BR encode then
+  // decode. The 0x268 replacement performs the matching read-side half.
+  if (RENODX_DEBUG_MODE > 32.5 && RENODX_DEBUG_MODE < 33.5) {
+    const float2 tile_uv = frac(v1.xy * 2.0);
+    const uint quadrant = (v1.x >= 0.5 ? 1u : 0u) + (v1.y >= 0.5 ? 2u : 0u);
+    const float4 tile_source = t0.SampleLevel(s0_s, tile_uv, 0);
+    const float3 tile_scene = tile_source.rgb * 0.6;
+    const float3 tile_exposed = tile_scene * exposure;
+    const float3 tile_vanilla = ApplyDL2SDRCurve(tile_exposed, cb0[0], cb0[1]);
+    const float tile_luminance = renodx::color::y::from::BT709(max(tile_scene, 0.0));
+    const float tile_protection = smoothstep(protection_start, protection_end, tile_luminance);
+    const float tile_adaptive_exposure = lerp(exposure, protected_exposure, tile_protection);
+    const float3 tile_hdr = tile_scene * tile_adaptive_exposure;
+    const float3 tile_neutral = renodx::tonemap::renodrt::NeutralSDR(tile_hdr);
+    float3 tile_output = RENODX_TONE_MAP_TYPE == 0.0
+        ? tile_vanilla
+        : ScaleToneMappedScene(renodx::draw::ToneMapPass(tile_hdr, tile_vanilla, tile_neutral));
+    if (quadrant == 1u || quadrant == 3u) {
+      tile_output = renodx::color::srgb::EncodeSafe(tile_output);
+    }
+    o0 = float4(tile_output, tile_source.a);
+    return;
+  }
+
   // This reaches the game's subsequent composite passes, unlike the output
   // probe in the swapchain proxy. With Peak=500 and Game=100, the scene area
   // should measure 500 nits if no later pass normalizes it back to SDR.
