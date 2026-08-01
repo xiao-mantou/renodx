@@ -226,6 +226,36 @@ void main(
     return;
   }
 
+  // Repeat the same source image in four tiles and test explicit input-view
+  // semantics before any DL2 exposure or RenoDRT work. The differences are
+  // intentionally large: current linear interpretation, hardware-equivalent
+  // sRGB decode, gamma-2.2 decode, and a half-strength sRGB decode.
+  if (RENODX_DEBUG_MODE > 31.5 && RENODX_DEBUG_MODE < 32.5) {
+    const float2 tile_uv = frac(v1.xy * 2.0);
+    const uint quadrant = (v1.x >= 0.5 ? 1u : 0u) + (v1.y >= 0.5 ? 2u : 0u);
+    const float4 tile_source = t0.SampleLevel(s0_s, tile_uv, 0);
+    const float3 srgb_decoded = renodx::color::srgb::DecodeSafe(tile_source.rgb);
+    const float3 gamma_decoded = pow(max(tile_source.rgb, 0.0), 2.2);
+    const float3 interpreted_source = quadrant == 0u ? tile_source.rgb
+        : quadrant == 1u ? srgb_decoded
+        : quadrant == 2u ? gamma_decoded
+        : lerp(tile_source.rgb, srgb_decoded, 0.5);
+    const float3 interpreted_scene = interpreted_source * 0.6;
+    const float3 interpreted_exposed = interpreted_scene * exposure;
+    const float3 interpreted_vanilla = ApplyDL2SDRCurve(interpreted_exposed, cb0[0], cb0[1]);
+    const float interpreted_luminance = renodx::color::y::from::BT709(max(interpreted_scene, 0.0));
+    const float interpreted_protection = smoothstep(protection_start, protection_end, interpreted_luminance);
+    const float interpreted_adaptive_exposure = lerp(exposure, protected_exposure, interpreted_protection);
+    const float3 interpreted_hdr = interpreted_scene * interpreted_adaptive_exposure;
+    const float3 interpreted_neutral = renodx::tonemap::renodrt::NeutralSDR(interpreted_hdr);
+    o0.rgb = RENODX_TONE_MAP_TYPE == 0.0
+        ? interpreted_vanilla
+        : ScaleToneMappedScene(renodx::draw::ToneMapPass(
+              interpreted_hdr, interpreted_vanilla, interpreted_neutral));
+    o0.a = tile_source.a;
+    return;
+  }
+
   // This reaches the game's subsequent composite passes, unlike the output
   // probe in the swapchain proxy. With Peak=500 and Game=100, the scene area
   // should measure 500 nits if no later pass normalizes it back to SDR.
