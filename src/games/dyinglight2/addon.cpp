@@ -3387,6 +3387,24 @@ bool ActivateDl2HdrTarget(reshade::api::command_list* cmd_list) {
     renodx::mods::swapchain::FlushDescriptors(cmd_list);
     renodx::mods::swapchain::RewriteRenderTargets(cmd_list, rtvs.size(), rtvs.data(), {0});
   }
+  if (upscaler_color_path_audit_state.active) {
+    auto* shader_state = renodx::utils::shader::GetCurrentState(cmd_list);
+    if (shader_state != nullptr) {
+      auto* pixel_state = renodx::utils::shader::GetCurrentPixelState(shader_state);
+      renodx::utils::shader::PopulateStageState(pixel_state);
+      if (pixel_state->pipeline_details != nullptr) {
+        renodx::utils::log::i(
+            "DL2 targeted replacement post-bind: shader=",
+            renodx::utils::log::AsHex(
+                renodx::utils::shader::GetCurrentShaderHash(
+                    shader_state, renodx::utils::shader::PIXEL_INDEX)),
+            " bound=", renodx::utils::log::AsPtr(pixel_state->pipeline.handle),
+            " replacement=", renodx::utils::log::AsPtr(
+                pixel_state->pipeline_details->replacement_pipeline.handle),
+            " is_replacement=", pixel_state->pipeline_details->is_replacement ? 1 : 0);
+      }
+    }
+  }
   return true;
 }
 
