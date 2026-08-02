@@ -3935,6 +3935,7 @@ renodx::utils::settings::Settings settings = {
         .section = "Debug",
         .tooltip = "Requires a game restart. Diagnostic only: isolates which FP16 resource upgrade family changes the DLSS Off upstream color path.",
         .labels = {"All (current HDR)", "Typeless only", "UNORM + sRGB only", "None (native formats)"},
+        .is_global = true,
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
