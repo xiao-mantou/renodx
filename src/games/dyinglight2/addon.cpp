@@ -3931,10 +3931,22 @@ renodx::utils::settings::Settings settings = {
         .binding = &resource_upgrade_test_setting,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
         .default_value = 0.f,
-        .label = "Resource Upgrade Matrix",
+        .label = "Typeless Resource Candidate",
         .section = "Debug",
-        .tooltip = "Requires a game restart. Diagnostic only: isolates which FP16 resource upgrade family changes the DLSS Off upstream color path.",
-        .labels = {"All (current HDR)", "Typeless only", "UNORM + sRGB only", "None (native formats)"},
+        .tooltip = "Requires a full game restart. Diagnostic only: narrows the full-size typeless FP16 upgrade to one resource creation index while retaining the UNORM and sRGB upgrades.",
+        .labels = {
+            "All typeless + UNORM/sRGB",
+            "Typeless candidate 0 + UNORM/sRGB",
+            "Typeless candidate 1 + UNORM/sRGB",
+            "Typeless candidate 2 + UNORM/sRGB",
+            "Typeless candidate 3 + UNORM/sRGB",
+            "Typeless candidate 4 + UNORM/sRGB",
+            "Typeless candidate 5 + UNORM/sRGB",
+            "Typeless candidate 6 + UNORM/sRGB",
+            "Typeless candidate 7 + UNORM/sRGB",
+            "UNORM + sRGB only",
+            "None (native formats)",
+        },
         .is_global = true,
         .is_visible = []() { return current_settings_mode >= 2; },
     },
@@ -4459,17 +4471,35 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           renodx::utils::settings::global_name.c_str(),
           "ResourceUpgradeTest",
           resource_upgrade_test);
+      if (resource_upgrade_test < 0 || resource_upgrade_test > 10) {
+        resource_upgrade_test = 0;
+      }
       resource_upgrade_test_setting = static_cast<float>(resource_upgrade_test);
-      renodx::utils::log::i("DL2 resource upgrade matrix: ", resource_upgrade_test);
+      const int32_t typeless_candidate_index =
+          resource_upgrade_test >= 1 && resource_upgrade_test <= 8
+              ? resource_upgrade_test - 1
+              : -1;
+      const bool enable_typeless_upgrade = resource_upgrade_test <= 8;
+      const bool enable_unorm_upgrades = resource_upgrade_test <= 9;
+      renodx::utils::log::i(
+          "DL2 typeless candidate test: mode=",
+          resource_upgrade_test,
+          " index=",
+          typeless_candidate_index,
+          " typeless=",
+          enable_typeless_upgrade,
+          " unorm_srgb=",
+          enable_unorm_upgrades);
 
       // The 0x3E -> 0x268 -> 0xAD chain uses full-size R8G8B8A8_TYPELESS
       // resources. Without their FP16 clones, values above 1.0 are clipped
       // immediately after the HDR bridge and the final output is capped near
       // the 203-nit reference white.
-      if (resource_upgrade_test == 0 || resource_upgrade_test == 1) {
+      if (enable_typeless_upgrade) {
         renodx::mods::swapchain::resource_upgrade_infos.push_back({
           .old_format = reshade::api::format::r8g8b8a8_typeless,
           .new_format = reshade::api::format::r16g16b16a16_float,
+          .index = typeless_candidate_index,
           .ignore_size = false,
           .use_resource_view_cloning = true,
           .use_resource_view_hot_swap = false,
@@ -4485,7 +4515,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // Preserve range for the general UNORM scene targets. The typeless
       // and sRGB variants below carry the same HDR composite through later
       // native passes.
-      if (resource_upgrade_test == 0 || resource_upgrade_test == 2) {
+      if (enable_unorm_upgrades) {
         renodx::mods::swapchain::resource_upgrade_infos.push_back({
           .old_format = reshade::api::format::r8g8b8a8_unorm,
           .new_format = reshade::api::format::r16g16b16a16_float,

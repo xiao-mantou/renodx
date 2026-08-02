@@ -45,3 +45,13 @@ With DLSS SR Off, `0x3E Legacy sRGB Output (A/B)` made the image visibly washed 
 ### Runtime DLSS mode switch crash
 
 Changing DLSS mode while already in gameplay caused an immediate crash. Treat runtime DLSS mode switching as unsafe until resource lifetime handling is fixed. This likely shares the settings-save resize boundary: the upscaler output resource changes while FP16 clone views and replacement descriptor tables still refer to the previous generation.
+
+## 2026-08-02 Resource Upgrade Isolation
+
+The startup resource matrix established the following boundary:
+
+- Native formats and `UNORM + sRGB only` preserve the expected DLSS Off color, but cap the sky near 203 nit.
+- Enabling the full-size `R8G8B8A8_TYPELESS => R16G16B16A16_FLOAT` clone restores HDR headroom above 203 nit, but corrupts the DLSS Off color path.
+- The UNORM and sRGB clone families are therefore neither the source of the color error nor sufficient to restore HDR headroom.
+
+The next build narrows the typeless rule by creation index. `Typeless Resource Candidate` is a global startup setting with candidates 0 through 7; every candidate retains the UNORM and sRGB rules. A full game exit and restart is required after each change. The target result is native-format color with HDR headroom above 203 nit.
