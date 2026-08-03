@@ -3946,6 +3946,12 @@ renodx::utils::settings::Settings settings = {
             "Typeless candidate 7 + UNORM/sRGB",
             "UNORM + sRGB only",
             "None (native formats)",
+            "Typeless 2 + 3 + UNORM/sRGB",
+            "Typeless 2 + 4 + UNORM/sRGB",
+            "Typeless 3 + 4 + UNORM/sRGB",
+            "Typeless 2 + 3 + 4 + UNORM/sRGB",
+            "Typeless 2 + 4 + 6 + UNORM/sRGB",
+            "Typeless 2 + 3 + 4 + 6 + UNORM/sRGB",
         },
         .is_global = true,
         .is_visible = []() { return current_settings_mode >= 2; },
@@ -4471,21 +4477,37 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           renodx::utils::settings::global_name.c_str(),
           "ResourceUpgradeTest",
           resource_upgrade_test);
-      if (resource_upgrade_test < 0 || resource_upgrade_test > 10) {
+      if (resource_upgrade_test < 0 || resource_upgrade_test > 16) {
         resource_upgrade_test = 0;
       }
       resource_upgrade_test_setting = static_cast<float>(resource_upgrade_test);
-      const int32_t typeless_candidate_index =
-          resource_upgrade_test >= 1 && resource_upgrade_test <= 8
-              ? resource_upgrade_test - 1
-              : -1;
-      const bool enable_typeless_upgrade = resource_upgrade_test <= 8;
-      const bool enable_unorm_upgrades = resource_upgrade_test <= 9;
+      uint32_t typeless_candidate_mask = 0u;
+      if (resource_upgrade_test == 0) {
+        typeless_candidate_mask = 0xFFu;
+      } else if (resource_upgrade_test >= 1 && resource_upgrade_test <= 8) {
+        typeless_candidate_mask = 1u << (resource_upgrade_test - 1);
+      } else if (resource_upgrade_test == 11) {
+        typeless_candidate_mask = (1u << 2) | (1u << 3);
+      } else if (resource_upgrade_test == 12) {
+        typeless_candidate_mask = (1u << 2) | (1u << 4);
+      } else if (resource_upgrade_test == 13) {
+        typeless_candidate_mask = (1u << 3) | (1u << 4);
+      } else if (resource_upgrade_test == 14) {
+        typeless_candidate_mask = (1u << 2) | (1u << 3) | (1u << 4);
+      } else if (resource_upgrade_test == 15) {
+        typeless_candidate_mask = (1u << 2) | (1u << 4) | (1u << 6);
+      } else if (resource_upgrade_test == 16) {
+        typeless_candidate_mask = (1u << 2) | (1u << 3) | (1u << 4) | (1u << 6);
+      }
+      const bool enable_typeless_upgrade = typeless_candidate_mask != 0u;
+      const bool enable_unorm_upgrades = resource_upgrade_test != 10;
       renodx::utils::log::i(
           "DL2 typeless candidate test: mode=",
           resource_upgrade_test,
-          " index=",
-          typeless_candidate_index,
+          " mask=0x",
+          std::hex,
+          typeless_candidate_mask,
+          std::dec,
           " typeless=",
           enable_typeless_upgrade,
           " unorm_srgb=",
@@ -4496,20 +4518,19 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // immediately after the HDR bridge and the final output is capped near
       // the 203-nit reference white.
       if (enable_typeless_upgrade) {
-        renodx::mods::swapchain::resource_upgrade_infos.push_back({
-          .old_format = reshade::api::format::r8g8b8a8_typeless,
-          .new_format = reshade::api::format::r16g16b16a16_float,
-          .index = typeless_candidate_index,
-          .ignore_size = false,
-          .use_resource_view_cloning = true,
-          .use_resource_view_hot_swap = false,
-          // The 0x3E -> 0x268 -> 0xAD intermediate is typeless but is not the
-          // swapchain backbuffer. Keep the size gate so unrelated render
-          // targets are excluded while allowing this full-size chain to get a
-          // coherent FP16 resource and all of its views.
-          .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
-          .usage_include = reshade::api::resource_usage::render_target,
-        });
+        for (int32_t candidate_index = 0; candidate_index < 8; ++candidate_index) {
+          if ((typeless_candidate_mask & (1u << candidate_index)) == 0u) continue;
+          renodx::mods::swapchain::resource_upgrade_infos.push_back({
+            .old_format = reshade::api::format::r8g8b8a8_typeless,
+            .new_format = reshade::api::format::r16g16b16a16_float,
+            .index = candidate_index,
+            .ignore_size = false,
+            .use_resource_view_cloning = true,
+            .use_resource_view_hot_swap = false,
+            .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
+            .usage_include = reshade::api::resource_usage::render_target,
+          });
+        }
       }
 
       // Preserve range for the general UNORM scene targets. The typeless

@@ -55,3 +55,7 @@ The startup resource matrix established the following boundary:
 - The UNORM and sRGB clone families are therefore neither the source of the color error nor sufficient to restore HDR headroom.
 
 The next build narrows the typeless rule by creation index. `Typeless Resource Candidate` is a global startup setting with candidates 0 through 7; every candidate retains the UNORM and sRGB rules. A full game exit and restart is required after each change. The target result is native-format color with HDR headroom above 203 nit.
+
+### Single-candidate result
+
+Candidates 2, 3, 4, and 6 retain the expected color but remain capped near 203 nit. Candidate 5 changes the color darker and candidate 7 makes the image brighter, but both remain capped. This rules out a single required Typeless resource. The next matrix tests combinations `2+3`, `2+4`, `3+4`, `2+3+4`, `2+4+6`, and `2+3+4+6`, with UNORM+sRGB upgrades retained.
