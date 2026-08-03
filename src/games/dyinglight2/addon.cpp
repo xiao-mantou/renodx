@@ -4027,6 +4027,8 @@ renodx::utils::settings::Settings settings = {
             "Typeless 4 + 5 + 7 + UNORM/sRGB",
             "All typeless (diagnostic) + UNORM/sRGB",
             "Semantic hot-swap (experimental)",
+            "Exact Balanced chain 0 + 1",
+            "Exact Balanced + FG chain 2 + 3",
         },
         .is_global = true,
         .is_visible = []() { return current_settings_mode >= 2; },
@@ -4555,7 +4557,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           renodx::utils::settings::global_name.c_str(),
           "ResourceUpgradeTest",
           resource_upgrade_test);
-      if (resource_upgrade_test < 0 || resource_upgrade_test > 31) {
+      if (resource_upgrade_test < 0 || resource_upgrade_test > 33) {
         resource_upgrade_test = 0;
       }
       resource_upgrade_test_setting = static_cast<float>(resource_upgrade_test);
@@ -4597,6 +4599,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         typeless_candidate_mask = (uint64_t{1} << 5) | (uint64_t{1} << 7);
       } else if (resource_upgrade_test == 29) {
         typeless_candidate_mask = (uint64_t{1} << 4) | (uint64_t{1} << 5) | (uint64_t{1} << 7);
+      } else if (resource_upgrade_test == 32) {
+        typeless_candidate_mask = (uint64_t{1} << 0) | (uint64_t{1} << 1);
+      } else if (resource_upgrade_test == 33) {
+        typeless_candidate_mask = (uint64_t{1} << 2) | (uint64_t{1} << 3);
       }
       const bool enable_typeless_upgrade = upgrade_all_typeless
           || semantic_typeless_hot_swap
