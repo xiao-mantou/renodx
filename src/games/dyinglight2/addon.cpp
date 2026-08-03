@@ -3428,13 +3428,17 @@ void OnDownstreamDrawCapturePresent(
 bool ActivateDl2HdrTarget(reshade::api::command_list* cmd_list) {
   auto rtvs = renodx::utils::swapchain::GetRenderTargets(cmd_list);
   bool has_active_clone = false;
-  for (const auto rtv : rtvs) {
+  for (auto& rtv : rtvs) {
     if (rtv.handle == 0u) continue;
     renodx::mods::swapchain::ActivateCloneHotSwap(cmd_list->get_device(), rtv);
+    const auto clone_view = renodx::mods::swapchain::GetResourceViewClone(rtv);
+    if (clone_view.handle != 0u) rtv = clone_view;
     renodx::utils::resource::GetLiveResourceViewInfo(
         rtv,
         [&](const renodx::utils::resource::ResourceViewInfo& info) {
-          has_active_clone = has_active_clone || (info.clone_enabled && info.clone.handle != 0u);
+          has_active_clone = has_active_clone
+              || info.is_clone
+              || (info.clone_enabled && info.clone.handle != 0u);
         });
   }
   if (has_active_clone) {
