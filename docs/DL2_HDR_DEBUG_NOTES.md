@@ -65,3 +65,5 @@ All tested combinations also remained capped without changing color. The indexed
 The `8-15` range alone remained color-correct but capped at 203, while cumulative `0-15` exceeded 203 with incorrect color. This indicates an interaction between resources in `0-7` and `8-15`; `Cumulative 0-7` is added as the next boundary test.
 
 The targeted color-path audit now reports `upgrade_index` for each captured input and output. This is derived from the actual `ResourceUpgradeInfo` attached to the resource clone, so it can identify which indexed rules are used by 0x3E, 0x268, and 0xAD without changing rendering behavior.
+
+The first indexed capture identified the concrete late-color chain: 0x3E writes candidate 4, 0x268 reads 4 and writes candidate 5, and 0xAD reads candidate 7 after the intervening UI/composite writers. Pairwise tests and the exact `4+5+7` combination replace further broad range searching.

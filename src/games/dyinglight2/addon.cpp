@@ -3965,6 +3965,10 @@ renodx::utils::settings::Settings settings = {
             "Typeless cumulative 0-15 + UNORM/sRGB",
             "Typeless cumulative 0-31 + UNORM/sRGB",
             "Typeless cumulative 0-63 + UNORM/sRGB",
+            "Typeless 4 + 5 + UNORM/sRGB",
+            "Typeless 4 + 7 + UNORM/sRGB",
+            "Typeless 5 + 7 + UNORM/sRGB",
+            "Typeless 4 + 5 + 7 + UNORM/sRGB",
         },
         .is_global = true,
         .is_visible = []() { return current_settings_mode >= 2; },
@@ -4490,7 +4494,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           renodx::utils::settings::global_name.c_str(),
           "ResourceUpgradeTest",
           resource_upgrade_test);
-      if (resource_upgrade_test < 0 || resource_upgrade_test > 25) {
+      if (resource_upgrade_test < 0 || resource_upgrade_test > 29) {
         resource_upgrade_test = 0;
       }
       resource_upgrade_test_setting = static_cast<float>(resource_upgrade_test);
@@ -4521,6 +4525,14 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         static constexpr uint32_t RANGE_ENDS[] = {7, 15, 31, 63};
         const uint32_t end = RANGE_ENDS[resource_upgrade_test - 22];
         typeless_candidate_mask = end == 63 ? ~uint64_t{0} : ((uint64_t{1} << (end + 1)) - 1);
+      } else if (resource_upgrade_test == 26) {
+        typeless_candidate_mask = (uint64_t{1} << 4) | (uint64_t{1} << 5);
+      } else if (resource_upgrade_test == 27) {
+        typeless_candidate_mask = (uint64_t{1} << 4) | (uint64_t{1} << 7);
+      } else if (resource_upgrade_test == 28) {
+        typeless_candidate_mask = (uint64_t{1} << 5) | (uint64_t{1} << 7);
+      } else if (resource_upgrade_test == 29) {
+        typeless_candidate_mask = (uint64_t{1} << 4) | (uint64_t{1} << 5) | (uint64_t{1} << 7);
       }
       const bool enable_typeless_upgrade = upgrade_all_typeless || typeless_candidate_mask != 0u;
       const bool enable_unorm_upgrades = resource_upgrade_test != 10;
