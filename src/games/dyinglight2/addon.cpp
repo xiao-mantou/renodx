@@ -4622,7 +4622,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         if (upgrade_all_typeless || semantic_typeless_hot_swap) {
           renodx::mods::swapchain::resource_upgrade_infos.push_back({
             .old_format = reshade::api::format::r8g8b8a8_typeless,
-            .new_format = reshade::api::format::r16g16b16a16_float,
+            .new_format = semantic_typeless_hot_swap
+                ? reshade::api::format::r16g16b16a16_typeless
+                : reshade::api::format::r16g16b16a16_float,
             .ignore_size = false,
             .use_resource_view_cloning = true,
             .use_resource_view_hot_swap = semantic_typeless_hot_swap,
