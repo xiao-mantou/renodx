@@ -1129,6 +1129,7 @@ struct GammaAuditResource {
   reshade::api::format effective_view_format = reshade::api::format::unknown;
   uint32_t width = 0u;
   uint32_t height = 0u;
+  int32_t creation_index = -1;
   int32_t upgrade_index = -1;
   bool clone_enabled = false;
   bool view_clone_enabled = false;
@@ -1362,6 +1363,48 @@ std::unordered_map<reshade::api::command_list*, std::vector<reshade::api::resour
 std::unordered_map<reshade::api::command_list*, reshade::api::buffer_range> upscaler_input_cb0_ranges;
 std::unordered_map<uint64_t, UpscalerMappedBuffer> upscaler_mapped_buffers;
 std::mutex upscaler_mapped_buffers_mutex;
+std::mutex typeless_creation_audit_mutex;
+std::unordered_map<uint64_t, int32_t> typeless_creation_indices;
+uint32_t typeless_creation_width = 0u;
+uint32_t typeless_creation_height = 0u;
+int32_t typeless_creation_next_index = 0;
+
+void OnTypelessAuditInitSwapchain(reshade::api::swapchain* swapchain, bool) {
+  if (swapchain == nullptr) return;
+  auto* device = swapchain->get_device();
+  if (device == nullptr) return;
+  const auto desc = device->get_resource_desc(swapchain->get_current_back_buffer());
+  std::scoped_lock lock(typeless_creation_audit_mutex);
+  typeless_creation_indices.clear();
+  typeless_creation_width = desc.texture.width;
+  typeless_creation_height = desc.texture.height;
+  typeless_creation_next_index = 0;
+}
+
+void OnTypelessAuditInitResource(
+    reshade::api::device*,
+    const reshade::api::resource_desc& desc,
+    const reshade::api::subresource_data*,
+    reshade::api::resource_usage,
+    reshade::api::resource resource) {
+  if (resource.handle == 0u
+      || desc.texture.format != reshade::api::format::r8g8b8a8_typeless
+      || (desc.usage & reshade::api::resource_usage::render_target) == 0) {
+    return;
+  }
+  std::scoped_lock lock(typeless_creation_audit_mutex);
+  if (typeless_creation_width == 0u || typeless_creation_height == 0u
+      || desc.texture.width != typeless_creation_width
+      || desc.texture.height != typeless_creation_height) {
+    return;
+  }
+  typeless_creation_indices[resource.handle] = typeless_creation_next_index++;
+}
+
+void OnTypelessAuditDestroyResource(reshade::api::device*, reshade::api::resource resource) {
+  std::scoped_lock lock(typeless_creation_audit_mutex);
+  typeless_creation_indices.erase(resource.handle);
+}
 
 GammaAuditResource DescribeGammaAuditView(
     reshade::api::device* device,
@@ -1380,6 +1423,11 @@ GammaAuditResource DescribeGammaAuditView(
   result.height = desc.texture.height;
   result.view_format = device->get_resource_view_desc(view).format;
   result.effective_view_format = result.view_format;
+  {
+    std::scoped_lock lock(typeless_creation_audit_mutex);
+    const auto index = typeless_creation_indices.find(resource.handle);
+    if (index != typeless_creation_indices.end()) result.creation_index = index->second;
+  }
   renodx::utils::resource::GetResourceInfo(resource, [&result](const renodx::utils::resource::ResourceInfo& info) {
     result.clone = info.clone.handle;
     result.clone_format = info.clone_desc.texture.format;
@@ -3038,6 +3086,7 @@ void OnDownstreamDrawCapturePresent(
                << ",view=" << static_cast<uint32_t>(entry.input.view_format)
                << "=>" << static_cast<uint32_t>(entry.input.effective_view_format)
                << ",clone=" << (entry.input.view_clone_enabled ? 1 : 0)
+               << ",creation_index=" << entry.input.creation_index
                << ",upgrade_index=" << entry.input.upgrade_index << ")"
                << " rtv(0x" << std::hex << entry.output.resource << "," << std::dec
                << static_cast<uint32_t>(entry.output.format) << "=>0x" << std::hex
@@ -3047,6 +3096,7 @@ void OnDownstreamDrawCapturePresent(
                << ",view=" << static_cast<uint32_t>(entry.output.view_format)
                << "=>" << static_cast<uint32_t>(entry.output.effective_view_format)
                << ",clone=" << (entry.output.view_clone_enabled ? 1 : 0)
+               << ",creation_index=" << entry.output.creation_index
                << ",upgrade_index=" << entry.output.upgrade_index << ")"
                << " cmd=0x" << std::hex << entry.command_list
                << " epoch=" << std::dec << entry.command_list_epoch
@@ -4435,6 +4485,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::utils::log::i("DL2 scoped clone diagnostic: output-audit-v1");
       reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
       reshade::register_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
+      reshade::register_event<reshade::addon_event::init_swapchain>(OnTypelessAuditInitSwapchain);
+      reshade::register_event<reshade::addon_event::init_resource>(OnTypelessAuditInitResource);
+      reshade::register_event<reshade::addon_event::destroy_resource>(OnTypelessAuditDestroyResource);
       reshade::register_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
       reshade::register_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
       reshade::register_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
@@ -4627,6 +4680,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::barrier>(OnDlssFgBackbufferBarrier);
       reshade::unregister_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
       reshade::unregister_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
+      reshade::unregister_event<reshade::addon_event::init_swapchain>(OnTypelessAuditInitSwapchain);
+      reshade::unregister_event<reshade::addon_event::init_resource>(OnTypelessAuditInitResource);
+      reshade::unregister_event<reshade::addon_event::destroy_resource>(OnTypelessAuditDestroyResource);
       reshade::unregister_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
       reshade::unregister_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
       reshade::unregister_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
