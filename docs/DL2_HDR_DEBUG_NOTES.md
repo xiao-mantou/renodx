@@ -59,3 +59,5 @@ The next build narrows the typeless rule by creation index. `Typeless Resource C
 ### Single-candidate result
 
 Candidates 2, 3, 4, and 6 retain the expected color but remain capped near 203 nit. Candidate 5 changes the color darker and candidate 7 makes the image brighter, but both remain capped. This rules out a single required Typeless resource. The next matrix tests combinations `2+3`, `2+4`, `3+4`, `2+3+4`, `2+4+6`, and `2+3+4+6`, with UNORM+sRGB upgrades retained.
+
+All tested combinations also remained capped without changing color. The indexed rules only cover one creation instance per selected index, whereas the broad rule continues matching later resources. The matrix is extended with ranges 8-63 and cumulative ranges 0-63. The `All typeless` mode is restored to the actual unbounded rule rather than a 0-7 mask.

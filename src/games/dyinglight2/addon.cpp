@@ -3933,7 +3933,7 @@ renodx::utils::settings::Settings settings = {
         .default_value = 0.f,
         .label = "Typeless Resource Candidate",
         .section = "Debug",
-        .tooltip = "Requires a full game restart. Diagnostic only: narrows the full-size typeless FP16 upgrade to one resource creation index while retaining the UNORM and sRGB upgrades.",
+        .tooltip = "Requires a full game restart. Diagnostic only: selects individual or grouped full-size typeless resource creation indices while retaining the UNORM and sRGB upgrades.",
         .labels = {
             "All typeless + UNORM/sRGB",
             "Typeless candidate 0 + UNORM/sRGB",
@@ -3952,6 +3952,14 @@ renodx::utils::settings::Settings settings = {
             "Typeless 2 + 3 + 4 + UNORM/sRGB",
             "Typeless 2 + 4 + 6 + UNORM/sRGB",
             "Typeless 2 + 3 + 4 + 6 + UNORM/sRGB",
+            "Typeless range 8-15 + UNORM/sRGB",
+            "Typeless range 16-23 + UNORM/sRGB",
+            "Typeless range 24-31 + UNORM/sRGB",
+            "Typeless range 32-47 + UNORM/sRGB",
+            "Typeless range 48-63 + UNORM/sRGB",
+            "Typeless cumulative 0-15 + UNORM/sRGB",
+            "Typeless cumulative 0-31 + UNORM/sRGB",
+            "Typeless cumulative 0-63 + UNORM/sRGB",
         },
         .is_global = true,
         .is_visible = []() { return current_settings_mode >= 2; },
@@ -4477,29 +4485,39 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           renodx::utils::settings::global_name.c_str(),
           "ResourceUpgradeTest",
           resource_upgrade_test);
-      if (resource_upgrade_test < 0 || resource_upgrade_test > 16) {
+      if (resource_upgrade_test < 0 || resource_upgrade_test > 24) {
         resource_upgrade_test = 0;
       }
       resource_upgrade_test_setting = static_cast<float>(resource_upgrade_test);
-      uint32_t typeless_candidate_mask = 0u;
-      if (resource_upgrade_test == 0) {
-        typeless_candidate_mask = 0xFFu;
-      } else if (resource_upgrade_test >= 1 && resource_upgrade_test <= 8) {
-        typeless_candidate_mask = 1u << (resource_upgrade_test - 1);
+      const bool upgrade_all_typeless = resource_upgrade_test == 0;
+      uint64_t typeless_candidate_mask = 0u;
+      if (resource_upgrade_test >= 1 && resource_upgrade_test <= 8) {
+        typeless_candidate_mask = uint64_t{1} << (resource_upgrade_test - 1);
       } else if (resource_upgrade_test == 11) {
-        typeless_candidate_mask = (1u << 2) | (1u << 3);
+        typeless_candidate_mask = (uint64_t{1} << 2) | (uint64_t{1} << 3);
       } else if (resource_upgrade_test == 12) {
-        typeless_candidate_mask = (1u << 2) | (1u << 4);
+        typeless_candidate_mask = (uint64_t{1} << 2) | (uint64_t{1} << 4);
       } else if (resource_upgrade_test == 13) {
-        typeless_candidate_mask = (1u << 3) | (1u << 4);
+        typeless_candidate_mask = (uint64_t{1} << 3) | (uint64_t{1} << 4);
       } else if (resource_upgrade_test == 14) {
-        typeless_candidate_mask = (1u << 2) | (1u << 3) | (1u << 4);
+        typeless_candidate_mask = (uint64_t{1} << 2) | (uint64_t{1} << 3) | (uint64_t{1} << 4);
       } else if (resource_upgrade_test == 15) {
-        typeless_candidate_mask = (1u << 2) | (1u << 4) | (1u << 6);
+        typeless_candidate_mask = (uint64_t{1} << 2) | (uint64_t{1} << 4) | (uint64_t{1} << 6);
       } else if (resource_upgrade_test == 16) {
-        typeless_candidate_mask = (1u << 2) | (1u << 3) | (1u << 4) | (1u << 6);
+        typeless_candidate_mask = (uint64_t{1} << 2) | (uint64_t{1} << 3) | (uint64_t{1} << 4) | (uint64_t{1} << 6);
+      } else if (resource_upgrade_test >= 17 && resource_upgrade_test <= 21) {
+        static constexpr uint32_t RANGE_STARTS[] = {8, 16, 24, 32, 48};
+        static constexpr uint32_t RANGE_ENDS[] = {15, 23, 31, 47, 63};
+        const uint32_t range = static_cast<uint32_t>(resource_upgrade_test - 17);
+        for (uint32_t index = RANGE_STARTS[range]; index <= RANGE_ENDS[range]; ++index) {
+          typeless_candidate_mask |= uint64_t{1} << index;
+        }
+      } else if (resource_upgrade_test >= 22 && resource_upgrade_test <= 24) {
+        static constexpr uint32_t RANGE_ENDS[] = {15, 31, 63};
+        const uint32_t end = RANGE_ENDS[resource_upgrade_test - 22];
+        typeless_candidate_mask = end == 63 ? ~uint64_t{0} : ((uint64_t{1} << (end + 1)) - 1);
       }
-      const bool enable_typeless_upgrade = typeless_candidate_mask != 0u;
+      const bool enable_typeless_upgrade = upgrade_all_typeless || typeless_candidate_mask != 0u;
       const bool enable_unorm_upgrades = resource_upgrade_test != 10;
       renodx::utils::log::i(
           "DL2 typeless candidate test: mode=",
@@ -4508,6 +4526,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           std::hex,
           typeless_candidate_mask,
           std::dec,
+          " all=",
+          upgrade_all_typeless,
           " typeless=",
           enable_typeless_upgrade,
           " unorm_srgb=",
@@ -4518,18 +4538,30 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // immediately after the HDR bridge and the final output is capped near
       // the 203-nit reference white.
       if (enable_typeless_upgrade) {
-        for (int32_t candidate_index = 0; candidate_index < 8; ++candidate_index) {
-          if ((typeless_candidate_mask & (1u << candidate_index)) == 0u) continue;
+        if (upgrade_all_typeless) {
           renodx::mods::swapchain::resource_upgrade_infos.push_back({
             .old_format = reshade::api::format::r8g8b8a8_typeless,
             .new_format = reshade::api::format::r16g16b16a16_float,
-            .index = candidate_index,
             .ignore_size = false,
             .use_resource_view_cloning = true,
             .use_resource_view_hot_swap = false,
             .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
             .usage_include = reshade::api::resource_usage::render_target,
           });
+        } else {
+          for (int32_t candidate_index = 0; candidate_index < 64; ++candidate_index) {
+            if ((typeless_candidate_mask & (uint64_t{1} << candidate_index)) == 0u) continue;
+            renodx::mods::swapchain::resource_upgrade_infos.push_back({
+              .old_format = reshade::api::format::r8g8b8a8_typeless,
+              .new_format = reshade::api::format::r16g16b16a16_float,
+              .index = candidate_index,
+              .ignore_size = false,
+              .use_resource_view_cloning = true,
+              .use_resource_view_hot_swap = false,
+              .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
+              .usage_include = reshade::api::resource_usage::render_target,
+            });
+          }
         }
       }
 
