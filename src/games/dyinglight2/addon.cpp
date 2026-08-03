@@ -3472,6 +3472,7 @@ renodx::mods::shader::CustomShader CreateDl2HdrShader(
 }
 
 bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
+  ActivateDl2HdrTarget(cmd_list);
   {
     std::scoped_lock lock(downstream_draw_capture_mutex);
     if (!upscaler_color_path_audit_state.active
@@ -3620,6 +3621,7 @@ renodx::mods::shader::CustomShader CreateDl2UiWriterProbeShader(
     std::span<const uint8_t> dx11_code,
     std::span<const uint8_t> dx12_code) {
   auto shader = renodx::mods::shader::CreateDirectXShader(crc32, dx11_code, dx12_code);
+  shader.on_draw = ActivateDl2HdrTarget;
   return shader;
 }
 
@@ -4020,6 +4022,7 @@ renodx::utils::settings::Settings settings = {
             "Typeless 5 + 7 + UNORM/sRGB",
             "Typeless 4 + 5 + 7 + UNORM/sRGB",
             "All typeless (diagnostic) + UNORM/sRGB",
+            "Semantic hot-swap (experimental)",
         },
         .is_global = true,
         .is_visible = []() { return current_settings_mode >= 2; },
@@ -4548,11 +4551,12 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           renodx::utils::settings::global_name.c_str(),
           "ResourceUpgradeTest",
           resource_upgrade_test);
-      if (resource_upgrade_test < 0 || resource_upgrade_test > 30) {
+      if (resource_upgrade_test < 0 || resource_upgrade_test > 31) {
         resource_upgrade_test = 0;
       }
       resource_upgrade_test_setting = static_cast<float>(resource_upgrade_test);
       const bool upgrade_all_typeless = resource_upgrade_test == 30;
+      const bool semantic_typeless_hot_swap = resource_upgrade_test == 31;
       uint64_t typeless_candidate_mask = 0u;
       if (resource_upgrade_test == 0) {
         typeless_candidate_mask = (uint64_t{1} << 4) | (uint64_t{1} << 5) | (uint64_t{1} << 7);
@@ -4590,7 +4594,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       } else if (resource_upgrade_test == 29) {
         typeless_candidate_mask = (uint64_t{1} << 4) | (uint64_t{1} << 5) | (uint64_t{1} << 7);
       }
-      const bool enable_typeless_upgrade = upgrade_all_typeless || typeless_candidate_mask != 0u;
+      const bool enable_typeless_upgrade = upgrade_all_typeless
+          || semantic_typeless_hot_swap
+          || typeless_candidate_mask != 0u;
       const bool enable_unorm_upgrades = resource_upgrade_test != 10;
       renodx::utils::log::i(
           "DL2 typeless candidate test: mode=",
@@ -4601,6 +4607,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           std::dec,
           " all=",
           upgrade_all_typeless,
+          " semantic_hot_swap=",
+          semantic_typeless_hot_swap,
           " typeless=",
           enable_typeless_upgrade,
           " unorm_srgb=",
@@ -4611,13 +4619,13 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // immediately after the HDR bridge and the final output is capped near
       // the 203-nit reference white.
       if (enable_typeless_upgrade) {
-        if (upgrade_all_typeless) {
+        if (upgrade_all_typeless || semantic_typeless_hot_swap) {
           renodx::mods::swapchain::resource_upgrade_infos.push_back({
             .old_format = reshade::api::format::r8g8b8a8_typeless,
             .new_format = reshade::api::format::r16g16b16a16_float,
             .ignore_size = false,
             .use_resource_view_cloning = true,
-            .use_resource_view_hot_swap = false,
+            .use_resource_view_hot_swap = semantic_typeless_hot_swap,
             .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
             .usage_include = reshade::api::resource_usage::render_target,
           });
