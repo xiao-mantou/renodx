@@ -3957,6 +3957,7 @@ renodx::utils::settings::Settings settings = {
             "Typeless range 24-31 + UNORM/sRGB",
             "Typeless range 32-47 + UNORM/sRGB",
             "Typeless range 48-63 + UNORM/sRGB",
+            "Typeless cumulative 0-7 + UNORM/sRGB",
             "Typeless cumulative 0-15 + UNORM/sRGB",
             "Typeless cumulative 0-31 + UNORM/sRGB",
             "Typeless cumulative 0-63 + UNORM/sRGB",
@@ -4485,7 +4486,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           renodx::utils::settings::global_name.c_str(),
           "ResourceUpgradeTest",
           resource_upgrade_test);
-      if (resource_upgrade_test < 0 || resource_upgrade_test > 24) {
+      if (resource_upgrade_test < 0 || resource_upgrade_test > 25) {
         resource_upgrade_test = 0;
       }
       resource_upgrade_test_setting = static_cast<float>(resource_upgrade_test);
@@ -4512,8 +4513,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         for (uint32_t index = RANGE_STARTS[range]; index <= RANGE_ENDS[range]; ++index) {
           typeless_candidate_mask |= uint64_t{1} << index;
         }
-      } else if (resource_upgrade_test >= 22 && resource_upgrade_test <= 24) {
-        static constexpr uint32_t RANGE_ENDS[] = {15, 31, 63};
+      } else if (resource_upgrade_test >= 22 && resource_upgrade_test <= 25) {
+        static constexpr uint32_t RANGE_ENDS[] = {7, 15, 31, 63};
         const uint32_t end = RANGE_ENDS[resource_upgrade_test - 22];
         typeless_candidate_mask = end == 63 ? ~uint64_t{0} : ((uint64_t{1} << (end + 1)) - 1);
       }
