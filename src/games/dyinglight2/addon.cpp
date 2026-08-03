@@ -1129,6 +1129,7 @@ struct GammaAuditResource {
   reshade::api::format effective_view_format = reshade::api::format::unknown;
   uint32_t width = 0u;
   uint32_t height = 0u;
+  int32_t upgrade_index = -1;
   bool clone_enabled = false;
   bool view_clone_enabled = false;
 };
@@ -1383,6 +1384,7 @@ GammaAuditResource DescribeGammaAuditView(
     result.clone = info.clone.handle;
     result.clone_format = info.clone_desc.texture.format;
     result.clone_enabled = info.clone_enabled;
+    if (info.clone_target != nullptr) result.upgrade_index = info.clone_target->index;
   });
   renodx::utils::resource::GetResourceViewInfo(view, [&result, device](const renodx::utils::resource::ResourceViewInfo& info) {
     result.view_clone_enabled = info.clone_enabled;
@@ -3035,7 +3037,8 @@ void OnDownstreamDrawCapturePresent(
                << entry.input.width << "x" << entry.input.height
                << ",view=" << static_cast<uint32_t>(entry.input.view_format)
                << "=>" << static_cast<uint32_t>(entry.input.effective_view_format)
-               << ",clone=" << (entry.input.view_clone_enabled ? 1 : 0) << ")"
+               << ",clone=" << (entry.input.view_clone_enabled ? 1 : 0)
+               << ",upgrade_index=" << entry.input.upgrade_index << ")"
                << " rtv(0x" << std::hex << entry.output.resource << "," << std::dec
                << static_cast<uint32_t>(entry.output.format) << "=>0x" << std::hex
                << entry.output.effective << "," << std::dec
@@ -3043,7 +3046,8 @@ void OnDownstreamDrawCapturePresent(
                << entry.output.width << "x" << entry.output.height
                << ",view=" << static_cast<uint32_t>(entry.output.view_format)
                << "=>" << static_cast<uint32_t>(entry.output.effective_view_format)
-               << ",clone=" << (entry.output.view_clone_enabled ? 1 : 0) << ")"
+               << ",clone=" << (entry.output.view_clone_enabled ? 1 : 0)
+               << ",upgrade_index=" << entry.output.upgrade_index << ")"
                << " cmd=0x" << std::hex << entry.command_list
                << " epoch=" << std::dec << entry.command_list_epoch
                << " execute=" << entry.execute_serial
