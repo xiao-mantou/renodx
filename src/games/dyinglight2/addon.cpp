@@ -3939,7 +3939,7 @@ renodx::utils::settings::Settings settings = {
         .section = "Debug",
         .tooltip = "Requires a full game restart. Diagnostic only: selects individual or grouped full-size typeless resource creation indices while retaining the UNORM and sRGB upgrades.",
         .labels = {
-            "All typeless + UNORM/sRGB",
+            "Exact HDR chain 4 + 5 + 7",
             "Typeless candidate 0 + UNORM/sRGB",
             "Typeless candidate 1 + UNORM/sRGB",
             "Typeless candidate 2 + UNORM/sRGB",
@@ -3969,6 +3969,7 @@ renodx::utils::settings::Settings settings = {
             "Typeless 4 + 7 + UNORM/sRGB",
             "Typeless 5 + 7 + UNORM/sRGB",
             "Typeless 4 + 5 + 7 + UNORM/sRGB",
+            "All typeless (diagnostic) + UNORM/sRGB",
         },
         .is_global = true,
         .is_visible = []() { return current_settings_mode >= 2; },
@@ -4494,13 +4495,15 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           renodx::utils::settings::global_name.c_str(),
           "ResourceUpgradeTest",
           resource_upgrade_test);
-      if (resource_upgrade_test < 0 || resource_upgrade_test > 29) {
+      if (resource_upgrade_test < 0 || resource_upgrade_test > 30) {
         resource_upgrade_test = 0;
       }
       resource_upgrade_test_setting = static_cast<float>(resource_upgrade_test);
-      const bool upgrade_all_typeless = resource_upgrade_test == 0;
+      const bool upgrade_all_typeless = resource_upgrade_test == 30;
       uint64_t typeless_candidate_mask = 0u;
-      if (resource_upgrade_test >= 1 && resource_upgrade_test <= 8) {
+      if (resource_upgrade_test == 0) {
+        typeless_candidate_mask = (uint64_t{1} << 4) | (uint64_t{1} << 5) | (uint64_t{1} << 7);
+      } else if (resource_upgrade_test >= 1 && resource_upgrade_test <= 8) {
         typeless_candidate_mask = uint64_t{1} << (resource_upgrade_test - 1);
       } else if (resource_upgrade_test == 11) {
         typeless_candidate_mask = (uint64_t{1} << 2) | (uint64_t{1} << 3);

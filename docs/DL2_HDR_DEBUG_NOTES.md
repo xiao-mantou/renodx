@@ -67,3 +67,5 @@ The `8-15` range alone remained color-correct but capped at 203, while cumulativ
 The targeted color-path audit now reports `upgrade_index` for each captured input and output. This is derived from the actual `ResourceUpgradeInfo` attached to the resource clone, so it can identify which indexed rules are used by 0x3E, 0x268, and 0xAD without changing rendering behavior.
 
 The first indexed capture identified the concrete late-color chain: 0x3E writes candidate 4, 0x268 reads 4 and writes candidate 5, and 0xAD reads candidate 7 after the intervening UI/composite writers. Pairwise tests and the exact `4+5+7` combination replace further broad range searching.
+
+Runtime validation confirmed that the complete `4+5+7` set restores both correct color and HDR headroom. The pairwise subsets are incomplete: `4+5` renders too dark and `4+7` renders too light. Mode 0 is therefore changed to the production default exact chain, while the former unbounded Typeless rule remains available only as the final diagnostic option.
