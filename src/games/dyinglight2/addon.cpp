@@ -2859,9 +2859,8 @@ void OnDlssFgExecuteCommandList(
       renodx::mods::swapchain::ConsumeProxySourceForBackBuffer({candidate.back_buffer});
       renodx::mods::swapchain::SkipProxyDrawForBackBuffer({candidate.back_buffer});
     } else {
+      renodx::mods::swapchain::ConsumeProxySourceForBackBuffer({candidate.back_buffer});
       renodx::mods::swapchain::ConsumeProxyDrawSkipForBackBuffer({candidate.back_buffer});
-      renodx::mods::swapchain::SetProxySourceForBackBuffer(
-          {candidate.back_buffer}, {candidate.copy_source});
     }
   }
 
@@ -2903,8 +2902,8 @@ void OnDlssFgExecuteCommandList(
           << " backbuffer_" << describe_submission_resource(candidate.back_buffer)
           << " copy_source=0x" << candidate.copy_source
           << " copy_source_" << describe_submission_resource(candidate.copy_source)
-          << " final_color_mode=" << (roundtrip_final_color ? "roundtrip" : "direct")
-          << " proxy_action=" << (roundtrip_final_color ? "force_proxy_source" : "skip_generated_proxy")
+          << " final_color_mode=" << (roundtrip_final_color ? "default_proxy" : "direct")
+          << " proxy_action=" << (roundtrip_final_color ? "use_default_proxy" : "skip_generated_proxy")
           << " output_hdr10=" << (swap_chain_use_hdr10 >= 0.5f ? 1 : 0)
           << " entered_rt=" << std::dec << (candidate.entered_render_target ? 1 : 0)
           << " returned_present=" << (candidate.returned_to_present ? 1 : 0)
@@ -4109,8 +4108,8 @@ renodx::utils::settings::Settings settings = {
         .can_reset = false,
         .label = "DLSS FG Final Color",
         .section = "Compatibility",
-        .tooltip = "A/B test for Streamline's final RGB10/PQ frame. Direct PQ preserves the completed frame without another RenoDX proxy pass; PQ Round-trip decodes and re-encodes it through the standard HDR10 output pass.",
-        .labels = {"Direct PQ", "PQ Round-trip"},
+        .tooltip = "A/B test for Streamline's final RGB10/PQ frame. Direct PQ skips the generated-frame proxy pass; Default Proxy clears the preserved native-copy override and uses the normal active backbuffer-clone path.",
+        .labels = {"Direct PQ", "Default Proxy"},
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
