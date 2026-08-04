@@ -136,6 +136,14 @@ uint64_t dlss_fg_swapchain_snapshot_serial = 0u;
 std::atomic_uint32_t dlss_fg_present_identity_count = 0u;
 std::atomic_uint32_t dlss_fg_reshade_identity_count = 0u;
 std::atomic_uint64_t dlss_fg_identity_event_serial = 0u;
+struct DlssFgTimingSnapshot {
+  uint64_t last_execute_event = 0u;
+  uint64_t last_execute_backbuffer = 0u;
+  uint64_t last_post_proxy_event = 0u;
+  uint64_t last_post_proxy_backbuffer = 0u;
+};
+std::mutex dlss_fg_timing_mutex;
+DlssFgTimingSnapshot dlss_fg_timing = {};
 std::atomic_bool dlss_fg_mode_active = false;
 std::atomic_uint32_t dlss_fg_execute_candidate_remaining = 0u;
 std::atomic_uint32_t dlss_fg_final_copy_diagnostic_count = 0u;
@@ -334,6 +342,11 @@ void CaptureReshadeSwapchainSnapshot(
   const uint32_t count = dlss_fg_reshade_identity_count.fetch_add(1u, std::memory_order_relaxed);
   if (count < 48u) {
     const uint64_t event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
+    {
+      std::scoped_lock timing_lock(dlss_fg_timing_mutex);
+      dlss_fg_timing.last_post_proxy_event = event;
+      dlss_fg_timing.last_post_proxy_backbuffer = snapshot.back_buffer;
+    }
     std::ostringstream message;
     message << "DL2 DLSS FG ReShade present identity: event=" << event
             << " thread=" << GetCurrentThreadId()
@@ -390,6 +403,11 @@ void LogDlssFgPresentIdentity(const char* call_name, IDXGISwapChain* swapchain) 
     }
   }
 
+  DlssFgTimingSnapshot timing = {};
+  {
+    std::scoped_lock timing_lock(dlss_fg_timing_mutex);
+    timing = dlss_fg_timing;
+  }
   std::ostringstream message;
   message << "DL2 DLSS FG swapchain identity: call=" << call_name
           << " event=" << event
@@ -402,7 +420,15 @@ void LogDlssFgPresentIdentity(const char* call_name, IDXGISwapChain* swapchain) 
           << " buffers=" << native.buffer_count
           << " index=" << native.back_buffer_index
           << " backbuffer=0x" << std::hex << native.back_buffer
-          << " match=" << match_kind;
+          << " match=" << match_kind
+          << " last_execute_event=" << std::dec
+          << timing.last_execute_event
+          << " last_execute_backbuffer=0x" << std::hex
+          << timing.last_execute_backbuffer
+          << " last_post_proxy_event=" << std::dec
+          << timing.last_post_proxy_event
+          << " last_post_proxy_backbuffer=0x" << std::hex
+          << timing.last_post_proxy_backbuffer;
   if (matched.native != 0u) {
     message << " reshade_wrapper=0x" << matched.wrapper
             << " reshade_native=0x" << matched.native
@@ -724,6 +750,10 @@ sl::Result HookedSlDLSSGSetOptions(
     std::scoped_lock lock(dlss_fg_command_list_candidate_mutex);
     dlss_fg_command_list_candidates.clear();
     dlss_fg_identity_event_serial.store(0u, std::memory_order_release);
+    {
+      std::scoped_lock timing_lock(dlss_fg_timing_mutex);
+      dlss_fg_timing = {};
+    }
     dlss_fg_present_identity_count.store(0u, std::memory_order_release);
     dlss_fg_reshade_identity_count.store(0u, std::memory_order_release);
     dlss_fg_final_copy_diagnostic_count.store(0u, std::memory_order_release);
@@ -2873,6 +2903,11 @@ void OnDlssFgExecuteCommandList(
   if (remaining == 0u) return;
 
   const uint64_t event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
+  {
+    std::scoped_lock timing_lock(dlss_fg_timing_mutex);
+    dlss_fg_timing.last_execute_event = event;
+    dlss_fg_timing.last_execute_backbuffer = candidate.back_buffer;
+  }
   const bool roundtrip_final_color = dlss_fg_final_color_mode >= 0.5f;
   auto describe_submission_resource = [queue](uint64_t handle) {
     std::ostringstream details;
