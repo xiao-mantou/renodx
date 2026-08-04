@@ -379,9 +379,16 @@ void CaptureReshadeSwapchainSnapshot(
   }
 }
 
-void LogDlssFgPresentIdentity(const char* call_name, IDXGISwapChain* swapchain) {
+struct DlssFgPresentAuditToken {
+  uint64_t entry_event = 0u;
+  uint64_t ad_execute_event = 0u;
+  bool logged = false;
+};
+
+DlssFgPresentAuditToken LogDlssFgPresentIdentity(const char* call_name, IDXGISwapChain* swapchain) {
+  DlssFgPresentAuditToken token = {};
   const uint32_t count = dlss_fg_present_identity_count.fetch_add(1u, std::memory_order_relaxed);
-  if (count >= 48u) return;
+  if (count >= 48u) return token;
 
   const auto native = ReadNativeSwapchainSnapshot(swapchain);
   DlssFgSwapchainSnapshot matched = {};
@@ -424,6 +431,14 @@ void LogDlssFgPresentIdentity(const char* call_name, IDXGISwapChain* swapchain) 
     std::scoped_lock timing_lock(dlss_fg_timing_mutex);
     event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
     timing = dlss_fg_timing;
+    token.entry_event = event;
+    token.ad_execute_event = timing.last_ad_execute_event;
+    token.logged = true;
+    dlss_fg_timing.last_ad_execute_event = 0u;
+    dlss_fg_timing.last_ad_command_list = 0u;
+    dlss_fg_timing.last_ad_epoch = 0u;
+    dlss_fg_timing.last_ad_target = 0u;
+    dlss_fg_timing.last_ad_effective_target = 0u;
   }
   std::ostringstream message;
   message << "DL2 DLSS FG swapchain identity: call=" << call_name
@@ -465,11 +480,36 @@ void LogDlssFgPresentIdentity(const char* call_name, IDXGISwapChain* swapchain) 
             << " snapshot_serial=" << matched.serial;
   }
   renodx::utils::log::i(message.str().c_str());
+  return token;
+}
+
+void LogDlssFgPresentResult(
+    const char* call_name,
+    const DlssFgPresentAuditToken& token,
+    HRESULT result,
+    bool skip) {
+  if (!token.logged) return;
+  uint64_t event = 0u;
+  {
+    std::scoped_lock timing_lock(dlss_fg_timing_mutex);
+    event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
+  }
+  std::ostringstream message;
+  message << "DL2 DLSS FG swapchain result: call=" << call_name
+          << " event=" << event
+          << " thread=" << GetCurrentThreadId()
+          << " entry_event=" << token.entry_event
+          << " consumed_ad_event=" << token.ad_execute_event
+          << " result=0x" << std::hex << std::uppercase << static_cast<uint32_t>(result)
+          << " skip=" << std::dec << (skip ? 1 : 0);
+  renodx::utils::log::i(message.str().c_str());
 }
 
 HRESULT HookedSlDlssGPresent(IDXGISwapChain* swapchain, UINT sync_interval, UINT flags, bool& skip) {
-  LogDlssFgPresentIdentity("Present", swapchain);
-  return real_sl_dlssg_hook_present(swapchain, sync_interval, flags, skip);
+  const auto token = LogDlssFgPresentIdentity("Present", swapchain);
+  const HRESULT result = real_sl_dlssg_hook_present(swapchain, sync_interval, flags, skip);
+  LogDlssFgPresentResult("Present", token, result, skip);
+  return result;
 }
 
 HRESULT HookedSlDlssGPresent1(
@@ -478,8 +518,10 @@ HRESULT HookedSlDlssGPresent1(
     UINT flags,
     const DXGI_PRESENT_PARAMETERS* parameters,
     bool& skip) {
-  LogDlssFgPresentIdentity("Present1", swapchain);
-  return real_sl_dlssg_hook_present1(swapchain, sync_interval, flags, parameters, skip);
+  const auto token = LogDlssFgPresentIdentity("Present1", swapchain);
+  const HRESULT result = real_sl_dlssg_hook_present1(swapchain, sync_interval, flags, parameters, skip);
+  LogDlssFgPresentResult("Present1", token, result, skip);
+  return result;
 }
 
 const char* GetStreamlineTagName(sl::BufferType type) {
