@@ -104,3 +104,31 @@ The FG Direct and Round-trip paths are confirmed to execute. Submission logs als
 ### Current diagnostic hypothesis
 
 The next boundary is Streamline color-tag metadata and transfer semantics. Earlier handoff logging observed two color tags with an unknown/zero native format. This is suspicious but not yet proof of the root cause: a pre-PQ linear resource, an already PQ-encoded final color, or a RenoDX proxy result may be registered without enough metadata for DLSS-G to interpret it consistently. The next diagnostic must enumerate every tag type, native resource and `nativeFormat`, dimensions, tracked clone, and which tags are counted as color inputs. Do not change the Off/Balanced tone mapping, PQ encoding, or fixed resource chains until that capture identifies the actual FG color input.
+
+## 2026-08-05 Off/Balanced HDR Regression Checkpoint
+
+### Step 1: startup configuration audit
+
+The live `ReShade.ini` was inspected before making any rendering-code change. The global startup-only setting is currently:
+
+```ini
+[renodx]
+ResourceUpgradeTest=33
+```
+
+`ResourceUpgradeTest` is read from the global `renodx` section when the addon initializes. A same-named value under a preset section is not used for resource creation. The code maps the active value as follows:
+
+- `0`: exact DLSS Off chain `4+5+7`.
+- `32`: exact DLSS Balanced, FG Off chain `0+1`.
+- `33`: exact DLSS Balanced + FG chain `2+3`.
+
+This means the last run used the FG-specific resource chain while testing DLSS Off and/or Balanced with FG disabled. That mismatch is sufficient to explain a return to native-format behavior and the approximately 203-nit ceiling; it is not yet evidence of a shader or tone-mapping regression.
+
+### Step 2: controlled baseline procedure
+
+Do not change DLSS mode while the game is running. For each test, select the resource-chain mode, exit the game completely, start it again, and confirm the startup log line `DL2 typeless candidate test` reports the expected mode and mask.
+
+1. DLSS Off: select `Exact HDR chain 4 + 5 + 7` (mode `0`), restart, then measure a known bright scene.
+2. DLSS Balanced with FG disabled: select `Exact Balanced chain 0 + 1` (mode `32`), restart, then measure the same scene.
+
+Expected result for each matching chain is correct mode-specific color and highlights above 203 nit. A confirmed result will be recorded as the stable Off/Balanced HDR-chain repair summary before returning to the separate FG generated-frame issue.
