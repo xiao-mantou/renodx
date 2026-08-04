@@ -2033,9 +2033,47 @@ void OnDownstreamBindRenderTargets(
   downstream_capture_rtvs[cmd_list] = rtvs[0];
 }
 
+void MarkDlssFgAdCommandList(
+    reshade::api::command_list* cmd_list,
+    uint32_t draw_count,
+    uint32_t instance_count) {
+  if (!dlss_fg_mode_active.load(std::memory_order_relaxed)
+      || cmd_list == nullptr
+      || draw_count < 3u || draw_count > 6u
+      || instance_count < 1u || instance_count > 4u) {
+    return;
+  }
+
+  GammaAuditResource output = {};
+  if (const auto* command_state = renodx::utils::state::GetCurrentState(cmd_list);
+      command_state != nullptr && !command_state->render_targets.empty()) {
+    output = DescribeGammaAuditView(cmd_list->get_device(), command_state->render_targets[0]);
+  }
+
+  std::scoped_lock lock(downstream_draw_capture_mutex);
+  dlss_fg_ad_command_list_markers[reinterpret_cast<uintptr_t>(cmd_list)] = {
+      .epoch = upscaler_color_command_epochs[reinterpret_cast<uintptr_t>(cmd_list)],
+      .target = output.resource,
+      .effective_target = output.effective,
+  };
+}
+
 inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
     -> renodx::utils::command_action::CallbackResult<Context> {
-  if (context.IsDispatch() || (!gamma_draw_audit_capture && !gamma_native_input_audit_capture)) return {};
+  if (context.IsDispatch()) return {};
+
+  uint32_t draw_count = 0u;
+  uint32_t instance_count = 0u;
+  if constexpr (requires { context.arguments.vertex_count; context.arguments.instance_count; }) {
+    draw_count = context.arguments.vertex_count;
+    instance_count = context.arguments.instance_count;
+  } else if constexpr (requires { context.arguments.index_count; context.arguments.instance_count; }) {
+    draw_count = context.arguments.index_count;
+    instance_count = context.arguments.instance_count;
+  }
+  MarkDlssFgAdCommandList(context.cmd_list, draw_count, instance_count);
+
+  if (!gamma_draw_audit_capture && !gamma_native_input_audit_capture) return {};
 
   std::scoped_lock lock(downstream_draw_capture_mutex);
   if (gamma_native_input_audit_capture && !gamma_native_input_audit_state.consumed) {
@@ -2159,25 +2197,6 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   const bool targeted_color_shader = shader_hash == 0x3E36DA5Bu
       || shader_hash == 0x268BAB6Du
       || shader_hash == 0xAD085E81u;
-
-  // The native post-Execute handoff needs a marker during normal FG runs too.
-  // Previously this was gated by the one-shot exact-ordering diagnostic, so
-  // production runs never reached ProcessDlssFgNativePostExecute unless the
-  // debug button was armed.
-  if (dlss_fg_mode_active.load(std::memory_order_relaxed)
-      && !is_compute && shader_hash == 0xAD085E81u
-      && likely_fullscreen_draw) {
-    GammaAuditResource output = {};
-    if (const auto* command_state = renodx::utils::state::GetCurrentState(context.cmd_list);
-        command_state != nullptr && !command_state->render_targets.empty()) {
-      output = DescribeGammaAuditView(context.cmd_list->get_device(), command_state->render_targets[0]);
-    }
-    dlss_fg_ad_command_list_markers[reinterpret_cast<uintptr_t>(context.cmd_list)] = {
-        .epoch = upscaler_color_command_epochs[reinterpret_cast<uintptr_t>(context.cmd_list)],
-        .target = output.resource,
-        .effective_target = output.effective,
-    };
-  }
 
   const bool capture_tonemapper_inputs = upscaler_input_audit_state.active
       || upscaler_source_writer_audit_state.active;
