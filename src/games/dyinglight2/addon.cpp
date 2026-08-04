@@ -136,9 +136,15 @@ uint64_t dlss_fg_swapchain_snapshot_serial = 0u;
 std::atomic_uint32_t dlss_fg_present_identity_count = 0u;
 std::atomic_uint32_t dlss_fg_reshade_identity_count = 0u;
 std::atomic_uint64_t dlss_fg_identity_event_serial = 0u;
+std::atomic_uint32_t dlss_fg_exact_ad_ordering_remaining = 0u;
 struct DlssFgTimingSnapshot {
   uint64_t last_execute_event = 0u;
   uint64_t last_execute_backbuffer = 0u;
+  uint64_t last_ad_execute_event = 0u;
+  uint64_t last_ad_command_list = 0u;
+  uint64_t last_ad_epoch = 0u;
+  uint64_t last_ad_target = 0u;
+  uint64_t last_ad_effective_target = 0u;
   uint64_t last_post_proxy_event = 0u;
   uint64_t last_post_proxy_backbuffer = 0u;
 };
@@ -164,6 +170,15 @@ struct DlssFgCommandListCandidate {
   bool copied_to_swapchain = false;
   bool preserved_native_copy = false;
 };
+
+struct DlssFgAdCommandListMarker {
+  uint64_t epoch = 0u;
+  uint64_t target = 0u;
+  uint64_t effective_target = 0u;
+};
+
+// Protected by downstream_draw_capture_mutex.
+std::unordered_map<uintptr_t, DlssFgAdCommandListMarker> dlss_fg_ad_command_list_markers;
 
 std::mutex dlss_fg_command_list_candidate_mutex;
 std::unordered_map<uintptr_t, DlssFgCommandListCandidate> dlss_fg_command_list_candidates;
@@ -341,9 +356,10 @@ void CaptureReshadeSwapchainSnapshot(
 
   const uint32_t count = dlss_fg_reshade_identity_count.fetch_add(1u, std::memory_order_relaxed);
   if (count < 48u) {
-    const uint64_t event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
+    uint64_t event = 0u;
     {
       std::scoped_lock timing_lock(dlss_fg_timing_mutex);
+      event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
       dlss_fg_timing.last_post_proxy_event = event;
       dlss_fg_timing.last_post_proxy_backbuffer = snapshot.back_buffer;
     }
@@ -367,7 +383,6 @@ void LogDlssFgPresentIdentity(const char* call_name, IDXGISwapChain* swapchain) 
   const uint32_t count = dlss_fg_present_identity_count.fetch_add(1u, std::memory_order_relaxed);
   if (count >= 48u) return;
 
-  const uint64_t event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
   const auto native = ReadNativeSwapchainSnapshot(swapchain);
   DlssFgSwapchainSnapshot matched = {};
   const char* match_kind = "none";
@@ -403,9 +418,11 @@ void LogDlssFgPresentIdentity(const char* call_name, IDXGISwapChain* swapchain) 
     }
   }
 
+  uint64_t event = 0u;
   DlssFgTimingSnapshot timing = {};
   {
     std::scoped_lock timing_lock(dlss_fg_timing_mutex);
+    event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
     timing = dlss_fg_timing;
   }
   std::ostringstream message;
@@ -425,6 +442,15 @@ void LogDlssFgPresentIdentity(const char* call_name, IDXGISwapChain* swapchain) 
           << timing.last_execute_event
           << " last_execute_backbuffer=0x" << std::hex
           << timing.last_execute_backbuffer
+          << " last_ad_execute_event=" << std::dec
+          << timing.last_ad_execute_event
+          << " last_ad_cmd=0x" << std::hex
+          << timing.last_ad_command_list
+          << " last_ad_epoch=" << std::dec
+          << timing.last_ad_epoch
+          << " last_ad_target=0x" << std::hex
+          << timing.last_ad_target
+          << "=>0x" << timing.last_ad_effective_target
           << " last_post_proxy_event=" << std::dec
           << timing.last_post_proxy_event
           << " last_post_proxy_backbuffer=0x" << std::hex
@@ -2006,14 +2032,18 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   const bool capture_upscaler_color_path = upscaler_audit.active;
   const bool capture_upscaler_inputs = upscaler_input_audit_state.active;
   const bool capture_upscaler_source_writers = upscaler_source_writer_audit_state.active;
+  const bool capture_exact_ad_ordering =
+      dlss_fg_exact_ad_ordering_remaining.load(std::memory_order_relaxed) != 0u;
   if (!capture_commands && !capture_transfers && !capture_fg_producer && !capture_fg_compute_writer
-      && !capture_upscaler_color_path && !capture_upscaler_inputs && !capture_upscaler_source_writers) {
+      && !capture_upscaler_color_path && !capture_upscaler_inputs && !capture_upscaler_source_writers
+      && !capture_exact_ad_ordering) {
     capture = {};
     downstream_capture_t0_views.clear();
     return {};
   }
   if (capture.consumed && !capture_fg_producer && !capture_fg_compute_writer
-      && !capture_upscaler_color_path && !capture_upscaler_inputs && !capture_upscaler_source_writers) return {};
+      && !capture_upscaler_color_path && !capture_upscaler_inputs && !capture_upscaler_source_writers
+      && !capture_exact_ad_ordering) return {};
 
   auto* shader_state = renodx::utils::command_action::GetShaderState(&context);
   if (shader_state == nullptr) return {};
@@ -2036,6 +2066,20 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   const bool targeted_color_shader = shader_hash == 0x3E36DA5Bu
       || shader_hash == 0x268BAB6Du
       || shader_hash == 0xAD085E81u;
+
+  if (capture_exact_ad_ordering && !is_compute && shader_hash == 0xAD085E81u
+      && likely_fullscreen_draw) {
+    GammaAuditResource output = {};
+    if (const auto* command_state = renodx::utils::state::GetCurrentState(context.cmd_list);
+        command_state != nullptr && !command_state->render_targets.empty()) {
+      output = DescribeGammaAuditView(context.cmd_list->get_device(), command_state->render_targets[0]);
+    }
+    dlss_fg_ad_command_list_markers[reinterpret_cast<uintptr_t>(context.cmd_list)] = {
+        .epoch = upscaler_color_command_epochs[reinterpret_cast<uintptr_t>(context.cmd_list)],
+        .target = output.resource,
+        .effective_target = output.effective,
+    };
+  }
 
   const bool capture_tonemapper_inputs = upscaler_input_audit_state.active
       || upscaler_source_writer_audit_state.active;
@@ -2839,15 +2883,22 @@ void OnDlssFgBackbufferBarrier(
 }
 
 void OnDlssFgResetCommandList(reshade::api::command_list* cmd_list) {
-  std::scoped_lock lock(dlss_fg_command_list_candidate_mutex);
-  dlss_fg_command_list_candidates.erase(reinterpret_cast<uintptr_t>(cmd_list));
-  std::scoped_lock audit_lock(downstream_draw_capture_mutex);
-  ++upscaler_color_command_epochs[reinterpret_cast<uintptr_t>(cmd_list)];
+  {
+    std::scoped_lock lock(dlss_fg_command_list_candidate_mutex);
+    dlss_fg_command_list_candidates.erase(reinterpret_cast<uintptr_t>(cmd_list));
+  }
+  {
+    std::scoped_lock audit_lock(downstream_draw_capture_mutex);
+    dlss_fg_ad_command_list_markers.erase(reinterpret_cast<uintptr_t>(cmd_list));
+    ++upscaler_color_command_epochs[reinterpret_cast<uintptr_t>(cmd_list)];
+  }
 }
 
 void OnDlssFgExecuteCommandList(
     reshade::api::command_queue* queue,
     reshade::api::command_list* cmd_list) {
+  DlssFgAdCommandListMarker ad_marker = {};
+  bool contains_target_ad = false;
   {
     std::scoped_lock lock(downstream_draw_capture_mutex);
     if (upscaler_color_path_audit_state.active) {
@@ -2866,17 +2917,59 @@ void OnDlssFgExecuteCommandList(
         }
       }
     }
+    const auto marker = dlss_fg_ad_command_list_markers.find(reinterpret_cast<uintptr_t>(cmd_list));
+    if (marker != dlss_fg_ad_command_list_markers.end()) {
+      ad_marker = marker->second;
+      contains_target_ad = true;
+      dlss_fg_ad_command_list_markers.erase(marker);
+    }
   }
   if (!dlss_fg_mode_active.load(std::memory_order_acquire)) return;
 
   DlssFgCommandListCandidate candidate = {};
+  bool contains_backbuffer_candidate = false;
   {
     std::scoped_lock lock(dlss_fg_command_list_candidate_mutex);
     const auto iterator = dlss_fg_command_list_candidates.find(reinterpret_cast<uintptr_t>(cmd_list));
-    if (iterator == dlss_fg_command_list_candidates.end()) return;
-    candidate = iterator->second;
-    dlss_fg_command_list_candidates.erase(iterator);
+    if (iterator != dlss_fg_command_list_candidates.end()) {
+      candidate = iterator->second;
+      contains_backbuffer_candidate = true;
+      dlss_fg_command_list_candidates.erase(iterator);
+    }
   }
+  if (contains_target_ad) {
+    uint32_t exact_remaining = dlss_fg_exact_ad_ordering_remaining.load(std::memory_order_relaxed);
+    while (exact_remaining != 0u
+           && !dlss_fg_exact_ad_ordering_remaining.compare_exchange_weak(
+               exact_remaining, exact_remaining - 1u,
+               std::memory_order_acq_rel, std::memory_order_relaxed)) {
+    }
+    if (exact_remaining != 0u) {
+      uint64_t exact_event = 0u;
+      {
+        std::scoped_lock timing_lock(dlss_fg_timing_mutex);
+        exact_event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
+        dlss_fg_timing.last_ad_execute_event = exact_event;
+        dlss_fg_timing.last_ad_command_list = reinterpret_cast<uintptr_t>(cmd_list);
+        dlss_fg_timing.last_ad_epoch = ad_marker.epoch;
+        dlss_fg_timing.last_ad_target = ad_marker.target;
+        dlss_fg_timing.last_ad_effective_target = ad_marker.effective_target;
+      }
+      std::ostringstream exact_message;
+      exact_message << "DL2 DLSS FG exact AD submission: event=" << exact_event
+                    << " thread=" << GetCurrentThreadId()
+                    << " queue=0x" << std::hex << std::uppercase
+                    << reinterpret_cast<uintptr_t>(queue)
+                    << " cmd=0x" << reinterpret_cast<uintptr_t>(cmd_list)
+                    << " epoch=" << std::dec << ad_marker.epoch
+                    << " target=0x" << std::hex << ad_marker.target
+                    << "=>0x" << ad_marker.effective_target
+                    << " backbuffer=0x" << candidate.back_buffer
+                    << " remaining=" << std::dec << (exact_remaining - 1u);
+      renodx::utils::log::i(exact_message.str().c_str());
+    }
+  }
+  if (!contains_backbuffer_candidate) return;
   if (candidate.swapchain_generation
       != dlss_fg_swapchain_generation.load(std::memory_order_acquire)) {
     return;
@@ -2902,9 +2995,10 @@ void OnDlssFgExecuteCommandList(
   }
   if (remaining == 0u) return;
 
-  const uint64_t event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
+  uint64_t event = 0u;
   {
     std::scoped_lock timing_lock(dlss_fg_timing_mutex);
+    event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
     dlss_fg_timing.last_execute_event = event;
     dlss_fg_timing.last_execute_backbuffer = candidate.back_buffer;
   }
@@ -4206,6 +4300,25 @@ renodx::utils::settings::Settings settings = {
               .clone_resource = dlss_fg_latest_color_clone.load(std::memory_order_relaxed),
               .active = true,
           };
+          return false;
+        },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture Exact AD to Streamline Ordering",
+        .section = "Debug",
+        .tooltip = "One-shot read-only timing capture. Tracks 16 command-list submissions containing the final 0xAD085E81 draw and correlates them with Streamline Present1 and RenoDX post-proxy Present events.",
+        .on_click = []() {
+          dlss_fg_identity_event_serial.store(0u, std::memory_order_release);
+          dlss_fg_present_identity_count.store(0u, std::memory_order_release);
+          dlss_fg_reshade_identity_count.store(0u, std::memory_order_release);
+          dlss_fg_exact_ad_ordering_remaining.store(16u, std::memory_order_release);
+          {
+            std::scoped_lock timing_lock(dlss_fg_timing_mutex);
+            dlss_fg_timing = {};
+          }
+          renodx::utils::log::i("DL2 DLSS FG exact AD ordering audit armed: submissions=16");
           return false;
         },
         .is_visible = []() { return current_settings_mode >= 2; },
