@@ -132,3 +132,9 @@ Do not change DLSS mode while the game is running. For each test, select the res
 2. DLSS Balanced with FG disabled: select `Exact Balanced chain 0 + 1` (mode `32`), restart, then measure the same scene.
 
 Expected result for each matching chain is correct mode-specific color and highlights above 203 nit. A confirmed result will be recorded as the stable Off/Balanced HDR-chain repair summary before returning to the separate FG generated-frame issue.
+
+### Step 3: controlled baseline result (confirmed)
+
+Both restart-only tests passed with their matching chains. DLSS Off works with mode `0` (`4+5+7`), and DLSS Balanced with FG disabled works with mode `32` (`0+1`). Their color and HDR headroom are correct in the user-verified test scene.
+
+**Repair summary:** the observed Off/Balanced 203-nit regression was a startup configuration mismatch, not a new shader, tone-mapping, or proxy regression. Mode `33` must be reserved for Balanced with FG. Select the chain that matches the intended DLSS/FG state before starting the game; do not change the rendering mode in a live session.

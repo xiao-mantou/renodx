@@ -664,3 +664,20 @@ the `0xAD` input. That is a known UI alpha-blend shader, so it identifies the
 final overlay rather than the draw that established the scene underneath. The
 audit now snapshots up to 16 ordered `input_writers` for each target input,
 separating the base writer from subsequent UI overlays in one capture.
+
+## 2026-08-05 Stable Off/Balanced HDR Chain Confirmation
+
+The apparent Off/Balanced 203-nit regression was reproduced with the wrong
+global startup resource chain: mode `33` (`2+3`) is only valid for DLSS
+Balanced with Frame Generation. The preset-scoped `ResourceUpgradeTest` value
+does not affect startup resource creation.
+
+User validation after complete game restarts confirmed the stable mappings:
+
+- DLSS Off: mode `0`, exact chain `4+5+7`.
+- DLSS Balanced with FG disabled: mode `32`, exact chain `0+1`.
+
+Both restore the expected color and HDR headroom. This closes the
+Off/Balanced regression checkpoint. FG generated-frame transfer semantics
+remain a separate unresolved issue and must not be diagnosed by changing these
+two stable chains at runtime.
