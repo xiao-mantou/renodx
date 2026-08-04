@@ -385,7 +385,10 @@ struct DlssFgPresentAuditToken {
   bool logged = false;
 };
 
-DlssFgPresentAuditToken LogDlssFgPresentIdentity(const char* call_name, IDXGISwapChain* swapchain) {
+DlssFgPresentAuditToken LogDlssFgPresentIdentity(
+    const char* call_name,
+    IDXGISwapChain* swapchain,
+    bool consume_ad_token) {
   DlssFgPresentAuditToken token = {};
   const uint32_t count = dlss_fg_present_identity_count.fetch_add(1u, std::memory_order_relaxed);
   if (count >= 48u) return token;
@@ -432,13 +435,17 @@ DlssFgPresentAuditToken LogDlssFgPresentIdentity(const char* call_name, IDXGISwa
     event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
     timing = dlss_fg_timing;
     token.entry_event = event;
-    token.ad_execute_event = timing.last_ad_execute_event;
+    if (consume_ad_token) {
+      token.ad_execute_event = timing.last_ad_execute_event;
+    }
     token.logged = true;
-    dlss_fg_timing.last_ad_execute_event = 0u;
-    dlss_fg_timing.last_ad_command_list = 0u;
-    dlss_fg_timing.last_ad_epoch = 0u;
-    dlss_fg_timing.last_ad_target = 0u;
-    dlss_fg_timing.last_ad_effective_target = 0u;
+    if (consume_ad_token) {
+      dlss_fg_timing.last_ad_execute_event = 0u;
+      dlss_fg_timing.last_ad_command_list = 0u;
+      dlss_fg_timing.last_ad_epoch = 0u;
+      dlss_fg_timing.last_ad_target = 0u;
+      dlss_fg_timing.last_ad_effective_target = 0u;
+    }
   }
   std::ostringstream message;
   message << "DL2 DLSS FG swapchain identity: call=" << call_name
@@ -506,7 +513,7 @@ void LogDlssFgPresentResult(
 }
 
 HRESULT HookedSlDlssGPresent(IDXGISwapChain* swapchain, UINT sync_interval, UINT flags, bool& skip) {
-  const auto token = LogDlssFgPresentIdentity("Present", swapchain);
+  const auto token = LogDlssFgPresentIdentity("Present", swapchain, false);
   const HRESULT result = real_sl_dlssg_hook_present(swapchain, sync_interval, flags, skip);
   LogDlssFgPresentResult("Present", token, result, skip);
   return result;
@@ -518,7 +525,7 @@ HRESULT HookedSlDlssGPresent1(
     UINT flags,
     const DXGI_PRESENT_PARAMETERS* parameters,
     bool& skip) {
-  const auto token = LogDlssFgPresentIdentity("Present1", swapchain);
+  const auto token = LogDlssFgPresentIdentity("Present1", swapchain, true);
   const HRESULT result = real_sl_dlssg_hook_present1(swapchain, sync_interval, flags, parameters, skip);
   LogDlssFgPresentResult("Present1", token, result, skip);
   return result;
