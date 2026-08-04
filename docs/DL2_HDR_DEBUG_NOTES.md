@@ -81,3 +81,5 @@ The Typeless destination alone did not change the effective view. `ActivateClone
 The explicit lazy-view rewrite caused a black screen and is rejected. Stable fixed-index mode `4+5+7` remains valid for Off. The captured Balanced mappings are exposed as separate startup modes `0+1` (FG Off) and `2+3` (FG On), avoiding runtime resource mutation. FG's PQ/linear overexposure remains a separate follow-up.
 
 FG submission diagnostics now include the resource format and clone state for both `backbuffer` and `copy_source`. This distinguishes a linear FP16 source copied into an RGB10/PQ target from a correctly encoded PQ source without adding another mutation experiment.
+
+Submission diagnostics now also print `final_color_mode` and `proxy_action`, so Direct versus Round-trip can be verified from the log rather than inferred from the UI setting.

@@ -2853,6 +2853,7 @@ void OnDlssFgExecuteCommandList(
   if (remaining == 0u) return;
 
   const uint64_t event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
+  const bool roundtrip_final_color = dlss_fg_final_color_mode >= 0.5f;
   auto describe_submission_resource = [queue](uint64_t handle) {
     std::ostringstream details;
     if (handle == 0u || queue == nullptr || queue->get_device() == nullptr) {
@@ -2879,6 +2880,8 @@ void OnDlssFgExecuteCommandList(
           << " backbuffer_" << describe_submission_resource(candidate.back_buffer)
           << " copy_source=0x" << candidate.copy_source
           << " copy_source_" << describe_submission_resource(candidate.copy_source)
+          << " final_color_mode=" << (roundtrip_final_color ? "roundtrip" : "direct")
+          << " proxy_action=" << (roundtrip_final_color ? "force_proxy_source" : "skip_generated_proxy")
           << " entered_rt=" << std::dec << (candidate.entered_render_target ? 1 : 0)
           << " returned_present=" << (candidate.returned_to_present ? 1 : 0)
           << " bound_rtv=" << (candidate.bound_swapchain_rtv ? 1 : 0)
