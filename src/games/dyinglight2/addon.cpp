@@ -4594,10 +4594,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx11;
       renodx::mods::swapchain::expected_constant_buffer_index = 13;
       renodx::mods::swapchain::expected_constant_buffer_space = 50;
-      // DL2's preserved native copy remains the same Linear BT.709 composite
-      // used by the normal proxy path. Do not let a proxy-source override
-      // automatically reinterpret it as an already encoded PQ/BT.2020 image.
-      renodx::mods::swapchain::proxy_source_is_hdr10_index = SIZE_MAX;
+      renodx::mods::swapchain::proxy_source_is_hdr10_index =
+          offsetof(ShaderInjectData, renodrt_padding_2) / sizeof(float);
 
       int32_t resource_upgrade_test = 0;
       reshade::get_config_value(
