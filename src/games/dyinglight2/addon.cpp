@@ -193,7 +193,6 @@ DlssFgNativeExecuteCommandLists real_dlss_fg_native_execute_command_lists = null
 bool dlss_fg_native_execute_hook_installed = false;
 std::mutex dlss_fg_native_queue_mutex;
 std::unordered_map<uintptr_t, reshade::api::command_queue*> dlss_fg_native_queues;
-thread_local bool dlss_fg_native_post_execute_flushing = false;
 
 void RegisterDlssFgNativeQueue(reshade::api::command_queue* queue);
 void UnregisterDlssFgNativeQueue(reshade::api::command_queue* queue);
@@ -3205,17 +3204,10 @@ void ProcessDlssFgNativePostExecute(
     return;
   }
 
-  const bool rendered = renodx::mods::swapchain::RenderProxy(queue, swapchain, false);
-  if (rendered) {
-    // The normal ReShade Present callback follows this queue submission. It
-    // must not render the same backbuffer a second time.
-    renodx::mods::swapchain::SkipProxyDrawForBackBuffer(back_buffer);
-    if (!dlss_fg_native_post_execute_flushing) {
-      dlss_fg_native_post_execute_flushing = true;
-      queue->flush_immediate_command_list();
-      dlss_fg_native_post_execute_flushing = false;
-    }
-  }
+  // This native queue callback runs outside ReShade's immediate-command-list
+  // lifetime. Rendering or flushing here corrupts the D3D12 submission order.
+  // Keep the timing marker read-only; the normal Present callback owns proxy rendering.
+  const bool rendered = false;
 
   const uint32_t diagnostic = dlss_fg_post_execute_diagnostic_count.fetch_add(1u, std::memory_order_relaxed);
   if (diagnostic < 32u) {
@@ -3225,7 +3217,8 @@ void ProcessDlssFgNativePostExecute(
             << " target=0x" << marker.target
             << "=>0x" << marker.effective_target
             << " backbuffer=0x" << back_buffer.handle
-            << " rendered=" << std::dec << (rendered ? 1 : 0);
+            << " rendered=" << std::dec << (rendered ? 1 : 0)
+            << " deferred_to_present=1";
     renodx::utils::log::i(message.str().c_str());
   }
 }
