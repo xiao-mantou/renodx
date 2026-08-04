@@ -432,6 +432,10 @@ HRESULT HookedSlDlssGPresent1(
 
 const char* GetStreamlineTagName(sl::BufferType type) {
   switch (type) {
+    case sl::kBufferTypeDepth:
+      return "Depth";
+    case sl::kBufferTypeMotionVectors:
+      return "MotionVectors";
     case sl::kBufferTypeBackbuffer:
       return "Backbuffer";
     case sl::kBufferTypeScalingOutputColor:
@@ -442,6 +446,8 @@ const char* GetStreamlineTagName(sl::BufferType type) {
       return "HUDLessColor";
     case sl::kBufferTypeScalingInputColor:
       return "ScalingInputColor";
+    case sl::kBufferTypeExposure:
+      return "Exposure";
     default:
       return "Other";
   }
@@ -471,6 +477,17 @@ void MarkStreamlineColorTagSubmission(const sl::ResourceTag* tags, uint32_t num_
 }
 void CaptureStreamlineTags(const char* call_name, const sl::ResourceTag* tags, uint32_t num_tags) {
   if (!dlss_fg_tag_capture || tags == nullptr) return;
+
+  bool has_fg_color_tag = false;
+  for (uint32_t index = 0u; index < num_tags; ++index) {
+    const auto type = tags[index].type;
+    if (type == sl::kBufferTypeHUDLessColor || type == sl::kBufferTypeUIColorAndAlpha
+        || type == sl::kBufferTypeBackbuffer) {
+      has_fg_color_tag = true;
+      break;
+    }
+  }
+  if (!has_fg_color_tag) return;
 
   dlss_fg_tag_capture = false;
   std::stringstream stream;
