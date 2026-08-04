@@ -2160,7 +2160,12 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       || shader_hash == 0x268BAB6Du
       || shader_hash == 0xAD085E81u;
 
-  if (capture_exact_ad_ordering && !is_compute && shader_hash == 0xAD085E81u
+  // The native post-Execute handoff needs a marker during normal FG runs too.
+  // Previously this was gated by the one-shot exact-ordering diagnostic, so
+  // production runs never reached ProcessDlssFgNativePostExecute unless the
+  // debug button was armed.
+  if (dlss_fg_mode_active.load(std::memory_order_relaxed)
+      && !is_compute && shader_hash == 0xAD085E81u
       && likely_fullscreen_draw) {
     GammaAuditResource output = {};
     if (const auto* command_state = renodx::utils::state::GetCurrentState(context.cmd_list);
