@@ -487,13 +487,16 @@ void CaptureStreamlineTags(const char* call_name, const sl::ResourceTag* tags, u
     const auto* resource_info = renodx::utils::resource::GetResourceInfo(resource);
     if (resource_info == nullptr) continue;
 
-    stream << " format=" << static_cast<uint32_t>(resource_info->desc.texture.format)
+    stream << " nativeFormat=" << tag.resource->nativeFormat
+           << " size=" << tag.resource->width << "x" << tag.resource->height
+           << " format=" << static_cast<uint32_t>(resource_info->desc.texture.format)
            << " usage=0x" << std::hex << static_cast<uint32_t>(resource_info->desc.usage)
            << " swapchain=" << (resource_info->is_swap_chain ? "yes" : "no")
            << " clone_enabled=" << (resource_info->clone_enabled ? "yes" : "no")
            << " clone_target=" << (resource_info->clone_target != nullptr ? "yes" : "no")
            << " views=" << std::dec << resource_info->resource_view_handles.size()
-           << " clone=0x" << std::hex << resource_info->clone.handle;
+           << " clone=0x" << std::hex << resource_info->clone.handle
+           << " tracked=" << (resource_info->is_clone ? "clone" : "original");
 
     if (resource_info->clone.handle == 0u) continue;
     const auto* clone_info = renodx::utils::resource::GetResourceInfo(resource_info->clone);
