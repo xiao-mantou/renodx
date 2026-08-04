@@ -152,3 +152,21 @@ The earlier semantic hot-swap experiment is direct negative evidence: it enabled
 Hot-switching is theoretically possible only as a full transactional renderer reset, not as a normal setting callback. A safe implementation would need to stop presentation, wait for the game queue and the DLSS-G input-completion fence, retire every affected resource/view/descriptor binding, force the game to recreate its temporal-upscaler targets, rebuild the matching clone map, and resume only after the new resources have been tagged. DL2 does not currently expose a proven callback that guarantees this boundary; changing DLSS in gameplay has already caused resource-lifetime crashes.
 
 Keep the current restart-required chains. A future quality-of-life improvement may auto-select the correct chain at startup after detecting the initial DLSS/FG configuration, but it must still require a restart when the game's mode changes. This preserves the confirmed HDR repair instead of reintroducing the black-screen and FG synchronization failures.
+
+## 2026-08-05 Historical Off/Balanced Result Reconciliation
+
+### Step 5: separate color parity from HDR headroom
+
+The historical A/B record confirms that build `787fe68` made DLSS Off and Balanced visually color-consistent. Builds `bb5a1e1` and `5ebc218` reintroduced the visible color split. However, that comparison established color parity only; it did not establish that both modes simultaneously preserved values above the approximately 203-nit boundary.
+
+The later raw-ladder and resource-lineage work established the missing brightness condition separately. Native-format or incomplete clone paths could match color while remaining capped at 203 nit. Broad Typeless upgrades could restore headroom while corrupting color. Exact `4+5+7` was the first recorded Off chain to satisfy both conditions, after which Balanced was observed with `clone=0`/`upgrade_index=-1` on that startup mapping and required its separate `0+1` chain.
+
+Therefore the user's memory of simultaneous Off/Balanced color parity is correct, but the current records do not support a single historical build/configuration that was verified to provide both correct color and HDR headroom for both modes without restart. Testing `787fe68` against the current fixed scene and nit measurement would be the definitive way to fill that historical evidence gap; it is not required for the current stable mode-specific repair.
+
+### Step 6: `787fe68` versus `5ebc218` code boundary
+
+Conversation review confirms `787fe68` was capped near 203 nit. Its code change only corrected the final proxy interpretation to Linear BT.709 (`ENCODING_NONE`), removing a second sRGB decode; it did not restore the missing FP16 intermediate range.
+
+`5ebc218` is a credible HDR-headroom boundary. Its ancestry restored broad full-size Typeless and sRGB FP16 clone rules, changed the 0x3E bridge to emit Linear BT.709 directly, registered the 0x268 LUT replacement, and reconstructed HDR magnitude after the native SDR-domain grade. Those changes are specifically designed to carry values above 1.0 through the LUT instead of returning to the 203-nit reference-white ceiling.
+
+The same code also explains why this was not yet the final shared solution: its Typeless rule matched every back-buffer-sized target rather than a rendering role or a mode-specific resource chain. Historical A/B already records `5ebc218` as Off/Balanced color-inconsistent. The expected old-build result is therefore both modes with HDR headroom, but a visible color difference between them. Runtime measurement of Off peak, Balanced peak, and color parity will confirm or reject that expectation before any new implementation is considered.
