@@ -138,3 +138,17 @@ Expected result for each matching chain is correct mode-specific color and highl
 Both restart-only tests passed with their matching chains. DLSS Off works with mode `0` (`4+5+7`), and DLSS Balanced with FG disabled works with mode `32` (`0+1`). Their color and HDR headroom are correct in the user-verified test scene.
 
 **Repair summary:** the observed Off/Balanced 203-nit regression was a startup configuration mismatch, not a new shader, tone-mapping, or proxy regression. Mode `33` must be reserved for Balanced with FG. Select the chain that matches the intended DLSS/FG state before starting the game; do not change the rendering mode in a live session.
+
+## 2026-08-05 Resource-Chain Hot-Switch Feasibility
+
+### Step 4: lifetime and mutation audit
+
+The exact-chain choice is consumed during addon initialization to build `resource_upgrade_infos`. The resource utility then applies a matching creation-index rule when the game creates each full-size `R8G8B8A8_TYPELESS` render target, creates an FP16 clone, and creates tracked resource views. Changing the UI setting later changes only its saved value; it does not retroactively create clones or rewrite the game, ReShade, and Streamline descriptor references for resources that already exist.
+
+The earlier semantic hot-swap experiment is direct negative evidence: it enabled a lazy clone at a shader callback, but the game's manual render-target rewrite initially retained the original view. Rewriting the RTV to the clone explicitly then produced a black screen. DL2 therefore does not provide an atomic safe point where resource selection, all SRV/RTV descriptor tables, command-list state, and barriers can be changed together.
+
+### Decision
+
+Hot-switching is theoretically possible only as a full transactional renderer reset, not as a normal setting callback. A safe implementation would need to stop presentation, wait for the game queue and the DLSS-G input-completion fence, retire every affected resource/view/descriptor binding, force the game to recreate its temporal-upscaler targets, rebuild the matching clone map, and resume only after the new resources have been tagged. DL2 does not currently expose a proven callback that guarantees this boundary; changing DLSS in gameplay has already caused resource-lifetime crashes.
+
+Keep the current restart-required chains. A future quality-of-life improvement may auto-select the correct chain at startup after detecting the initial DLSS/FG configuration, but it must still require a restart when the game's mode changes. This preserves the confirmed HDR repair instead of reintroducing the black-screen and FG synchronization failures.
