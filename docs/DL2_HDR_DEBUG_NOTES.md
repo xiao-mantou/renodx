@@ -83,3 +83,24 @@ The explicit lazy-view rewrite caused a black screen and is rejected. Stable fix
 FG submission diagnostics now include the resource format and clone state for both `backbuffer` and `copy_source`. This distinguishes a linear FP16 source copied into an RGB10/PQ target from a correctly encoded PQ source without adding another mutation experiment.
 
 Submission diagnostics now also print `final_color_mode` and `proxy_action`, so Direct versus Round-trip can be verified from the log rather than inferred from the UI setting.
+
+## 2026-08-04 Stable Chains and FG Semantic Boundary
+
+### Confirmed startup resource chains
+
+- DLSS Off: exact candidates `4+5+7` preserve the expected color and restore HDR headroom above 203 nit.
+- DLSS Balanced, FG Off: exact candidates `0+1` are the matching resource chain.
+- DLSS Balanced with FG: exact candidates `2+3` upgrade the real-frame chain, but generated frames remain too dark/over-saturated and can report highlights above 10000 nit.
+- These mappings are mode-specific. Do not combine them into a broad union and do not switch DLSS modes at runtime while diagnosing resource lifetime behavior.
+
+### Rejected semantic hot-swap
+
+The semantic hot-swap path first activated a clone without changing the effective resource/view formats. Explicitly rewriting the RTV to the lazy clone then produced a black screen. This path is rejected because the DL2 D3D12 descriptor, view, and barrier handoff is not synchronized as one atomic operation. Keep the proven fixed-index startup chains and do not use mode 31.
+
+### FG submission result
+
+The FG Direct and Round-trip paths are confirmed to execute. Submission logs also confirm that Compatibility changes `proxy_action` from `skip_generated_proxy` to `force_proxy_source`. Neither branch corrected the generated-frame appearance, so the remaining failure is not explained by a branch that failed to run, nor by the backbuffer/copy-source storage format alone.
+
+### Current diagnostic hypothesis
+
+The next boundary is Streamline color-tag metadata and transfer semantics. Earlier handoff logging observed two color tags with an unknown/zero native format. This is suspicious but not yet proof of the root cause: a pre-PQ linear resource, an already PQ-encoded final color, or a RenoDX proxy result may be registered without enough metadata for DLSS-G to interpret it consistently. The next diagnostic must enumerate every tag type, native resource and `nativeFormat`, dimensions, tracked clone, and which tags are counted as color inputs. Do not change the Off/Balanced tone mapping, PQ encoding, or fixed resource chains until that capture identifies the actual FG color input.
