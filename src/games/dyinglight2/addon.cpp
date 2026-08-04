@@ -2887,7 +2887,10 @@ void OnDlssFgExecuteCommandList(
     renodx::utils::resource::GetResourceInfo(resource, [&](const renodx::utils::resource::ResourceInfo& info) {
       details << " clone=0x" << std::hex << info.clone.handle << std::dec
               << " clone_enabled=" << (info.clone_enabled ? 1 : 0)
-              << " clone_format=" << static_cast<uint32_t>(info.clone_desc.texture.format);
+              << " clone_format=" << static_cast<uint32_t>(info.clone_desc.texture.format)
+              << " is_swapchain=" << (info.is_swap_chain ? 1 : 0)
+              << " is_clone=" << (info.is_clone ? 1 : 0)
+              << " views=" << info.resource_view_handles.size();
     });
     return details.str();
   };
@@ -2902,6 +2905,9 @@ void OnDlssFgExecuteCommandList(
           << " copy_source_" << describe_submission_resource(candidate.copy_source)
           << " final_color_mode=" << (roundtrip_final_color ? "roundtrip" : "direct")
           << " proxy_action=" << (roundtrip_final_color ? "force_proxy_source" : "skip_generated_proxy")
+          << " output_hdr10=" << (swap_chain_use_hdr10 >= 0.5f ? 1 : 0)
+          << " proxy_source_hdr10=" << (shader_injection.renodrt_padding_2 >= 0.5f ? 1 : 0)
+          << " output_encoding=" << shader_injection.swap_chain_encoding
           << " entered_rt=" << std::dec << (candidate.entered_render_target ? 1 : 0)
           << " returned_present=" << (candidate.returned_to_present ? 1 : 0)
           << " bound_rtv=" << (candidate.bound_swapchain_rtv ? 1 : 0)
