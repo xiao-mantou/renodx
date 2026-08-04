@@ -133,10 +133,12 @@ struct DlssFgSwapchainSnapshot {
 std::mutex dlss_fg_swapchain_snapshot_mutex;
 std::array<DlssFgSwapchainSnapshot, 8> dlss_fg_swapchain_snapshots = {};
 uint64_t dlss_fg_swapchain_snapshot_serial = 0u;
+std::atomic_uintptr_t dlss_fg_active_swapchain = 0u;
 std::atomic_uint32_t dlss_fg_present_identity_count = 0u;
 std::atomic_uint32_t dlss_fg_reshade_identity_count = 0u;
 std::atomic_uint64_t dlss_fg_identity_event_serial = 0u;
 std::atomic_uint32_t dlss_fg_exact_ad_ordering_remaining = 0u;
+std::atomic_uint32_t dlss_fg_post_execute_diagnostic_count = 0u;
 struct DlssFgTimingSnapshot {
   uint64_t last_execute_event = 0u;
   uint64_t last_execute_backbuffer = 0u;
@@ -179,6 +181,29 @@ struct DlssFgAdCommandListMarker {
 
 // Protected by downstream_draw_capture_mutex.
 std::unordered_map<uintptr_t, DlssFgAdCommandListMarker> dlss_fg_ad_command_list_markers;
+
+// The ReShade pre-submit event records the exact AD command list, while the
+// native queue hook consumes it after the queue has accepted the list.
+std::mutex dlss_fg_post_execute_mutex;
+std::unordered_map<uintptr_t, DlssFgAdCommandListMarker> dlss_fg_post_execute_markers;
+
+using DlssFgNativeExecuteCommandLists = void(STDMETHODCALLTYPE *)(
+    ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
+DlssFgNativeExecuteCommandLists real_dlss_fg_native_execute_command_lists = nullptr;
+bool dlss_fg_native_execute_hook_installed = false;
+std::mutex dlss_fg_native_queue_mutex;
+std::unordered_map<uintptr_t, reshade::api::command_queue*> dlss_fg_native_queues;
+thread_local bool dlss_fg_native_post_execute_flushing = false;
+
+void RegisterDlssFgNativeQueue(reshade::api::command_queue* queue);
+void UnregisterDlssFgNativeQueue(reshade::api::command_queue* queue);
+void STDMETHODCALLTYPE HookedDlssFgNativeExecuteCommandLists(
+    ID3D12CommandQueue* queue,
+    UINT count,
+    ID3D12CommandList* const* command_lists);
+void ProcessDlssFgNativePostExecute(
+    reshade::api::command_queue* queue,
+    ID3D12CommandList* command_list);
 
 std::mutex dlss_fg_command_list_candidate_mutex;
 std::unordered_map<uintptr_t, DlssFgCommandListCandidate> dlss_fg_command_list_candidates;
@@ -326,6 +351,9 @@ void CaptureReshadeSwapchainSnapshot(
     reshade::api::command_queue* queue,
     reshade::api::swapchain* swapchain) {
   if (queue == nullptr || swapchain == nullptr) return;
+
+  RegisterDlssFgNativeQueue(queue);
+  dlss_fg_active_swapchain.store(reinterpret_cast<uintptr_t>(swapchain), std::memory_order_release);
 
   DlssFgSwapchainSnapshot snapshot = ReadNativeSwapchainSnapshot(
       reinterpret_cast<IDXGISwapChain*>(swapchain->get_native()));
@@ -836,6 +864,10 @@ sl::Result HookedSlDLSSGSetOptions(
     dlss_fg_execute_candidate_remaining.store(128u, std::memory_order_release);
     renodx::utils::log::i("DL2 DLSS FG: armed read-only backbuffer submission audit (128 candidates).");
   } else if (!fg_active && was_active) {
+    {
+      std::scoped_lock lock(dlss_fg_post_execute_mutex);
+      dlss_fg_post_execute_markers.clear();
+    }
     renodx::mods::swapchain::ClearProxyDrawBackBufferSkips();
     renodx::mods::swapchain::ClearProxySourceOverrides();
   }
@@ -1113,6 +1145,10 @@ void RemoveStreamlineHook() {
     std::scoped_lock candidate_lock(dlss_fg_command_list_candidate_mutex);
     dlss_fg_command_list_candidates.clear();
   }
+  {
+    std::scoped_lock post_execute_lock(dlss_fg_post_execute_mutex);
+    dlss_fg_post_execute_markers.clear();
+  }
   std::scoped_lock lock(dlss_fg_fence_mutex);
   if (dlss_fg_inputs_fence != nullptr) dlss_fg_inputs_fence->Release();
   dlss_fg_inputs_fence = nullptr;
@@ -1121,10 +1157,15 @@ void RemoveStreamlineHook() {
 }
 
 void OnDestroySwapchain(reshade::api::swapchain*, bool resize) {
+  dlss_fg_active_swapchain.store(0u, std::memory_order_release);
   const uint64_t generation = dlss_fg_swapchain_generation.fetch_add(1u, std::memory_order_acq_rel) + 1u;
   {
     std::scoped_lock candidate_lock(dlss_fg_command_list_candidate_mutex);
     dlss_fg_command_list_candidates.clear();
+  }
+  {
+    std::scoped_lock lock(dlss_fg_post_execute_mutex);
+    dlss_fg_post_execute_markers.clear();
   }
   renodx::mods::swapchain::ClearProxyDrawBackBufferSkips();
   renodx::mods::swapchain::ClearProxySourceOverrides();
@@ -1498,6 +1539,9 @@ void OnTypelessAuditInitSwapchain(reshade::api::swapchain* swapchain, bool) {
   if (swapchain == nullptr) return;
   auto* device = swapchain->get_device();
   if (device == nullptr) return;
+  if (device->get_api() == reshade::api::device_api::d3d12) {
+    dlss_fg_active_swapchain.store(reinterpret_cast<uintptr_t>(swapchain), std::memory_order_release);
+  }
   const auto desc = device->get_resource_desc(swapchain->get_current_back_buffer());
   std::scoped_lock lock(typeless_creation_audit_mutex);
   typeless_creation_indices.clear();
@@ -2941,6 +2985,10 @@ void OnDlssFgResetCommandList(reshade::api::command_list* cmd_list) {
     dlss_fg_ad_command_list_markers.erase(reinterpret_cast<uintptr_t>(cmd_list));
     ++upscaler_color_command_epochs[reinterpret_cast<uintptr_t>(cmd_list)];
   }
+  {
+    std::scoped_lock lock(dlss_fg_post_execute_mutex);
+    dlss_fg_post_execute_markers.erase(static_cast<uintptr_t>(cmd_list->get_native()));
+  }
 }
 
 void OnDlssFgExecuteCommandList(
@@ -3016,6 +3064,11 @@ void OnDlssFgExecuteCommandList(
                     << " backbuffer=0x" << candidate.back_buffer
                     << " remaining=" << std::dec << (exact_remaining - 1u);
       renodx::utils::log::i(exact_message.str().c_str());
+    }
+
+    {
+      std::scoped_lock lock(dlss_fg_post_execute_mutex);
+      dlss_fg_post_execute_markers[static_cast<uintptr_t>(cmd_list->get_native())] = ad_marker;
     }
   }
   if (!contains_backbuffer_candidate) return;
@@ -3096,6 +3149,144 @@ void OnDlssFgExecuteCommandList(
           << " tag=" << candidate.tag_serial
           << " remaining=" << (remaining - 1u);
   renodx::utils::log::i(message.str().c_str());
+}
+
+void ProcessDlssFgNativePostExecute(
+    reshade::api::command_queue* queue,
+    ID3D12CommandList* command_list) {
+  if (!dlss_fg_mode_active.load(std::memory_order_acquire)
+      || queue == nullptr || command_list == nullptr) {
+    return;
+  }
+
+  DlssFgAdCommandListMarker marker = {};
+  {
+    std::scoped_lock lock(dlss_fg_post_execute_mutex);
+    const auto iterator = dlss_fg_post_execute_markers.find(reinterpret_cast<uintptr_t>(command_list));
+    if (iterator == dlss_fg_post_execute_markers.end()) return;
+    marker = iterator->second;
+    dlss_fg_post_execute_markers.erase(iterator);
+  }
+
+  const auto swapchain_handle = dlss_fg_active_swapchain.load(std::memory_order_acquire);
+  auto* swapchain = reinterpret_cast<reshade::api::swapchain*>(swapchain_handle);
+  if (swapchain == nullptr || swapchain->get_device() != queue->get_device()) {
+    renodx::utils::log::w("DL2 DLSS FG post-Execute: active swapchain unavailable or queue mismatch.");
+    return;
+  }
+
+  const auto back_buffer = swapchain->get_current_back_buffer();
+  if (back_buffer.handle == 0u) {
+    renodx::utils::log::w("DL2 DLSS FG post-Execute: current backbuffer unavailable.");
+    return;
+  }
+
+  const bool rendered = renodx::mods::swapchain::RenderProxy(queue, swapchain, false);
+  if (rendered) {
+    // The normal ReShade Present callback follows this queue submission. It
+    // must not render the same backbuffer a second time.
+    renodx::mods::swapchain::SkipProxyDrawForBackBuffer(back_buffer);
+    if (!dlss_fg_native_post_execute_flushing) {
+      dlss_fg_native_post_execute_flushing = true;
+      queue->flush_immediate_command_list();
+      dlss_fg_native_post_execute_flushing = false;
+    }
+  }
+
+  const uint32_t diagnostic = dlss_fg_post_execute_diagnostic_count.fetch_add(1u, std::memory_order_relaxed);
+  if (diagnostic < 32u) {
+    std::ostringstream message;
+    message << "DL2 DLSS FG post-Execute proxy: cmd=0x" << std::hex << std::uppercase
+            << reinterpret_cast<uintptr_t>(command_list)
+            << " target=0x" << marker.target
+            << "=>0x" << marker.effective_target
+            << " backbuffer=0x" << back_buffer.handle
+            << " rendered=" << std::dec << (rendered ? 1 : 0);
+    renodx::utils::log::i(message.str().c_str());
+  }
+}
+
+void STDMETHODCALLTYPE HookedDlssFgNativeExecuteCommandLists(
+    ID3D12CommandQueue* queue,
+    UINT count,
+    ID3D12CommandList* const* command_lists) {
+  real_dlss_fg_native_execute_command_lists(queue, count, command_lists);
+
+  reshade::api::command_queue* reshade_queue = nullptr;
+  {
+    std::scoped_lock lock(dlss_fg_native_queue_mutex);
+    const auto iterator = dlss_fg_native_queues.find(reinterpret_cast<uintptr_t>(queue));
+    if (iterator != dlss_fg_native_queues.end()) reshade_queue = iterator->second;
+  }
+  if (reshade_queue == nullptr || command_lists == nullptr) return;
+
+  for (UINT index = 0u; index < count; ++index) {
+    if (command_lists[index] != nullptr) {
+      ProcessDlssFgNativePostExecute(reshade_queue, command_lists[index]);
+    }
+  }
+}
+
+void RegisterDlssFgNativeQueue(reshade::api::command_queue* queue) {
+  if (queue == nullptr || queue->get_device() == nullptr
+      || queue->get_device()->get_api() != reshade::api::device_api::d3d12) {
+    return;
+  }
+
+  auto* native_queue = reinterpret_cast<ID3D12CommandQueue*>(static_cast<uintptr_t>(queue->get_native()));
+  if (native_queue == nullptr) return;
+
+  std::scoped_lock lock(dlss_fg_native_queue_mutex);
+  dlss_fg_native_queues[reinterpret_cast<uintptr_t>(native_queue)] = queue;
+  if (dlss_fg_native_execute_hook_installed) return;
+
+  void** vtable = *reinterpret_cast<void***>(native_queue);
+  if (vtable == nullptr || vtable[10] == nullptr) return;
+  real_dlss_fg_native_execute_command_lists =
+      reinterpret_cast<DlssFgNativeExecuteCommandLists>(vtable[10]);
+
+  if (DetourTransactionBegin() != NO_ERROR) {
+    real_dlss_fg_native_execute_command_lists = nullptr;
+    renodx::utils::log::w("DL2 DLSS FG: native ExecuteCommandLists hook transaction failed.");
+    return;
+  }
+  if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR
+      || DetourAttach(
+             reinterpret_cast<void**>(&real_dlss_fg_native_execute_command_lists),
+             reinterpret_cast<void*>(&HookedDlssFgNativeExecuteCommandLists)) != NO_ERROR
+      || DetourTransactionCommit() != NO_ERROR) {
+    DetourTransactionAbort();
+    real_dlss_fg_native_execute_command_lists = nullptr;
+    renodx::utils::log::w("DL2 DLSS FG: native ExecuteCommandLists hook installation failed.");
+    return;
+  }
+  dlss_fg_native_execute_hook_installed = true;
+  renodx::utils::log::i("DL2 DLSS FG: native ExecuteCommandLists post-submit hook installed.");
+}
+
+void UnregisterDlssFgNativeQueue(reshade::api::command_queue* queue) {
+  if (queue == nullptr) return;
+  const auto native_handle = static_cast<uintptr_t>(queue->get_native());
+  std::scoped_lock lock(dlss_fg_native_queue_mutex);
+  dlss_fg_native_queues.erase(native_handle);
+}
+
+void RemoveDlssFgNativeExecuteHook() {
+  std::scoped_lock lock(dlss_fg_native_queue_mutex);
+  if (dlss_fg_native_execute_hook_installed) {
+    if (DetourTransactionBegin() == NO_ERROR
+        && DetourUpdateThread(GetCurrentThread()) == NO_ERROR
+        && DetourDetach(
+               reinterpret_cast<void**>(&real_dlss_fg_native_execute_command_lists),
+               reinterpret_cast<void*>(&HookedDlssFgNativeExecuteCommandLists)) == NO_ERROR
+        && DetourTransactionCommit() == NO_ERROR) {
+      dlss_fg_native_execute_hook_installed = false;
+      real_dlss_fg_native_execute_command_lists = nullptr;
+    } else {
+      DetourTransactionAbort();
+    }
+  }
+  dlss_fg_native_queues.clear();
 }
 
 void OnDownstreamDrawCapturePresent(
@@ -4737,6 +4928,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::utils::log::i("DL2 scoped clone diagnostic: output-audit-v1");
       reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
       reshade::register_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
+      reshade::register_event<reshade::addon_event::init_command_queue>(RegisterDlssFgNativeQueue);
+      reshade::register_event<reshade::addon_event::destroy_command_queue>(UnregisterDlssFgNativeQueue);
       reshade::register_event<reshade::addon_event::init_swapchain>(OnTypelessAuditInitSwapchain);
       reshade::register_event<reshade::addon_event::init_resource>(OnTypelessAuditInitResource);
       reshade::register_event<reshade::addon_event::destroy_resource>(OnTypelessAuditDestroyResource);
@@ -4954,10 +5147,13 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::unmap_buffer_region>(OnUpscalerUnmapBufferRegion);
       reshade::unregister_event<reshade::addon_event::reset_command_list>(OnDlssFgResetCommandList);
       reshade::unregister_event<reshade::addon_event::execute_command_list>(OnDlssFgExecuteCommandList);
+      reshade::unregister_event<reshade::addon_event::init_command_queue>(RegisterDlssFgNativeQueue);
+      reshade::unregister_event<reshade::addon_event::destroy_command_queue>(UnregisterDlssFgNativeQueue);
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
       reshade::unregister_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
       reshade::unregister_event<reshade::addon_event::destroy_device>(
           renodx::games::dyinglight2::descriptor_override::OnDestroyDevice);
+      RemoveDlssFgNativeExecuteHook();
       RemoveStreamlineHook();
       renodx::utils::state::Use(fdw_reason);
       renodx::utils::constants::Use(fdw_reason);

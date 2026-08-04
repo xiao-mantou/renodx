@@ -1244,33 +1244,15 @@ static bool OnSetFullscreenState(reshade::api::swapchain* swapchain, bool fullsc
   return false;
 }
 
-inline void OnPresent(
+inline bool RenderProxy(
     reshade::api::command_queue* queue,
     reshade::api::swapchain* swapchain,
-    const reshade::api::rect* source_rect,
-    const reshade::api::rect* dest_rect,
-    uint32_t dirty_rect_count,
-    const reshade::api::rect* dirty_rects) {
+    bool honor_present_controls,
+    const reshade::api::resource* source_override = nullptr) {
+  if (queue == nullptr || swapchain == nullptr) return false;
   auto* device = swapchain->get_device();
   auto* data = renodx::utils::data::Get<DeviceData>(device);
-  if (data == nullptr) return;
-
-  if (data->fake_fullscreen_pending) {
-    auto* const hwnd = static_cast<HWND>(swapchain->get_hwnd());
-    const bool can_apply = utils::windowing::CanApplyFakeFullscreen(hwnd);
-    if (can_apply && utils::windowing::ApplyFakeFullscreen(swapchain, data->primary_swapchain_resource_desc)) {
-      data->fake_fullscreen_pending = false;
-      std::stringstream s;
-      s << "mods::swapchain::OnPresent(fake_fullscreen_pending=0, hwnd="
-        << PRINT_PTR(reinterpret_cast<uintptr_t>(hwnd))
-        << ", reason=applied_fake_fullscreen)";
-      reshade::log::message(reshade::log::level::info, s.str().c_str());
-    }
-  }
-
-  if (utils::device_proxy::UseProxyRequested()) {
-    return;
-  }
+  if (data == nullptr || utils::device_proxy::UseProxyRequested()) return false;
 
   const auto back_buffer_handle = swapchain->get_current_back_buffer().handle;
   auto pass_pointer = data->swapchain_proxy_passes.find(back_buffer_handle);
@@ -1293,24 +1275,28 @@ inline void OnPresent(
   }
   assert(proxy_pass != nullptr);
 
-  if (ConsumeProxyDrawSkipForBackBuffer({back_buffer_handle})) {
+  if (honor_present_controls && ConsumeProxyDrawSkipForBackBuffer({back_buffer_handle})) {
     if (!preserve_proxy_log_emitted.exchange(true, std::memory_order_acq_rel)) {
       reshade::log::message(
           reshade::log::level::info,
           "mods::swapchain::v2 OnPresent: preserving Streamline final PQ frame.");
     }
-    return;
+    return true;
   }
 
-  const auto proxy_source_override = ConsumeProxySourceForBackBuffer({back_buffer_handle});
+  const auto proxy_source_override = source_override != nullptr
+                                         ? *source_override
+                                         : (honor_present_controls
+                                                ? ConsumeProxySourceForBackBuffer({back_buffer_handle})
+                                                : reshade::api::resource{0u});
 
-  if (skip_next_proxy_draw.exchange(false, std::memory_order_acq_rel)) {
+  if (honor_present_controls && skip_next_proxy_draw.exchange(false, std::memory_order_acq_rel)) {
     if (!skip_proxy_log_emitted.exchange(true, std::memory_order_acq_rel)) {
       reshade::log::message(
           reshade::log::level::info,
           "mods::swapchain::v2 OnPresent: skipped one generated proxy draw.");
     }
-    return;
+    return true;
   }
 
   std::vector<float> proxy_shader_injection;
@@ -1332,6 +1318,34 @@ inline void OnPresent(
     proxy_pass->Destroy(device);
     data->swapchain_proxy_passes.erase(back_buffer_handle);
   }
+  return rendered;
+}
+
+inline void OnPresent(
+    reshade::api::command_queue* queue,
+    reshade::api::swapchain* swapchain,
+    const reshade::api::rect*,
+    const reshade::api::rect*,
+    uint32_t,
+    const reshade::api::rect*) {
+  auto* device = swapchain->get_device();
+  auto* data = renodx::utils::data::Get<DeviceData>(device);
+  if (data == nullptr) return;
+
+  if (data->fake_fullscreen_pending) {
+    auto* const hwnd = static_cast<HWND>(swapchain->get_hwnd());
+    const bool can_apply = utils::windowing::CanApplyFakeFullscreen(hwnd);
+    if (can_apply && utils::windowing::ApplyFakeFullscreen(swapchain, data->primary_swapchain_resource_desc)) {
+      data->fake_fullscreen_pending = false;
+      std::stringstream s;
+      s << "mods::swapchain::OnPresent(fake_fullscreen_pending=0, hwnd="
+        << PRINT_PTR(reinterpret_cast<uintptr_t>(hwnd))
+        << ", reason=applied_fake_fullscreen)";
+      reshade::log::message(reshade::log::level::info, s.str().c_str());
+    }
+  }
+
+  RenderProxy(queue, swapchain, true);
 }
 
 template <typename T = float*>
