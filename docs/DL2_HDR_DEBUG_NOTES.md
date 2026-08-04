@@ -79,3 +79,5 @@ The first semantic capture reported `clone=1` but retained resource/view formats
 The Typeless destination alone did not change the effective view. `ActivateCloneHotSwap` marked the resource enabled, but DL2's manual target rewrite continued to pass the original RTV. The callback now explicitly obtains the framework-managed lazy clone with `GetResourceViewClone` and rewrites the render target using that view; descriptor flushing remains responsible for the matching SRV views.
 
 The explicit lazy-view rewrite caused a black screen and is rejected. Stable fixed-index mode `4+5+7` remains valid for Off. The captured Balanced mappings are exposed as separate startup modes `0+1` (FG Off) and `2+3` (FG On), avoiding runtime resource mutation. FG's PQ/linear overexposure remains a separate follow-up.
+
+FG submission diagnostics now include the resource format and clone state for both `backbuffer` and `copy_source`. This distinguishes a linear FP16 source copied into an RGB10/PQ target from a correctly encoded PQ source without adding another mutation experiment.

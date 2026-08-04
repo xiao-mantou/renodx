@@ -2853,13 +2853,32 @@ void OnDlssFgExecuteCommandList(
   if (remaining == 0u) return;
 
   const uint64_t event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
+  auto describe_submission_resource = [queue](uint64_t handle) {
+    std::ostringstream details;
+    if (handle == 0u || queue == nullptr || queue->get_device() == nullptr) {
+      details << "format=unknown";
+      return details.str();
+    }
+    auto* device = queue->get_device();
+    const auto resource = reshade::api::resource{static_cast<uintptr_t>(handle)};
+    const auto desc = device->get_resource_desc(resource);
+    details << "format=" << static_cast<uint32_t>(desc.texture.format);
+    renodx::utils::resource::GetResourceInfo(resource, [&](const renodx::utils::resource::ResourceInfo& info) {
+      details << " clone=0x" << std::hex << info.clone.handle << std::dec
+              << " clone_enabled=" << (info.clone_enabled ? 1 : 0)
+              << " clone_format=" << static_cast<uint32_t>(info.clone_desc.texture.format);
+    });
+    return details.str();
+  };
   std::ostringstream message;
   message << "DL2 DLSS FG backbuffer submission: event=" << event
           << " thread=" << GetCurrentThreadId()
           << " queue=0x" << std::hex << std::uppercase << reinterpret_cast<uintptr_t>(queue)
           << " cmd=0x" << reinterpret_cast<uintptr_t>(cmd_list)
           << " backbuffer=0x" << candidate.back_buffer
+          << " backbuffer_" << describe_submission_resource(candidate.back_buffer)
           << " copy_source=0x" << candidate.copy_source
+          << " copy_source_" << describe_submission_resource(candidate.copy_source)
           << " entered_rt=" << std::dec << (candidate.entered_render_target ? 1 : 0)
           << " returned_present=" << (candidate.returned_to_present ? 1 : 0)
           << " bound_rtv=" << (candidate.bound_swapchain_rtv ? 1 : 0)
