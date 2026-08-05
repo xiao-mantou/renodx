@@ -44,3 +44,13 @@ The next diagnostic binds input snapshots by the `slSetTagForFrame` native comma
 Result: the automatic Final Color copy uses Streamline's private, stable command list rather than any `slSetTagForFrame` command buffer. All 16 samples correctly downgraded to `unmatched_copy`; do not repeat direct command-context matching. The focused-FG brightness fault remains at the RGB10 Final Color representation/encode boundary, not at the Game Exposure, Peak Brightness, or downstream scalar controls.
 
 Next diagnostic: arm the existing source-writer tracker against the two dynamically discovered final RGB10 resources. Record draw/RTV, dispatch/UAV, copy, and resolve producers plus their visible source and native command context. This replaces command-buffer identity matching; it does not change rendering or repeat the transfer-function A/B matrix.
+
+## Exact FG Producer Boundary
+
+Build `89f9b8d` closed the writer question:
+
+- Streamline fills its two alternating RGB10 Final Color resources with `CopyResource`.
+- Each source is the original 0xAD target, while RenoDX's completed HDR image is in that target's effective FP16 clone.
+- The copy cadence is stable and lossless in the 16-Present capture.
+
+Do not repeat source-semantic or final-nit multiplier grids against the normalized RGB10 output. The next valid A/B is the dedicated `AD FP16 -> PQ/RGB10 Bridge`, which changes the representation before Streamline's RGB10 bottleneck and leaves Direct PQ presentation intact.
