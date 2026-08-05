@@ -53,6 +53,7 @@ float swap_chain_use_hdr10 = 1.f;
 float dlss_fg_tag_clone = 0.f;
 float dlss_fg_suppress_color_tags = 0.f;
 float dlss_fg_aux_tag_mode = 0.f;
+float dlss_fg_color_buffer_format_mode = 0.f;
 float dlss_fg_skip_generated_proxy = 0.f;
 float dlss_fg_bypass_all_proxy = 0.f;
 float dlss_fg_final_color_mode = 0.f;
@@ -69,6 +70,7 @@ bool dlss_fg_waiting_for_streamline_logged = false;
 bool dlss_fg_tag_clone_logged = false;
 bool dlss_fg_color_tag_suppression_logged = false;
 std::atomic_int32_t dlss_fg_aux_tag_mode_logged = -1;
+std::atomic_int32_t dlss_fg_color_buffer_format_mode_latched = -1;
 
 struct DlssFgHandoffAudit {
   bool armed = false;
@@ -1031,8 +1033,16 @@ sl::Result HookedSlDLSSGSetOptions(
     }
   }
   const uint32_t incoming_color_format = corrected.colorBufferFormat;
-  if (swap_chain_use_hdr10 >= 0.5f) {
+  const int32_t requested_color_format_mode = std::clamp(
+      static_cast<int32_t>(dlss_fg_color_buffer_format_mode + 0.5f), 0, 2);
+  int32_t expected_color_format_mode = -1;
+  dlss_fg_color_buffer_format_mode_latched.compare_exchange_strong(
+      expected_color_format_mode, requested_color_format_mode, std::memory_order_acq_rel);
+  const int32_t color_format_mode = dlss_fg_color_buffer_format_mode_latched.load(std::memory_order_acquire);
+  if (color_format_mode == 1) {
     corrected.colorBufferFormat = static_cast<uint32_t>(DXGI_FORMAT_R10G10B10A2_UNORM);
+  } else if (color_format_mode == 2) {
+    corrected.colorBufferFormat = static_cast<uint32_t>(DXGI_FORMAT_R8G8B8A8_UNORM);
   }
   if (dlss_fg_tag_clone >= 0.5f) {
     corrected.hudLessBufferFormat = static_cast<uint32_t>(DXGI_FORMAT_R16G16B16A16_FLOAT);
@@ -1043,7 +1053,8 @@ sl::Result HookedSlDLSSGSetOptions(
   if (!dlss_fg_options_logged) {
     dlss_fg_options_logged = true;
     std::stringstream stream;
-    stream << "DL2 DLSS FG options: color=" << incoming_color_format
+    stream << "DL2 DLSS FG options: color_mode=" << color_format_mode
+           << " color=" << incoming_color_format
            << "=>" << corrected.colorBufferFormat
            << " hudless=" << options.hudLessBufferFormat
            << "=>" << corrected.hudLessBufferFormat
@@ -4669,6 +4680,19 @@ renodx::utils::settings::Settings settings = {
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
+        .key = "DLSSFGColorBufferFormat",
+        .binding = &dlss_fg_color_buffer_format_mode,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "DLSS FG Declared Final Color Format",
+        .section = "Compatibility",
+        .tooltip = "Requires a full game restart. Game default preserves DL2's optional zero format; RGB10 retains RenoDX's previous forced HDR10 declaration; RGBA8 is a negative control matching the host swapchain description rather than the upgraded backbuffer.",
+        .labels = {"Game default (0)", "HDR10 RGB10 (24)", "Host RGBA8 (28, negative control)"},
+        .is_global = true,
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
         .key = "DLSSFGAuxiliaryColorTags",
         .binding = &dlss_fg_aux_tag_mode,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
@@ -5106,6 +5130,7 @@ void OnPresetOff() {
       {"ColorGradeLUTScaling", 100.f},
       {"FxLensFlare", 100.f},
       {"FrameGenerationCompatibility", 0.f},
+      {"DLSSFGColorBufferFormat", 0.f},
       {"DLSSFGAuxiliaryColorTags", 0.f},
       {"DLSSFGUseTaggedClone", 0.f},
       {"DLSSFGSuppressPrePQTags", 0.f},
