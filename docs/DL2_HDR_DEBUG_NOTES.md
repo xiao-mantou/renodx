@@ -176,3 +176,11 @@ The same code also explains why this was not yet the final shared solution: its 
 Old-build testing confirmed that `5ebc218` is normal only in DLSS Balanced; DLSS Off is not normal under the same broad resource-upgrade implementation. This rejects `5ebc218` as evidence of a previously working shared Off/Balanced solution. Its wide Typeless/sRGB clone rules happened to match the Balanced resource topology while upgrading the wrong or additional Off resources.
 
 No `787fe68` retest is required. The conversation already records its approximately 203-nit ceiling, and its source change only corrected final proxy decoding without adding the FP16 intermediate and HDR LUT preservation introduced later. The remaining design problem is therefore resource-role identification across mode-specific creation topologies, not recovering a lost known-good universal rule.
+
+### Step 8: Watch Dogs reference audit
+
+The repository contains `src/games/watchdogs`, but its metadata identifies the original 2014 `Watch Dogs` (Steam app `243470`), not `Watch Dogs 2` or `Watch Dogs: Legion`. It has no DLSS or Streamline integration.
+
+Its useful pattern is limited to DX11-style shader-scoped resource activation: it pre-creates `R16G16B16A16_TYPELESS` view clones for `B8G8R8A8_TYPELESS`, then known tone-map/AA shaders call `ActivateCloneHotSwap`, flush descriptors, and rewrite the active RTV. This is evidence that semantic activation can work when one graphics draw owns a simple immediate render-target transition.
+
+It is not a safe template for DL2 mode switching. DL2 uses D3D12 descriptor tables, multiple typeless intermediates, compute/upscaler producers, temporal resource recreation, and Streamline references. The same semantic approach was already tested in DL2: activation without an effective view did nothing, while explicit lazy-clone RTV rewriting produced a black screen. Death Stranding Director's Cut is a closer DLSS-era reference, but it also installs static format-based upgrade rules during `init_device`; it does not dynamically change resource topology with the DLSS mode.
