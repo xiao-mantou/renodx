@@ -26,12 +26,22 @@ float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
   config.swap_chain_output_preset = RENODX_SWAP_CHAIN_USE_HDR10
                                         ? renodx::draw::SWAP_CHAIN_OUTPUT_PRESET_HDR10
                                         : renodx::draw::SWAP_CHAIN_OUTPUT_PRESET_SCRGB;
-  if (RENODX_SWAP_CHAIN_SOURCE_IS_HDR10) {
-    config.swap_chain_decoding = renodx::draw::ENCODING_PQ;
-    config.swap_chain_decoding_color_space = renodx::color::convert::COLOR_SPACE_BT2020;
-    // PQ decode returns absolute nits, so this source needs no reference-white
-    // conversion before being encoded again.
-    config.swap_chain_scaling_nits = 1.f;
+  if (RENODX_SWAP_CHAIN_SOURCE_OVERRIDE) {
+    const uint source_semantic = (uint)(RENODX_DLSS_FG_SOURCE_SEMANTIC + 0.5f);
+    const bool source_is_pq = source_semantic == 1u || source_semantic == 6u;
+    config.swap_chain_decoding = source_is_pq
+                                     ? renodx::draw::ENCODING_PQ
+                                 : source_semantic == 3u
+                                     ? renodx::draw::ENCODING_SRGB
+                                 : source_semantic == 4u
+                                     ? renodx::draw::ENCODING_GAMMA_2_2
+                                     : renodx::draw::ENCODING_NONE;
+    config.swap_chain_decoding_color_space = source_semantic == 5u || source_semantic == 1u
+                                                 ? renodx::color::convert::COLOR_SPACE_BT2020
+                                                 : renodx::color::convert::COLOR_SPACE_BT709;
+    // PQ decode returns absolute nits. Linear and gamma-domain candidates use
+    // the same 203-nit relative unit as DL2's normal proxy input.
+    config.swap_chain_scaling_nits = source_is_pq ? 1.f : RENODX_GRAPHICS_WHITE_NITS;
   }
 
   float3 stage_probe;

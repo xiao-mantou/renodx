@@ -42,6 +42,8 @@
 
 namespace {
 
+ShaderInjectData shader_injection;
+
 // 0 = HDR10 (RGB10 + BT.2100 PQ), 1 = scRGB (FP16 + linear).
 // DLSS Frame Generation requires HDR10/PQ, so that is the default. The value is
 // read once in DllMain because a swapchain container cannot change at runtime.
@@ -3277,10 +3279,16 @@ void OnDlssFgExecuteCommandList(
       && !candidate.bound_swapchain_rtv && !candidate.copied_to_swapchain) return;
 
   if (candidate.preserved_native_copy) {
-    if (dlss_fg_final_color_mode < 0.5f) {
+    const int32_t final_color_mode = std::clamp(
+        static_cast<int32_t>(dlss_fg_final_color_mode + 0.5f), 0, 6);
+    if (final_color_mode == 0) {
       renodx::mods::swapchain::ConsumeProxySourceForBackBuffer({candidate.back_buffer});
       renodx::mods::swapchain::SkipProxyDrawForBackBuffer({candidate.back_buffer});
     } else {
+      {
+        const std::scoped_lock lock(renodx::utils::mutex::global_mutex);
+        shader_injection.luminance_stage_padding_1 = static_cast<float>(final_color_mode);
+      }
       renodx::mods::swapchain::ConsumeProxyDrawSkipForBackBuffer({candidate.back_buffer});
       renodx::mods::swapchain::SetProxySourceForBackBuffer(
           {candidate.back_buffer}, {candidate.copy_source});
@@ -3294,7 +3302,9 @@ void OnDlssFgExecuteCommandList(
   }
   if (remaining == 0u) return;
 
-  const bool roundtrip_final_color = dlss_fg_final_color_mode >= 0.5f;
+  const int32_t final_color_mode = std::clamp(
+      static_cast<int32_t>(dlss_fg_final_color_mode + 0.5f), 0, 6);
+  const bool roundtrip_final_color = final_color_mode != 0;
   uint32_t source_format = 0u;
   const bool classification_active =
       dlss_fg_frame_classification_remaining.load(std::memory_order_acquire) != 0u;
@@ -3360,7 +3370,7 @@ void OnDlssFgExecuteCommandList(
           << " backbuffer_" << describe_submission_resource(candidate.back_buffer)
           << " copy_source=0x" << candidate.copy_source
           << " copy_source_" << describe_submission_resource(candidate.copy_source)
-          << " final_color_mode=" << (roundtrip_final_color ? "roundtrip" : "direct")
+          << " final_color_mode=" << final_color_mode
           << " proxy_action=" << (roundtrip_final_color ? "force_proxy_source" : "skip_generated_proxy")
           << " output_hdr10=" << (swap_chain_use_hdr10 >= 0.5f ? 1 : 0)
           << " entered_rt=" << std::dec << (candidate.entered_render_target ? 1 : 0)
@@ -4313,8 +4323,6 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     // CustomDirectXShaders(0xa766966e),
 };
 
-ShaderInjectData shader_injection;
-
 float current_settings_mode = 0;
 float resource_upgrade_test_setting = 0.f;
 
@@ -4723,8 +4731,16 @@ renodx::utils::settings::Settings settings = {
         .can_reset = false,
         .label = "DLSS FG Final Color",
         .section = "Compatibility",
-        .tooltip = "A/B test for Streamline's final RGB10/PQ frame. Direct PQ preserves the completed frame without another RenoDX proxy pass; PQ Round-trip decodes and re-encodes it through the standard HDR10 output pass.",
-        .labels = {"Direct PQ", "PQ Round-trip"},
+        .tooltip = "Live A/B for Streamline's generated RGB10 source. Direct preserves it unchanged; the remaining modes route only the generated source through the final HDR10 proxy with the selected transfer function and source gamut.",
+        .labels = {
+            "Direct PQ",
+            "PQ / BT.2020",
+            "Linear / BT.709",
+            "sRGB / BT.709",
+            "Gamma 2.2 / BT.709",
+            "Linear / BT.2020",
+            "PQ / BT.709",
+        },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
