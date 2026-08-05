@@ -152,6 +152,32 @@ struct DlssFgTimingSnapshot {
 };
 std::mutex dlss_fg_timing_mutex;
 DlssFgTimingSnapshot dlss_fg_timing = {};
+
+struct DlssFgPreservedCopyRecord {
+  uint64_t event = 0u;
+  uint64_t back_buffer = 0u;
+  uint64_t copy_source = 0u;
+  uint32_t tag_serial = 0u;
+  uint32_t source_format = 0u;
+  bool roundtrip = false;
+};
+
+struct DlssFgFrameClassificationAudit {
+  std::array<DlssFgPreservedCopyRecord, 64> pending_copies = {};
+  uint64_t generation = 0u;
+  uint64_t last_ad_submission_serial = 0u;
+  uint32_t pending_count = 0u;
+  uint32_t dropped_count = 0u;
+  uint32_t present_count = 0u;
+  uint32_t remaining = 0u;
+  uint32_t last_tag_serial = 0u;
+};
+
+std::mutex dlss_fg_frame_classification_mutex;
+DlssFgFrameClassificationAudit dlss_fg_frame_classification = {};
+std::atomic_uint32_t dlss_fg_frame_classification_remaining = 0u;
+std::atomic_uint64_t dlss_fg_frame_classification_generation = 0u;
+std::atomic_uint64_t dlss_fg_ad_submission_serial = 0u;
 std::atomic_bool dlss_fg_mode_active = false;
 std::atomic_uint32_t dlss_fg_execute_candidate_remaining = 0u;
 std::atomic_uint32_t dlss_fg_final_copy_diagnostic_count = 0u;
@@ -346,6 +372,96 @@ DlssFgSwapchainSnapshot ReadNativeSwapchainSnapshot(IDXGISwapChain* swapchain) {
   return snapshot;
 }
 
+void CaptureDlssFgFrameClassification(const DlssFgSwapchainSnapshot& snapshot) {
+  const uint64_t generation =
+      dlss_fg_frame_classification_generation.load(std::memory_order_acquire);
+  if (dlss_fg_frame_classification_remaining.load(std::memory_order_acquire) == 0u) return;
+
+  DlssFgTimingSnapshot timing = {};
+  uint32_t tag_serial = 0u;
+  uint64_t ad_submission_serial = 0u;
+  std::array<DlssFgPreservedCopyRecord, 64> copies = {};
+  uint32_t copy_count = 0u;
+  uint32_t dropped_count = 0u;
+  uint32_t present_index = 0u;
+  uint32_t remaining = 0u;
+  bool new_tag = false;
+  bool new_ad = false;
+  {
+    std::scoped_lock audit_lock(
+        dlss_fg_timing_mutex,
+        dlss_fg_frame_classification_mutex);
+    timing = dlss_fg_timing;
+    auto& audit = dlss_fg_frame_classification;
+    if (audit.generation != generation || audit.remaining == 0u) return;
+    remaining = --audit.remaining;
+    dlss_fg_frame_classification_remaining.store(remaining, std::memory_order_release);
+    tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_acquire);
+    ad_submission_serial = dlss_fg_ad_submission_serial.load(std::memory_order_acquire);
+    copy_count = audit.pending_count;
+    dropped_count = audit.dropped_count;
+    for (uint32_t index = 0u; index < copy_count; ++index) {
+      copies[index] = audit.pending_copies[index];
+    }
+    audit.pending_count = 0u;
+    audit.dropped_count = 0u;
+    new_tag = tag_serial != 0u && tag_serial != audit.last_tag_serial;
+    new_ad = ad_submission_serial != audit.last_ad_submission_serial;
+    if (tag_serial != 0u) audit.last_tag_serial = tag_serial;
+    audit.last_ad_submission_serial = ad_submission_serial;
+    present_index = ++audit.present_count;
+  }
+
+  const char* frame_class = "unknown";
+  if (new_tag || new_ad) {
+    frame_class = "rendered";
+  } else if (tag_serial != 0u) {
+    frame_class = "generated_candidate";
+  }
+
+  std::ostringstream classification;
+  classification << "DL2 DLSS FG frame classification: generation=" << generation
+                 << " present=" << present_index
+                 << " class=" << frame_class
+                 << " new_tag=" << (new_tag ? 1 : 0)
+                 << " tag=" << tag_serial
+                 << " new_ad=" << (new_ad ? 1 : 0)
+                 << " ad_serial=" << ad_submission_serial
+                 << " ad_event=" << timing.last_ad_execute_event
+                 << " backbuffer=0x" << std::hex << std::uppercase << snapshot.back_buffer
+                 << " index=" << std::dec << snapshot.back_buffer_index
+                 << " copies=" << copy_count
+                 << " dropped=" << dropped_count;
+  for (uint32_t index = 0u; index < copy_count; ++index) {
+    const auto& copy = copies[index];
+    const char* storage = "other";
+    if (copy.source_format
+        == static_cast<uint32_t>(reshade::api::format::r16g16b16a16_float)) {
+      storage = "fp16";
+    } else if (copy.source_format
+               == static_cast<uint32_t>(reshade::api::format::r10g10b10a2_unorm)) {
+      storage = "rgb10";
+    }
+    classification << " #" << (index + 1u)
+                   << "(event=" << copy.event
+                   << ",backbuffer=0x" << std::hex << copy.back_buffer
+                   << ",source=0x" << copy.copy_source
+                   << ",format=" << std::dec << copy.source_format
+                   << ",storage=" << storage
+                   << ",tag=" << copy.tag_serial
+                   << ",action=" << (copy.roundtrip ? "roundtrip" : "direct")
+                   << ",contract=pq)";
+  }
+  renodx::utils::log::i(classification.str().c_str());
+
+  if (remaining == 0u) {
+    std::ostringstream complete;
+    complete << "DL2 DLSS FG frame classification complete: generation=" << generation
+             << " presents=16";
+    renodx::utils::log::i(complete.str().c_str());
+  }
+}
+
 void CaptureReshadeSwapchainSnapshot(
     reshade::api::command_queue* queue,
     reshade::api::swapchain* swapchain) {
@@ -363,23 +479,25 @@ void CaptureReshadeSwapchainSnapshot(
   snapshot.resource_format = static_cast<uint32_t>(
       queue->get_device()->get_resource_desc(swapchain->get_current_back_buffer()).texture.format);
 
-  std::scoped_lock lock(dlss_fg_swapchain_snapshot_mutex);
-  snapshot.serial = ++dlss_fg_swapchain_snapshot_serial;
-  DlssFgSwapchainSnapshot* slot = nullptr;
-  for (auto& existing : dlss_fg_swapchain_snapshots) {
-    if (existing.native == snapshot.native && snapshot.native != 0u) {
-      slot = &existing;
-      break;
+  {
+    std::scoped_lock lock(dlss_fg_swapchain_snapshot_mutex);
+    snapshot.serial = ++dlss_fg_swapchain_snapshot_serial;
+    DlssFgSwapchainSnapshot* slot = nullptr;
+    for (auto& existing : dlss_fg_swapchain_snapshots) {
+      if (existing.native == snapshot.native && snapshot.native != 0u) {
+        slot = &existing;
+        break;
+      }
+      if (slot == nullptr && existing.native == 0u) slot = &existing;
     }
-    if (slot == nullptr && existing.native == 0u) slot = &existing;
+    if (slot == nullptr) {
+      slot = &*std::min_element(
+          dlss_fg_swapchain_snapshots.begin(),
+          dlss_fg_swapchain_snapshots.end(),
+          [](const auto& left, const auto& right) { return left.serial < right.serial; });
+    }
+    *slot = snapshot;
   }
-  if (slot == nullptr) {
-    slot = &*std::min_element(
-        dlss_fg_swapchain_snapshots.begin(),
-        dlss_fg_swapchain_snapshots.end(),
-        [](const auto& left, const auto& right) { return left.serial < right.serial; });
-  }
-  *slot = snapshot;
 
   const uint32_t count = dlss_fg_reshade_identity_count.fetch_add(1u, std::memory_order_relaxed);
   if (count < 48u) {
@@ -404,6 +522,7 @@ void CaptureReshadeSwapchainSnapshot(
             << " backbuffer=0x" << std::hex << snapshot.back_buffer;
     renodx::utils::log::i(message.str().c_str());
   }
+  CaptureDlssFgFrameClassification(snapshot);
 }
 
 struct DlssFgPresentAuditToken {
@@ -860,6 +979,12 @@ sl::Result HookedSlDLSSGSetOptions(
     dlss_fg_reshade_identity_count.store(0u, std::memory_order_release);
     dlss_fg_final_copy_diagnostic_count.store(0u, std::memory_order_release);
     dlss_fg_final_copy_match_diagnostic_count.store(0u, std::memory_order_release);
+    dlss_fg_frame_classification_remaining.store(0u, std::memory_order_release);
+    dlss_fg_frame_classification_generation.fetch_add(1u, std::memory_order_acq_rel);
+    {
+      std::scoped_lock classification_lock(dlss_fg_frame_classification_mutex);
+      dlss_fg_frame_classification = {};
+    }
     dlss_fg_execute_candidate_remaining.store(128u, std::memory_order_release);
     renodx::utils::log::i("DL2 DLSS FG: armed read-only backbuffer submission audit (128 candidates).");
   } else if (!fg_active && was_active) {
@@ -869,6 +994,12 @@ sl::Result HookedSlDLSSGSetOptions(
     }
     renodx::mods::swapchain::ClearProxyDrawBackBufferSkips();
     renodx::mods::swapchain::ClearProxySourceOverrides();
+    dlss_fg_frame_classification_remaining.store(0u, std::memory_order_release);
+    dlss_fg_frame_classification_generation.fetch_add(1u, std::memory_order_acq_rel);
+    {
+      std::scoped_lock classification_lock(dlss_fg_frame_classification_mutex);
+      dlss_fg_frame_classification = {};
+    }
   }
   const uint32_t incoming_color_format = corrected.colorBufferFormat;
   if (swap_chain_use_hdr10 >= 0.5f) {
@@ -3017,6 +3148,8 @@ void OnDlssFgResetCommandList(reshade::api::command_list* cmd_list) {
 void OnDlssFgExecuteCommandList(
     reshade::api::command_queue* queue,
     reshade::api::command_list* cmd_list) {
+  const uint64_t classification_generation =
+      dlss_fg_frame_classification_generation.load(std::memory_order_acquire);
   DlssFgAdCommandListMarker ad_marker = {};
   bool contains_target_ad = false;
   {
@@ -3058,6 +3191,7 @@ void OnDlssFgExecuteCommandList(
     }
   }
   if (contains_target_ad) {
+    dlss_fg_ad_submission_serial.fetch_add(1u, std::memory_order_acq_rel);
     uint32_t exact_remaining = dlss_fg_exact_ad_ordering_remaining.load(std::memory_order_relaxed);
     while (exact_remaining != 0u
            && !dlss_fg_exact_ad_ordering_remaining.compare_exchange_weak(
@@ -3120,14 +3254,43 @@ void OnDlssFgExecuteCommandList(
   }
   if (remaining == 0u) return;
 
+  const bool roundtrip_final_color = dlss_fg_final_color_mode >= 0.5f;
+  uint32_t source_format = 0u;
+  const bool classification_active =
+      dlss_fg_frame_classification_remaining.load(std::memory_order_acquire) != 0u;
+  if (classification_active && candidate.preserved_native_copy
+      && queue != nullptr && queue->get_device() != nullptr && candidate.copy_source != 0u) {
+    const auto source_resource = reshade::api::resource{
+        static_cast<uintptr_t>(candidate.copy_source)};
+    source_format = static_cast<uint32_t>(
+        queue->get_device()->get_resource_desc(source_resource).texture.format);
+  }
   uint64_t event = 0u;
   {
-    std::scoped_lock timing_lock(dlss_fg_timing_mutex);
+    std::scoped_lock audit_lock(
+        dlss_fg_timing_mutex,
+        dlss_fg_frame_classification_mutex);
     event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
     dlss_fg_timing.last_execute_event = event;
     dlss_fg_timing.last_execute_backbuffer = candidate.back_buffer;
+    if (classification_active && candidate.preserved_native_copy
+        && dlss_fg_frame_classification.generation == classification_generation
+        && dlss_fg_frame_classification.remaining != 0u) {
+      auto& audit = dlss_fg_frame_classification;
+      if (audit.pending_count < audit.pending_copies.size()) {
+        audit.pending_copies[audit.pending_count++] = {
+            .event = event,
+            .back_buffer = candidate.back_buffer,
+            .copy_source = candidate.copy_source,
+            .tag_serial = candidate.tag_serial,
+            .source_format = source_format,
+            .roundtrip = roundtrip_final_color,
+        };
+      } else {
+        ++audit.dropped_count;
+      }
+    }
   }
-  const bool roundtrip_final_color = dlss_fg_final_color_mode >= 0.5f;
   auto describe_submission_resource = [queue](uint64_t handle) {
     std::ostringstream details;
     if (handle == 0u || queue == nullptr || queue->get_device() == nullptr) {
@@ -4557,6 +4720,43 @@ renodx::utils::settings::Settings settings = {
               .clone_resource = dlss_fg_latest_color_clone.load(std::memory_order_relaxed),
               .active = true,
           };
+          return false;
+        },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture DLSS FG Frame Classification (16)",
+        .section = "Debug",
+        .tooltip = "One-shot read-only capture. Correlates preserved final-color copies with exact 0xAD submissions, color-tag cadence, and the next 16 actual ReShade Present events. Logs rendered/generated candidates, handles, storage format, tag serial, and Direct/Round-trip action without changing rendering.",
+        .on_click = []() {
+          dlss_fg_identity_event_serial.store(0u, std::memory_order_release);
+          dlss_fg_present_identity_count.store(0u, std::memory_order_release);
+          dlss_fg_reshade_identity_count.store(0u, std::memory_order_release);
+          dlss_fg_exact_ad_ordering_remaining.store(32u, std::memory_order_release);
+          dlss_fg_execute_candidate_remaining.store(128u, std::memory_order_release);
+          dlss_fg_frame_classification_remaining.store(0u, std::memory_order_release);
+          const uint64_t generation =
+              dlss_fg_frame_classification_generation.fetch_add(
+                  1u, std::memory_order_acq_rel)
+              + 1u;
+          {
+            std::scoped_lock audit_lock(
+                dlss_fg_timing_mutex,
+                dlss_fg_frame_classification_mutex);
+            dlss_fg_timing = {};
+            dlss_fg_frame_classification = {
+                .generation = generation,
+                .last_ad_submission_serial =
+                    dlss_fg_ad_submission_serial.load(std::memory_order_acquire),
+                .remaining = 16u,
+            };
+          }
+          dlss_fg_frame_classification_remaining.store(16u, std::memory_order_release);
+          std::ostringstream armed;
+          armed << "DL2 DLSS FG frame classification armed: generation=" << generation
+                << " presents=16 submissions=128";
+          renodx::utils::log::i(armed.str().c_str());
           return false;
         },
         .is_visible = []() { return current_settings_mode >= 2; },

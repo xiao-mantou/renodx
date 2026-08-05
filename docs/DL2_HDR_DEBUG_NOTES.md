@@ -202,3 +202,17 @@ Off mode `0` (`4+5+7`) and Balanced/FG-Off mode `32` (`0+1`) are closed, stable 
 The current safe code no longer renders or flushes from the native D3D12 `ExecuteCommandLists` hook; that experiment caused device removal and was reverted to a read-only timing marker. Present owns all proxy rendering again. The unresolved boundary is `preserved_native_copy`: Direct PQ currently skips the proxy for every matched copy, while PQ Round-trip forces the copy source through the proxy. Both branches were confirmed to execute, but neither corrected the generated-frame color.
 
 The next build should therefore be diagnostic-only and classify each preserved copy against the exact Streamline Present cadence/tag serial as rendered or generated, while logging the chosen proxy action and source encoding. No color transform should change in that build. Once one class is proven to receive the wrong interpretation, apply the encode/decode fix only to that class and leave the stable non-FG path untouched.
+
+### Step 11: read-only FG frame classification probe
+
+The first classifier design used the interposer `Present1` hook as its frame boundary. That is not a reliable cadence boundary because Streamline can turn one game Present into multiple display Presents internally. The probe now samples the actual ReShade Present callback and correlates each event with three pieces of evidence gathered without changing rendering:
+
+- a newly observed DLSS-G color-tag serial;
+- a newly submitted command list containing the exact final `0xAD085E81` draw;
+- preserved native final-color copies submitted since the preceding sampled Present, including source/backbuffer handles, storage format, tag serial, and Direct/Round-trip action.
+
+A Present with a new color tag or exact AD submission is classified as `rendered`. Further Presents under the same nonzero tag without a new AD submission are logged conservatively as `generated_candidate`; this naturally permits multiple generated candidates for future 3x/4x cadence. Events without either signal are `unknown`. Classification is deliberately evidentiary rather than authoritative because the closed DLSS-G plugin owns the final pacing decision.
+
+The capture reserves exactly 16 Present slots under one audit lock domain, snapshots timing and pending copies coherently, and reports any pending-copy overflow instead of silently discarding it. Each capture has a generation ID so callbacks from a prior arm cannot enter the new batch. Exact AD evidence uses a separate monotonic submission serial because the older interposer timing diagnostic destructively consumes its own AD event slot. Arming clears prior state before publishing the 16-event counter. This build does not alter proxy execution, color encoding, resource upgrades, tags, or the stable mode-specific chains.
+
+Test only after a full restart with DLSS Balanced, FG enabled, `ResourceUpgradeTest=33` (`2+3`), and `DLSS FG Final Color=Direct PQ`. Click `Capture DLSS FG Frame Classification (16)`, remain in a moving scene for several seconds, and collect every `DL2 DLSS FG frame classification:` line plus the completion line. The result will determine whether the incorrect color is attached to the real-frame handoff, generated candidates, or both before any rendering fix is attempted.
