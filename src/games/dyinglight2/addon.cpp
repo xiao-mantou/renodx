@@ -3280,7 +3280,7 @@ void OnDlssFgExecuteCommandList(
 
   if (candidate.preserved_native_copy) {
     const int32_t final_color_mode = std::clamp(
-        static_cast<int32_t>(dlss_fg_final_color_mode + 0.5f), 0, 6);
+        static_cast<int32_t>(dlss_fg_final_color_mode + 0.5f), 0, 10);
     if (final_color_mode == 0) {
       renodx::mods::swapchain::ConsumeProxySourceForBackBuffer({candidate.back_buffer});
       renodx::mods::swapchain::SkipProxyDrawForBackBuffer({candidate.back_buffer});
@@ -3303,7 +3303,7 @@ void OnDlssFgExecuteCommandList(
   if (remaining == 0u) return;
 
   const int32_t final_color_mode = std::clamp(
-      static_cast<int32_t>(dlss_fg_final_color_mode + 0.5f), 0, 6);
+      static_cast<int32_t>(dlss_fg_final_color_mode + 0.5f), 0, 10);
   const bool roundtrip_final_color = final_color_mode != 0;
   uint32_t source_format = 0u;
   const bool classification_active =
@@ -4731,15 +4731,29 @@ renodx::utils::settings::Settings settings = {
         .can_reset = false,
         .label = "DLSS FG Final Color",
         .section = "Compatibility",
-        .tooltip = "Live A/B for Streamline's generated RGB10 source. Direct preserves it unchanged; the remaining modes route only the generated source through the final HDR10 proxy with the selected transfer function and source gamut.",
+        .tooltip = "Live A/B for Streamline's focused-FG RGB10 output. Direct and PQ preserve the transfer-function controls; the Linear BT.709 modes vary only the absolute nit scale across both rendered and generated Presents without changing the stable DLSS resource chains.",
         .labels = {
             "Direct PQ",
             "PQ / BT.2020",
-            "Linear / BT.709",
-            "sRGB / BT.709",
-            "Gamma 2.2 / BT.709",
-            "Linear / BT.2020",
-            "PQ / BT.709",
+            "Linear / BT.709 (203 nit)",
+            "Linear / BT.709 (400 nit)",
+            "Linear / BT.709 (600 nit)",
+            "Linear / BT.709 (800 nit)",
+            "Linear / BT.709 (1000 nit)",
+            "Linear / BT.709 (1200 nit)",
+            "Linear / BT.709 (1600 nit)",
+            "Linear / BT.709 (Peak setting)",
+            "Linear / BT.709 (4000 nit control)",
+        },
+        .on_change_value = [](float previous, float current) {
+          const int32_t previous_mode = std::clamp(static_cast<int32_t>(previous + 0.5f), 0, 10);
+          const int32_t current_mode = std::clamp(static_cast<int32_t>(current + 0.5f), 0, 10);
+          dlss_fg_execute_candidate_remaining.store(16u, std::memory_order_release);
+          std::ostringstream stream;
+          stream << "DL2 DLSS FG final color mode changed: "
+                 << previous_mode << "=>" << current_mode
+                 << " submission_logs=16";
+          renodx::utils::log::i(stream.str().c_str());
         },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
