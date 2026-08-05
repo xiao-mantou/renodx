@@ -289,6 +289,7 @@ struct DlssFgBridgePass {
 
 std::mutex dlss_fg_bridge_mutex;
 std::unordered_map<uint64_t, uint64_t> dlss_fg_ad_effective_targets;
+std::unordered_map<uint64_t, uint64_t> dlss_fg_bridged_trays;
 std::unordered_map<
     DlssFgBridgePassKey,
     std::shared_ptr<DlssFgBridgePass>,
@@ -296,6 +297,7 @@ std::unordered_map<
     dlss_fg_bridge_passes;
 std::vector<std::shared_ptr<DlssFgBridgePass>> dlss_fg_retired_bridge_passes;
 std::atomic_uint32_t dlss_fg_bridge_diagnostic_count = 0u;
+std::atomic_uint32_t dlss_fg_bridge_candidate_diagnostic_count = 0u;
 
 void DestroyDlssFgBridgePasses(reshade::api::device* device) {
   if (device == nullptr) return;
@@ -312,6 +314,7 @@ void DestroyDlssFgBridgePasses(reshade::api::device* device) {
     dlss_fg_bridge_passes.clear();
     dlss_fg_retired_bridge_passes.clear();
     dlss_fg_ad_effective_targets.clear();
+    dlss_fg_bridged_trays.clear();
   }
   for (auto& bridge : stale_passes) {
     std::scoped_lock recording_lock(bridge->recording_mutex);
@@ -1341,6 +1344,10 @@ sl::Result HookedSlDLSSGSetOptions(
   auto corrected = options;
   const bool fg_active = corrected.mode != sl::DLSSGMode::eOff;
   const bool was_active = dlss_fg_mode_active.exchange(fg_active, std::memory_order_acq_rel);
+  if (fg_active != was_active) {
+    std::scoped_lock bridge_lock(dlss_fg_bridge_mutex);
+    dlss_fg_bridged_trays.clear();
+  }
   if (fg_active && !was_active) {
     std::scoped_lock lock(dlss_fg_command_list_candidate_mutex);
     dlss_fg_command_list_candidates.clear();
@@ -1661,6 +1668,10 @@ void RemoveStreamlineHook() {
   {
     std::scoped_lock post_execute_lock(dlss_fg_post_execute_mutex);
     dlss_fg_post_execute_markers.clear();
+  }
+  {
+    std::scoped_lock bridge_lock(dlss_fg_bridge_mutex);
+    dlss_fg_bridged_trays.clear();
   }
   std::scoped_lock lock(dlss_fg_fence_mutex);
   if (dlss_fg_inputs_fence != nullptr) dlss_fg_inputs_fence->Release();
@@ -2104,6 +2115,7 @@ void OnTypelessAuditDestroyResource(reshade::api::device*, reshade::api::resourc
     std::erase_if(dlss_fg_ad_effective_targets, [&](const auto& entry) {
       return entry.second == resource.handle;
     });
+    dlss_fg_bridged_trays.erase(resource.handle);
     std::erase_if(dlss_fg_bridge_passes, [&](const auto& entry) {
       const bool stale = entry.first.original == resource.handle
                          || entry.first.source == resource.handle
@@ -3489,6 +3501,8 @@ bool RenderDlssFgAdBridge(
       || effective_source_state == reshade::api::resource_usage::undefined) {
     return false;
   }
+  // D3D12 resource-upgrade clones do not mirror original barriers. Keep this
+  // bridge paired around the clone's framework-defined rest state.
 
   bool dest_is_swapchain = false;
   bool dest_has_clone = false;
@@ -3496,21 +3510,52 @@ bool RenderDlssFgAdBridge(
     dest_is_swapchain = info.is_swap_chain;
     dest_has_clone = info.clone.handle != 0u || info.clone_enabled;
   });
-  if (dest_is_swapchain || dest_has_clone) return false;
-
   const auto source_desc = device->get_resource_desc(source);
   const auto effective_desc = device->get_resource_desc(effective_source);
   const auto dest_desc = device->get_resource_desc(dest);
-  if (source_desc.type != reshade::api::resource_type::texture_2d
-      || effective_desc.type != reshade::api::resource_type::texture_2d
-      || dest_desc.type != reshade::api::resource_type::texture_2d
-      || source_desc.texture.format != reshade::api::format::r10g10b10a2_unorm
-      || effective_desc.texture.format != reshade::api::format::r16g16b16a16_float
-      || dest_desc.texture.format != reshade::api::format::r10g10b10a2_unorm
-      || source_desc.texture.width != dest_desc.texture.width
-      || source_desc.texture.height != dest_desc.texture.height
-      || effective_desc.texture.width != dest_desc.texture.width
-      || effective_desc.texture.height != dest_desc.texture.height) {
+  const bool eligible_destination = !dest_is_swapchain && !dest_has_clone;
+  if (eligible_destination) {
+    // A failed or rejected bridge must fall back to the native Direct-PQ copy.
+    std::scoped_lock lock(dlss_fg_bridge_mutex);
+    dlss_fg_bridged_trays.erase(dest.handle);
+  }
+  const char* rejection = nullptr;
+  if (dest_is_swapchain) {
+    rejection = "dest_is_swapchain";
+  } else if (dest_has_clone) {
+    rejection = "dest_has_clone";
+  } else if (source_desc.type != reshade::api::resource_type::texture_2d
+             || effective_desc.type != reshade::api::resource_type::texture_2d
+             || dest_desc.type != reshade::api::resource_type::texture_2d) {
+    rejection = "not_texture_2d";
+  } else if (source_desc.texture.format != reshade::api::format::r8g8b8a8_unorm) {
+    rejection = "source_not_rgba8_unorm";
+  } else if (effective_desc.texture.format != reshade::api::format::r16g16b16a16_float) {
+    rejection = "effective_not_fp16";
+  } else if (dest_desc.texture.format != reshade::api::format::r10g10b10a2_unorm) {
+    rejection = "dest_not_rgb10";
+  } else if (source_desc.texture.width != dest_desc.texture.width
+             || source_desc.texture.height != dest_desc.texture.height
+             || effective_desc.texture.width != dest_desc.texture.width
+             || effective_desc.texture.height != dest_desc.texture.height) {
+    rejection = "size_mismatch";
+  }
+  if (rejection != nullptr) {
+    const uint32_t diagnostic =
+        dlss_fg_bridge_candidate_diagnostic_count.fetch_add(1u, std::memory_order_relaxed);
+    if (diagnostic < 24u) {
+      std::ostringstream message;
+      message << "DL2 DLSS FG AD bridge candidate: source=0x" << std::hex << std::uppercase
+              << source.handle << "=>0x" << effective_source.handle
+              << " dest=0x" << dest.handle
+              << std::dec << " source_format=" << static_cast<uint32_t>(source_desc.texture.format)
+              << " effective_format=" << static_cast<uint32_t>(effective_desc.texture.format)
+              << " dest_format=" << static_cast<uint32_t>(dest_desc.texture.format)
+              << " dest_swapchain=" << (dest_is_swapchain ? 1 : 0)
+              << " dest_clone=" << (dest_has_clone ? 1 : 0)
+              << " accepted=0 reason=" << rejection;
+      renodx::utils::log::i(message.str().c_str());
+    }
     return false;
   }
 
@@ -3587,6 +3632,11 @@ bool RenderDlssFgAdBridge(
     if (rendered) cmd_list->copy_resource(bridge->resource, dest);
   }
   bridge_recording = false;
+  if (rendered) {
+    std::scoped_lock lock(dlss_fg_bridge_mutex);
+    dlss_fg_bridged_trays[dest.handle] =
+        dlss_fg_swapchain_generation.load(std::memory_order_acquire);
+  }
 
   const uint32_t diagnostic = dlss_fg_bridge_diagnostic_count.fetch_add(1u, std::memory_order_relaxed);
   if (diagnostic < 24u || !rendered) {
@@ -3595,12 +3645,24 @@ bool RenderDlssFgAdBridge(
             << source.handle << "=>0x" << effective_source.handle
             << " dest=0x" << dest.handle
             << std::dec << " rendered=" << (rendered ? 1 : 0)
+            << " formats=" << static_cast<uint32_t>(source_desc.texture.format)
+            << "=>" << static_cast<uint32_t>(effective_desc.texture.format)
+            << "=>" << static_cast<uint32_t>(dest_desc.texture.format)
+            << " peak=" << shader_injection.peak_white_nits
             << " bridge=0x" << std::hex << bridge_handle
             << std::dec << " source_state=" << static_cast<uint32_t>(effective_source_state)
             << " bridge_state=copy_source";
     renodx::utils::log::i(message.str().c_str());
   }
   return rendered;
+}
+
+bool IsDlssFgBridgedTray(uint64_t resource) {
+  if (resource == 0u) return false;
+  const auto generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
+  std::scoped_lock lock(dlss_fg_bridge_mutex);
+  const auto iterator = dlss_fg_bridged_trays.find(resource);
+  return iterator != dlss_fg_bridged_trays.end() && iterator->second == generation;
 }
 
 void RecordUpscalerSourceTransfer(
@@ -3710,7 +3772,7 @@ void OnDlssFgBackbufferBarrier(
     return;
   }
   const bool submission_audit_active = dlss_fg_mode_active.load(std::memory_order_acquire)
-                                       && dlss_fg_execute_candidate_remaining.load(std::memory_order_relaxed) != 0u;
+                                        && dlss_fg_execute_candidate_remaining.load(std::memory_order_relaxed) != 0u;
   const bool manual_capture_active = dlss_fg_backbuffer_barrier_capture.load(std::memory_order_relaxed) != 0u;
   if (!submission_audit_active && !manual_capture_active) return;
 
@@ -3878,7 +3940,8 @@ void OnDlssFgExecuteCommandList(
   if (candidate.preserved_native_copy) {
     const int32_t final_color_mode = std::clamp(
         static_cast<int32_t>(dlss_fg_final_color_mode + 0.5f), 0, 11);
-    if (final_color_mode == 0 || final_color_mode == 11) {
+    const bool bridge_ready = IsDlssFgBridgedTray(candidate.copy_source);
+    if (final_color_mode == 0 || (final_color_mode == 11 && !bridge_ready)) {
       renodx::mods::swapchain::ConsumeProxySourceForBackBuffer({candidate.back_buffer});
       renodx::mods::swapchain::SkipProxyDrawForBackBuffer({candidate.back_buffer});
     } else {
@@ -3929,7 +3992,9 @@ void OnDlssFgExecuteCommandList(
 
   const int32_t final_color_mode = std::clamp(
       static_cast<int32_t>(dlss_fg_final_color_mode + 0.5f), 0, 11);
-  const bool roundtrip_final_color = final_color_mode != 0 && final_color_mode != 11;
+  const bool bridge_ready = IsDlssFgBridgedTray(candidate.copy_source);
+  const bool roundtrip_final_color =
+      final_color_mode != 0 && (final_color_mode != 11 || bridge_ready);
   uint32_t source_format = 0u;
   const bool classification_active =
       dlss_fg_frame_classification_remaining.load(std::memory_order_acquire) != 0u;
@@ -3999,6 +4064,7 @@ void OnDlssFgExecuteCommandList(
           << " copy_source=0x" << candidate.copy_source
           << " copy_source_" << describe_submission_resource(candidate.copy_source)
           << " final_color_mode=" << final_color_mode
+          << " bridge_ready=" << (bridge_ready ? 1 : 0)
           << " proxy_action=" << (roundtrip_final_color ? "force_proxy_source" : "skip_generated_proxy")
           << " output_hdr10=" << (swap_chain_use_hdr10 >= 0.5f ? 1 : 0)
           << " entered_rt=" << std::dec << (candidate.entered_render_target ? 1 : 0)
@@ -5016,16 +5082,16 @@ renodx::utils::settings::Settings settings = {
         .min = 48.f,
         .max = 500.f,
     },
-      new renodx::utils::settings::Setting{
-          .key = "ToneMapUINits",
-          .binding = &shader_injection.graphics_white_nits,
-          .default_value = 203.f,
-          .label = "UI Brightness",
-          .section = "Tone Mapping",
-          .tooltip = "Sets the brightness reference for UI and HUD elements. Should match Game Brightness for correct scaling.",
-          .min = 48.f,
-          .max = 500.f,
-      },
+    new renodx::utils::settings::Setting{
+        .key = "ToneMapUINits",
+        .binding = &shader_injection.graphics_white_nits,
+        .default_value = 203.f,
+        .label = "UI Brightness",
+        .section = "Tone Mapping",
+        .tooltip = "Sets the brightness reference for UI and HUD elements. Should match Game Brightness for correct scaling.",
+        .min = 48.f,
+        .max = 500.f,
+    },
     new renodx::utils::settings::Setting{
         .key = "ToneMapWhiteClip",
         .binding = &shader_injection.tone_map_white_clip,
@@ -5377,7 +5443,7 @@ renodx::utils::settings::Settings settings = {
         .can_reset = false,
         .label = "DLSS FG Final Color",
         .section = "Compatibility",
-        .tooltip = "Live A/B for Streamline's focused-FG RGB10 output. The final mode converts the exact 0xAD FP16 clone to PQ/RGB10 inside Streamline's private copy command list; Off/Balanced and the stable resource masks are unchanged.",
+        .tooltip = "Live A/B for Streamline's focused-FG RGB10 output. The final mode normalizes the exact 0xAD FP16 clone into Streamline's Linear/BT.709 RGB10 tray, then restores the configured Peak in the final proxy; Off/Balanced and the stable resource masks are unchanged.",
         .labels = {
             "Direct PQ",
             "PQ / BT.2020",
@@ -5390,18 +5456,21 @@ renodx::utils::settings::Settings settings = {
             "Linear / BT.709 (1600 nit)",
             "Linear / BT.709 (Peak setting)",
             "Linear / BT.709 (4000 nit control)",
-            "AD FP16 -> PQ/RGB10 Bridge",
+            "AD FP16 -> Linear RGB10 Bridge",
         },
         .on_change_value = [](float previous, float current) {
           const int32_t previous_mode = std::clamp(static_cast<int32_t>(previous + 0.5f), 0, 11);
           const int32_t current_mode = std::clamp(static_cast<int32_t>(current + 0.5f), 0, 11);
+          if (current_mode == 11) {
+            std::scoped_lock lock(dlss_fg_bridge_mutex);
+            dlss_fg_bridged_trays.clear();
+          }
           dlss_fg_execute_candidate_remaining.store(16u, std::memory_order_release);
           std::ostringstream stream;
           stream << "DL2 DLSS FG final color mode changed: "
                  << previous_mode << "=>" << current_mode
                  << " submission_logs=16";
-          renodx::utils::log::i(stream.str().c_str());
-        },
+          renodx::utils::log::i(stream.str().c_str()); },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -5428,8 +5497,7 @@ renodx::utils::settings::Settings settings = {
               .active = true,
           };
           dlss_fg_tag_transfer_capture_active.store(true, std::memory_order_relaxed);
-          return false;
-        },
+          return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -5446,8 +5514,7 @@ renodx::utils::settings::Settings settings = {
               .active = true,
           };
           dlss_fg_compute_uav_views.clear();
-          return false;
-        },
+          return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -5462,8 +5529,7 @@ renodx::utils::settings::Settings settings = {
               .clone_resource = dlss_fg_latest_color_clone.load(std::memory_order_relaxed),
               .active = true,
           };
-          return false;
-        },
+          return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -5514,8 +5580,7 @@ renodx::utils::settings::Settings settings = {
           armed << "DL2 DLSS FG final color correlation armed: generation=" << generation
                 << " presents=16 submissions=128 inputs=tagged producers=rgb10";
           renodx::utils::log::i(armed.str().c_str());
-          return false;
-        },
+          return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -5533,8 +5598,7 @@ renodx::utils::settings::Settings settings = {
             dlss_fg_timing = {};
           }
           renodx::utils::log::i("DL2 DLSS FG exact AD ordering audit armed: submissions=16");
-          return false;
-        },
+          return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -5545,8 +5609,7 @@ renodx::utils::settings::Settings settings = {
         .on_click = []() {
           std::scoped_lock lock(dlss_fg_handoff_audit_mutex);
           dlss_fg_handoff_audit = {.armed = true};
-          return false;
-        },
+          return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -5556,8 +5619,7 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "One-shot: logs the next Streamline slSetTag/slSetTagForFrame resource tags, including native handles and RenoDX clone state. No dumping, readback, or resource interception.",
         .on_click = []() {
           dlss_fg_tag_capture = true;
-          return false;
-        },
+          return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -5567,8 +5629,7 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "One-shot: records 16 Present events as color-tag serial plus current backbuffer handle. It does not capture draws, descriptors, resources, or GPU data.",
         .on_click = []() {
           dlss_fg_present_cadence_capture = true;
-          return false;
-        },
+          return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -5600,8 +5661,7 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "One-shot: records up to 128 barriers for full-size swapchain backbuffers and clones, including old/new states and the current Streamline tag serial. No mutation or readback.",
         .on_click = []() {
           dlss_fg_backbuffer_barrier_capture.store(128u, std::memory_order_release);
-          return false;
-        },
+          return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -5630,8 +5690,7 @@ renodx::utils::settings::Settings settings = {
           stream << "DL2 268 resource lifecycle audit armed: capture=" << capture_id
                  << " generation=" << generation;
           renodx::utils::log::i(stream.str().c_str());
-          return false;
-        },
+          return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -5656,8 +5715,7 @@ renodx::utils::settings::Settings settings = {
           stream << "DL2 upscaler color path audit armed: capture=" << capture_id
                  << " generation=" << generation;
           renodx::utils::log::i(stream.str().c_str());
-          return false;
-        },
+          return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -5680,8 +5738,7 @@ renodx::utils::settings::Settings settings = {
           stream << "DL2 0x3E input/curve audit armed: capture=" << capture_id
                  << " generation=" << generation;
           renodx::utils::log::i(stream.str().c_str());
-          return false;
-        },
+          return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -5701,8 +5758,7 @@ renodx::utils::settings::Settings settings = {
           std::ostringstream stream;
           stream << "DL2 0x3E source-writer audit armed: capture=" << capture_id;
           renodx::utils::log::i(stream.str().c_str());
-          return false;
-        },
+          return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -5736,8 +5792,7 @@ renodx::utils::settings::Settings settings = {
           stream << "DL2 FG final proxy source-range probe: "
                  << previous_mode << "=>" << current_mode
                  << " submission_logs=32";
-          renodx::utils::log::i(stream.str().c_str());
-        },
+          renodx::utils::log::i(stream.str().c_str()); },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -5751,8 +5806,7 @@ renodx::utils::settings::Settings settings = {
           downstream_draw_capture_state = {};
           downstream_capture_t0_views.clear();
           renodx::utils::log::i("DL2 post-LUT candidate capture armed.");
-          return false;
-        },
+          return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -5765,21 +5819,20 @@ renodx::utils::settings::Settings settings = {
           downstream_transfer_capture = 1.f;
           downstream_draw_capture_state = {};
           renodx::utils::log::i("DL2 post-LUT transfer capture armed.");
-          return false;
-        },
+          return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
-      new renodx::utils::settings::Setting{
-          .key = "ClampSwapchainOutput",
-          .binding = &shader_injection.clamp_swapchain_output,
-          .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
-          .default_value = 0.f,
-          .can_reset = false,
-          .label = "Clamp Swapchain Output (Test)",
-          .section = "Compatibility",
-          .tooltip = "Experimental. Clips final proxy output to [0,1] range. If this stops DLSS-G flicker, it confirms extended-range values are causing Streamline interpolation errors.",
-          .is_visible = []() { return current_settings_mode >= 2; },
-      },
+    new renodx::utils::settings::Setting{
+        .key = "ClampSwapchainOutput",
+        .binding = &shader_injection.clamp_swapchain_output,
+        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "Clamp Swapchain Output (Test)",
+        .section = "Compatibility",
+        .tooltip = "Experimental. Clips final proxy output to [0,1] range. If this stops DLSS-G flicker, it confirms extended-range values are causing Streamline interpolation errors.",
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture Gamma Targets (8 frames)",
@@ -5788,8 +5841,7 @@ renodx::utils::settings::Settings settings = {
         .on_click = []() {
           gamma_draw_audit_capture = true;
           gamma_draw_audit_state = {};
-          return false;
-        },
+          return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -5800,8 +5852,7 @@ renodx::utils::settings::Settings settings = {
         .on_click = []() {
           gamma_native_input_audit_capture = true;
           gamma_native_input_audit_state = {};
-          return false;
-        },
+          return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
 };

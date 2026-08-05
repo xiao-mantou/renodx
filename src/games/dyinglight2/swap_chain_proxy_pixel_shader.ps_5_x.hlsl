@@ -3,7 +3,7 @@
 Texture2D t0 : register(t0);
 SamplerState s0 : register(s0);
 
-float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
+float4 main(float4 vpos : SV_POSITION, float2 uv : TEXCOORD0)
     : SV_TARGET {
   renodx::draw::Config config = renodx::draw::BuildConfig();
   // The swapchain proxy samples DL2's linear BT.709 composite. BuildConfig's
@@ -38,13 +38,14 @@ float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
     // A normalized linear RGB10 source cannot exceed 1.0. The previous
     // 203-nit assumption therefore imposed the observed 203-nit ceiling.
     // Keep transfer function and gamut fixed while testing its absolute scale.
-    const float linear_source_scale = source_semantic == 3u ? 400.f
-                                      : source_semantic == 4u ? 600.f
-                                      : source_semantic == 5u ? 800.f
-                                      : source_semantic == 6u ? 1000.f
-                                      : source_semantic == 7u ? 1200.f
-                                      : source_semantic == 8u ? 1600.f
-                                      : source_semantic == 9u ? RENODX_PEAK_WHITE_NITS
+    const float linear_source_scale = source_semantic == 11u   ? RENODX_PEAK_WHITE_NITS
+                                      : source_semantic == 3u  ? 400.f
+                                      : source_semantic == 4u  ? 600.f
+                                      : source_semantic == 5u  ? 800.f
+                                      : source_semantic == 6u  ? 1000.f
+                                      : source_semantic == 7u  ? 1200.f
+                                      : source_semantic == 8u  ? 1600.f
+                                      : source_semantic == 9u  ? RENODX_PEAK_WHITE_NITS
                                       : source_semantic == 10u ? 4000.f
                                                                : 203.f;
     config.swap_chain_scaling_nits = source_is_pq ? 1.f : linear_source_scale;
@@ -114,25 +115,25 @@ float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
     const float2 local_uv = frac(uv * 2.0);
     const uint quadrant = (uv.x >= 0.5 ? 1u : 0u) + (uv.y >= 0.5 ? 2u : 0u);
     const uint channel = min((uint)(local_uv.x * 3.0), 2u);
-    float value = quadrant == 0u ? max_channel
-                    : quadrant == 1u ? luminance
-                    : quadrant == 2u ? source[channel]
-                                      : max_channel;
+    float value = quadrant == 0u   ? max_channel
+                  : quadrant == 1u ? luminance
+                  : quadrant == 2u ? source[channel]
+                                   : max_channel;
     // Log-like bands retain useful separation after the final HDR encoding.
-    const float3 band = value < 0.01 ? float3(0.0, 0.0, 1.0)
-                         : value < 0.05 ? float3(0.0, 1.0, 1.0)
-                         : value < 0.2 ? float3(0.0, 1.0, 0.0)
-                         : value < 0.5 ? float3(1.0, 1.0, 0.0)
-                         : value < 1.0 ? float3(1.0, 0.5, 0.0)
+    const float3 band = value < 0.01   ? float3(0.0, 0.0, 1.0)
+                        : value < 0.05 ? float3(0.0, 1.0, 1.0)
+                        : value < 0.2  ? float3(0.0, 1.0, 0.0)
+                        : value < 0.5  ? float3(1.0, 1.0, 0.0)
+                        : value < 1.0  ? float3(1.0, 0.5, 0.0)
                                        : float3(1.0, 0.0, 0.0);
     // Bottom-right retains the unmodified source image as a spatial reference.
     if (quadrant == 3u) {
       return float4(renodx::draw::SwapChainPass(source, uv, config).rgb, 1.f);
     }
     const float channel_edge = quadrant == 2u
-                                   && (abs(frac(local_uv.x * 3.0)) < 0.04)
-        ? 0.35
-        : 1.0;
+                                       && (abs(frac(local_uv.x * 3.0)) < 0.04)
+                                   ? 0.35
+                                   : 1.0;
     const float edge = (local_uv.x < 0.025 || local_uv.y < 0.025) ? 0.35 : channel_edge;
     return float4(renodx::draw::SwapChainPass(band * edge, uv, config).rgb, 1.f);
   }
