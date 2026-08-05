@@ -103,5 +103,39 @@ float4 main(float4 vpos: SV_POSITION, float2 uv: TEXCOORD0)
     return float4(renodx::draw::SwapChainPass(input_color, uv, config).rgb, 1.f);
   }
 
+  // Final-proxy source probe. This is intentionally before any decode,
+  // gamut conversion, scaling, or PQ encoding. The four quadrants expose
+  // independent range summaries so an upstream clamp can be distinguished
+  // from a downstream display-interpretation problem in one frame.
+  if (RENODX_DEBUG_MODE > 35.5 && RENODX_DEBUG_MODE < 36.5) {
+    const float3 source = max(t0.Sample(s0, uv).rgb, 0.0);
+    const float max_channel = max(source.r, max(source.g, source.b));
+    const float luminance = renodx::color::y::from::BT709(source);
+    const float2 local_uv = frac(uv * 2.0);
+    const uint quadrant = (uv.x >= 0.5 ? 1u : 0u) + (uv.y >= 0.5 ? 2u : 0u);
+    const uint channel = min((uint)(local_uv.x * 3.0), 2u);
+    float value = quadrant == 0u ? max_channel
+                    : quadrant == 1u ? luminance
+                    : quadrant == 2u ? source[channel]
+                                      : max_channel;
+    // Log-like bands retain useful separation after the final HDR encoding.
+    const float3 band = value < 0.01 ? float3(0.0, 0.0, 1.0)
+                         : value < 0.05 ? float3(0.0, 1.0, 1.0)
+                         : value < 0.2 ? float3(0.0, 1.0, 0.0)
+                         : value < 0.5 ? float3(1.0, 1.0, 0.0)
+                         : value < 1.0 ? float3(1.0, 0.5, 0.0)
+                                       : float3(1.0, 0.0, 0.0);
+    // Bottom-right retains the unmodified source image as a spatial reference.
+    if (quadrant == 3u) {
+      return float4(renodx::draw::SwapChainPass(source, uv, config).rgb, 1.f);
+    }
+    const float channel_edge = quadrant == 2u
+                                   && (abs(frac(local_uv.x * 3.0)) < 0.04)
+        ? 0.35
+        : 1.0;
+    const float edge = (local_uv.x < 0.025 || local_uv.y < 0.025) ? 0.35 : channel_edge;
+    return float4(renodx::draw::SwapChainPass(band * edge, uv, config).rgb, 1.f);
+  }
+
   return float4(renodx::draw::SwapChainPass(t0.Sample(s0, uv).rgb, uv, config).rgb, 1.f);
 }
