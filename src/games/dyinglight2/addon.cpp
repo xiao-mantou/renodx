@@ -52,6 +52,7 @@ float swap_chain_use_hdr10 = 1.f;
 
 float dlss_fg_tag_clone = 0.f;
 float dlss_fg_suppress_color_tags = 0.f;
+float dlss_fg_aux_tag_mode = 0.f;
 float dlss_fg_skip_generated_proxy = 0.f;
 float dlss_fg_bypass_all_proxy = 0.f;
 float dlss_fg_final_color_mode = 0.f;
@@ -67,6 +68,7 @@ bool dlss_fg_hook_installed = false;
 bool dlss_fg_waiting_for_streamline_logged = false;
 bool dlss_fg_tag_clone_logged = false;
 bool dlss_fg_color_tag_suppression_logged = false;
+std::atomic_int32_t dlss_fg_aux_tag_mode_logged = -1;
 
 struct DlssFgHandoffAudit {
   bool armed = false;
@@ -785,22 +787,46 @@ RoutedStreamlineTags RouteStreamlineColorTags(const sl::ResourceTag* tags, uint3
   RoutedStreamlineTags routed = {.tags = tags, .count = num_tags};
   if (tags == nullptr || num_tags == 0u) return routed;
 
-  if (dlss_fg_suppress_color_tags >= 0.5f) {
-    routed.tags_storage.reserve(num_tags);
-    for (uint32_t index = 0u; index < num_tags; ++index) {
-      const auto type = tags[index].type;
-      if (type == sl::kBufferTypeHUDLessColor || type == sl::kBufferTypeUIColorAndAlpha) continue;
-      routed.tags_storage.push_back(tags[index]);
-    }
-    if (routed.tags_storage.size() != num_tags) {
-      routed.count = static_cast<uint32_t>(routed.tags_storage.size());
-      routed.tags = routed.tags_storage.data();
-      if (!dlss_fg_color_tag_suppression_logged) {
-        dlss_fg_color_tag_suppression_logged = true;
-        renodx::utils::log::i("DL2 DLSS FG: suppressed pre-PQ HUDLessColor/UIColorAndAlpha tags.");
+  const int32_t aux_tag_mode = dlss_fg_suppress_color_tags >= 0.5f
+      ? 3
+      : std::clamp(static_cast<int32_t>(dlss_fg_aux_tag_mode + 0.5f), 0, 3);
+  const bool null_ui = aux_tag_mode == 2 || aux_tag_mode == 3;
+  const bool null_hudless = aux_tag_mode == 1 || aux_tag_mode == 3;
+  const bool has_aux_tag = std::any_of(tags, tags + num_tags, [](const sl::ResourceTag& tag) {
+    return tag.type == sl::kBufferTypeUIColorAndAlpha || tag.type == sl::kBufferTypeHUDLessColor;
+  });
+  if (has_aux_tag && (null_ui || null_hudless)) {
+    routed.tags_storage.assign(tags, tags + num_tags);
+    routed.tags = routed.tags_storage.data();
+    for (auto& tag : routed.tags_storage) {
+      if ((tag.type == sl::kBufferTypeUIColorAndAlpha && null_ui)
+          || (tag.type == sl::kBufferTypeHUDLessColor && null_hudless)) {
+        tag.resource = nullptr;
       }
     }
-    if (routed.count == 0u) return routed;
+    if (dlss_fg_suppress_color_tags >= 0.5f && !dlss_fg_color_tag_suppression_logged) {
+      dlss_fg_color_tag_suppression_logged = true;
+      renodx::utils::log::i("DL2 DLSS FG: explicitly cleared pre-PQ HUDLessColor/UIColorAndAlpha tags.");
+    }
+  }
+
+  const int32_t previous_mode = has_aux_tag
+      ? dlss_fg_aux_tag_mode_logged.exchange(aux_tag_mode, std::memory_order_relaxed)
+      : aux_tag_mode;
+  if (has_aux_tag && previous_mode != aux_tag_mode) {
+    static constexpr std::array<const char*, 4> mode_names = {
+        "original",
+        "ui_only",
+        "hudless_only",
+        "none",
+    };
+    std::stringstream stream;
+    stream << "DL2 DLSS FG auxiliary tags: mode=" << aux_tag_mode
+           << " (" << mode_names[aux_tag_mode] << ")"
+           << " ui=" << (null_ui ? "null" : "original")
+           << " hudless=" << (null_hudless ? "null" : "original")
+           << " count=" << num_tags;
+    reshade::log::message(reshade::log::level::info, stream.str().c_str());
   }
 
   if (dlss_fg_tag_clone < 0.5f) return routed;
@@ -822,10 +848,10 @@ RoutedStreamlineTags RouteStreamlineColorTags(const sl::ResourceTag* tags, uint3
     if (clone_info == nullptr || !clone_info->is_clone) continue;
 
     if (routed.tags_storage.empty()) {
-      if (routed.tags_storage.empty()) routed.tags_storage.assign(tags, tags + num_tags);
-      routed.resources_storage.reserve(num_tags);
+      routed.tags_storage.assign(tags, tags + num_tags);
       routed.tags = routed.tags_storage.data();
     }
+    if (routed.resources_storage.empty()) routed.resources_storage.reserve(num_tags);
 
     auto [replacement, inserted] = replacement_indices.emplace(native, routed.resources_storage.size());
     if (inserted) {
@@ -874,8 +900,7 @@ void BeginDlssFgHandoffAudit(
     if (type != sl::kBufferTypeHUDLessColor && type != sl::kBufferTypeUIColorAndAlpha) continue;
 
     ++audit.color_tag_count;
-    if (audit.original_resource != 0u || original_tags[index].resource == nullptr
-        || routed.tags[index].resource == nullptr) {
+    if (audit.original_resource != 0u || original_tags[index].resource == nullptr) {
       continue;
     }
 
@@ -883,8 +908,10 @@ void BeginDlssFgHandoffAudit(
     const auto* submitted_resource = routed.tags[index].resource;
     audit.original_resource = reinterpret_cast<uint64_t>(original_resource->native);
     audit.original_format = original_resource->nativeFormat;
-    audit.submitted_resource = reinterpret_cast<uint64_t>(submitted_resource->native);
-    audit.submitted_format = submitted_resource->nativeFormat;
+    audit.submitted_resource = submitted_resource == nullptr
+        ? 0u
+        : reinterpret_cast<uint64_t>(submitted_resource->native);
+    audit.submitted_format = submitted_resource == nullptr ? 0u : submitted_resource->nativeFormat;
     audit.submitted_clone = audit.original_resource != audit.submitted_resource;
 
     if (audit.original_resource == 0u) continue;
@@ -916,7 +943,9 @@ void LogDlssFgHandoffAudit(const DlssFgHandoffAudit& audit) {
   stream << "DL2 DLSS FG handoff audit ("
          << (audit.set_tag_for_frame ? "slSetTagForFrame" : "slSetTag")
          << "): color_tags=" << audit.color_tag_count
-         << " route=" << (audit.submitted_clone ? "clone" : "original")
+         << " route=" << (audit.submitted_resource == 0u ? "null"
+                              : audit.submitted_clone             ? "clone"
+                                                                  : "original")
          << " result=" << audit.result
          << " original=0x" << std::hex << std::uppercase << audit.original_resource
          << "," << audit.original_format
@@ -4640,6 +4669,18 @@ renodx::utils::settings::Settings settings = {
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
+        .key = "DLSSFGAuxiliaryColorTags",
+        .binding = &dlss_fg_aux_tag_mode,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "DLSS FG Auxiliary Color Tags",
+        .section = "Compatibility",
+        .tooltip = "Live A/B for Streamline's auxiliary UI and HUD-less inputs. Disabled inputs are submitted as explicit null tags while preserving tag order and lifecycle semantics.",
+        .labels = {"Original", "UI only", "HUDLess only", "None (Final Color only)"},
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
         .key = "DLSSFGUseTaggedClone",
         .binding = &dlss_fg_tag_clone,
         .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
@@ -4833,7 +4874,7 @@ renodx::utils::settings::Settings settings = {
         .can_reset = false,
         .label = "DLSS FG Suppress Pre-PQ Color Tags",
         .section = "Compatibility",
-        .tooltip = "Experimental. Omits DL2's pre-PQ HUDLessColor and UIColorAndAlpha tags so DLSS-G uses the automatically intercepted final HDR10/PQ color. This may reduce UI reconstruction quality but avoids mixing linear inputs with PQ output.",
+        .tooltip = "Legacy diagnostic. Explicitly clears DL2's pre-PQ HUDLessColor and UIColorAndAlpha tags so DLSS-G uses the automatically intercepted final HDR10/PQ color. This overrides the auxiliary color tag selector with None.",
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -5065,6 +5106,7 @@ void OnPresetOff() {
       {"ColorGradeLUTScaling", 100.f},
       {"FxLensFlare", 100.f},
       {"FrameGenerationCompatibility", 0.f},
+      {"DLSSFGAuxiliaryColorTags", 0.f},
       {"DLSSFGUseTaggedClone", 0.f},
       {"DLSSFGSuppressPrePQTags", 0.f},
       {"DLSSFGSkipGeneratedProxy", 0.f},
