@@ -25,3 +25,18 @@ Confirmed results:
 The focused-FG final proxy source is an RGB10/UNORM handoff. The source-range probe reached the red/high bands while the raw-source quadrant changed between focused and unfocused states. This points to a focused-FG handoff representation/semantic mismatch or an RGB10 headroom bottleneck, not a simple exposure or saturation setting.
 
 Do not repeat the four modes above as blind A/B tests. Future tests should change one handoff property at a time: source representation/encoding, pre-RGB10 scaling, or final-proxy resource format.
+
+## Streamline Auxiliary Color Tags
+
+Confirmed in both the earlier `de5f7f7` A/B and the current `451b015` capture:
+
+- `UIColorAndAlpha` and `HUDLessColor` point to the same original format-27 resource.
+- The Streamline wrapper reports `nativeFormat=0`, dimensions `0x0`, and no FP16 clone.
+- The observed post-arm window contains no matching transfers, compute/UAV writers, or graphics writers.
+- Explicit-null A/B for UI only, HUD-less only, and both disabled produced no visual change.
+
+Conclusion: auxiliary UI/HUD-less tags are excluded as the cause of the deep focused-FG color, 203-nit Linear/BT.709 ceiling, extreme Direct-PQ output, and motion artifacts. Do not repeat the handoff/tag/transfer/writer capture unless the tag-routing code changes.
+
+The unresolved input is Streamline's automatically intercepted Final Color path, which is separate from these auxiliary tags.
+
+The next diagnostic binds input snapshots by the `slSetTagForFrame` native command context that executes the Final Color copy. Do not interpret a correlation as valid unless `input_match=1`, `tag_source=command_context` (or `carried` for a generated Present), `copy_tag_conflict=0`, `unmatched_copies=0`, and `input_evictions=0`.

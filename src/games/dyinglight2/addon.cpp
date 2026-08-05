@@ -155,6 +155,12 @@ struct DlssFgTimingSnapshot {
   uint64_t last_ad_effective_target = 0u;
   uint64_t last_post_proxy_event = 0u;
   uint64_t last_post_proxy_backbuffer = 0u;
+  uint64_t last_present_entry_event = 0u;
+  uint64_t last_present_entry_backbuffer = 0u;
+  uint32_t last_present_entry_index = 0u;
+  uint64_t last_consumed_ad_event = 0u;
+  uint64_t last_consumed_ad_target = 0u;
+  uint64_t last_consumed_ad_effective_target = 0u;
 };
 std::mutex dlss_fg_timing_mutex;
 DlssFgTimingSnapshot dlss_fg_timing = {};
@@ -163,8 +169,11 @@ struct DlssFgPreservedCopyRecord {
   uint64_t event = 0u;
   uint64_t back_buffer = 0u;
   uint64_t copy_source = 0u;
+  uint64_t command_buffer = 0u;
   uint32_t tag_serial = 0u;
+  uint32_t frame_index = UINT_MAX;
   uint32_t source_format = 0u;
+  bool tag_context_match = false;
   bool roundtrip = false;
 };
 
@@ -190,12 +199,44 @@ std::atomic_uint32_t dlss_fg_final_copy_diagnostic_count = 0u;
 std::atomic_uint32_t dlss_fg_final_copy_match_diagnostic_count = 0u;
 std::atomic_uint64_t dlss_fg_swapchain_generation = 1u;
 
+struct DlssFgTaggedResourceSnapshot {
+  uint64_t resource = 0u;
+  uint32_t native_format = 0u;
+  uint32_t actual_format = 0u;
+  uint32_t tagged_width = 0u;
+  uint32_t tagged_height = 0u;
+  uint32_t actual_width = 0u;
+  uint32_t actual_height = 0u;
+};
+
+struct DlssFgInputSnapshot {
+  uint64_t generation = 0u;
+  uint32_t tag_serial = 0u;
+  uint32_t frame_index = UINT_MAX;
+  bool color_committed = false;
+  bool final_copy_consumed = false;
+  std::array<uint64_t, 4> command_buffers = {};
+  uint32_t command_buffer_count = 0u;
+  DlssFgTaggedResourceSnapshot depth = {};
+  DlssFgTaggedResourceSnapshot motion = {};
+  DlssFgTaggedResourceSnapshot exposure = {};
+  DlssFgTaggedResourceSnapshot scaling_input = {};
+  DlssFgTaggedResourceSnapshot scaling_output = {};
+  DlssFgTaggedResourceSnapshot hudless = {};
+  DlssFgTaggedResourceSnapshot ui = {};
+};
+
+std::mutex dlss_fg_input_snapshot_mutex;
+std::array<DlssFgInputSnapshot, 64> dlss_fg_input_snapshots = {};
+std::atomic_uint32_t dlss_fg_input_snapshot_evictions = 0u;
+
 struct DlssFgCommandListCandidate {
   uint64_t swapchain_generation = 0u;
   uint64_t back_buffer = 0u;
   uint64_t copy_source = 0u;
   uint32_t transition_count = 0u;
   uint32_t tag_serial = 0u;
+  uint32_t frame_index = UINT_MAX;
   uint32_t first_old_state = 0u;
   uint32_t last_new_state = 0u;
   bool entered_render_target = false;
@@ -203,6 +244,7 @@ struct DlssFgCommandListCandidate {
   bool bound_swapchain_rtv = false;
   bool copied_to_swapchain = false;
   bool preserved_native_copy = false;
+  bool tag_context_match = false;
 };
 
 struct DlssFgAdCommandListMarker {
@@ -388,11 +430,14 @@ void CaptureDlssFgFrameClassification(const DlssFgSwapchainSnapshot& snapshot) {
   uint64_t ad_submission_serial = 0u;
   std::array<DlssFgPreservedCopyRecord, 64> copies = {};
   uint32_t copy_count = 0u;
+  uint32_t unmatched_copy_count = 0u;
   uint32_t dropped_count = 0u;
   uint32_t present_index = 0u;
   uint32_t remaining = 0u;
   bool new_tag = false;
   bool new_ad = false;
+  bool copied_final_color = false;
+  bool conflicting_copy_tags = false;
   {
     std::scoped_lock audit_lock(
         dlss_fg_timing_mutex,
@@ -402,18 +447,32 @@ void CaptureDlssFgFrameClassification(const DlssFgSwapchainSnapshot& snapshot) {
     if (audit.generation != generation || audit.remaining == 0u) return;
     remaining = --audit.remaining;
     dlss_fg_frame_classification_remaining.store(remaining, std::memory_order_release);
-    tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_acquire);
     ad_submission_serial = dlss_fg_ad_submission_serial.load(std::memory_order_acquire);
     copy_count = audit.pending_count;
     dropped_count = audit.dropped_count;
     for (uint32_t index = 0u; index < copy_count; ++index) {
       copies[index] = audit.pending_copies[index];
     }
+    for (uint32_t index = 0u; index < copy_count; ++index) {
+      if (!copies[index].tag_context_match) {
+        ++unmatched_copy_count;
+        continue;
+      }
+      const uint32_t copy_tag_serial = copies[index].tag_serial;
+      if (copy_tag_serial == 0u) continue;
+      conflicting_copy_tags |= tag_serial != 0u && tag_serial != copy_tag_serial;
+      tag_serial = copy_tag_serial;
+    }
+    if (conflicting_copy_tags || unmatched_copy_count != 0u) tag_serial = 0u;
+    copied_final_color = tag_serial != 0u
+        && !conflicting_copy_tags
+        && unmatched_copy_count == 0u;
+    if (copy_count == 0u) tag_serial = audit.last_tag_serial;
     audit.pending_count = 0u;
     audit.dropped_count = 0u;
-    new_tag = tag_serial != 0u && tag_serial != audit.last_tag_serial;
+    new_tag = copied_final_color && tag_serial != audit.last_tag_serial;
     new_ad = ad_submission_serial != audit.last_ad_submission_serial;
-    if (tag_serial != 0u) audit.last_tag_serial = tag_serial;
+    if (copied_final_color) audit.last_tag_serial = tag_serial;
     audit.last_ad_submission_serial = ad_submission_serial;
     present_index = ++audit.present_count;
   }
@@ -425,19 +484,90 @@ void CaptureDlssFgFrameClassification(const DlssFgSwapchainSnapshot& snapshot) {
     frame_class = "generated_candidate";
   }
 
+  DlssFgInputSnapshot input_snapshot = {};
+  DlssFgInputSnapshot latest_input_snapshot = {};
+  {
+    std::scoped_lock input_lock(dlss_fg_input_snapshot_mutex);
+    for (const auto& candidate : dlss_fg_input_snapshots) {
+      if (candidate.generation != generation) continue;
+      if (candidate.color_committed && candidate.frame_index != UINT_MAX
+          && candidate.tag_serial > latest_input_snapshot.tag_serial) {
+        latest_input_snapshot = candidate;
+      }
+      if (candidate.color_committed && candidate.tag_serial == tag_serial) {
+        input_snapshot = candidate;
+      }
+    }
+  }
+  const bool input_matches = input_snapshot.color_committed
+      && input_snapshot.frame_index != UINT_MAX
+      && input_snapshot.tag_serial != 0u
+      && input_snapshot.tag_serial == tag_serial;
+
+  auto append_tagged_resource = [](std::ostringstream& stream,
+                                   const char* name,
+                                   const DlssFgTaggedResourceSnapshot& resource) {
+    stream << " " << name << "=0x" << std::hex << std::uppercase << resource.resource
+           << std::dec
+           << "(native=" << resource.native_format
+           << ",actual=" << resource.actual_format
+           << ",tagged=" << resource.tagged_width << "x" << resource.tagged_height
+           << ",actual_size=" << resource.actual_width << "x" << resource.actual_height
+           << ")";
+  };
+
   std::ostringstream classification;
   classification << "DL2 DLSS FG frame classification: generation=" << generation
                  << " present=" << present_index
                  << " class=" << frame_class
                  << " new_tag=" << (new_tag ? 1 : 0)
                  << " tag=" << tag_serial
+                 << " tag_source="
+                 << (conflicting_copy_tags
+                         ? "conflict"
+                         : unmatched_copy_count != 0u
+                               ? "unmatched_copy"
+                         : copied_final_color
+                               ? "command_context"
+                               : (tag_serial != 0u ? "carried" : "none"))
+                 << " copy_tag_conflict=" << (conflicting_copy_tags ? 1 : 0)
+                 << " unmatched_copies=" << unmatched_copy_count
                  << " new_ad=" << (new_ad ? 1 : 0)
                  << " ad_serial=" << ad_submission_serial
                  << " ad_event=" << timing.last_ad_execute_event
+                 << " consumed_ad_event=" << timing.last_consumed_ad_event
+                 << " ad_target=0x" << std::hex << std::uppercase
+                 << timing.last_consumed_ad_target
+                 << "=>0x" << timing.last_consumed_ad_effective_target
+                 << " present_entry_event=" << std::dec << timing.last_present_entry_event
+                 << " present_entry_backbuffer=0x" << std::hex
+                 << timing.last_present_entry_backbuffer
+                 << " present_entry_index=" << std::dec
+                 << timing.last_present_entry_index
                  << " backbuffer=0x" << std::hex << std::uppercase << snapshot.back_buffer
                  << " index=" << std::dec << snapshot.back_buffer_index
+                 << " input_match=" << (input_matches ? 1 : 0)
+                 << " input_frame=" << input_snapshot.frame_index
+                 << " latest_input_tag=" << latest_input_snapshot.tag_serial
+                 << " latest_input_frame=" << latest_input_snapshot.frame_index
+                 << " latest_input_cmds=" << latest_input_snapshot.command_buffer_count
+                 << " input_evictions="
+                 << dlss_fg_input_snapshot_evictions.load(std::memory_order_acquire)
                  << " copies=" << copy_count
                  << " dropped=" << dropped_count;
+  for (uint32_t index = 0u; index < latest_input_snapshot.command_buffer_count; ++index) {
+    classification << " latest_cmd" << index << "=0x" << std::hex << std::uppercase
+                   << latest_input_snapshot.command_buffers[index];
+  }
+  if (input_matches) {
+    append_tagged_resource(classification, "depth", input_snapshot.depth);
+    append_tagged_resource(classification, "motion", input_snapshot.motion);
+    append_tagged_resource(classification, "exposure", input_snapshot.exposure);
+    append_tagged_resource(classification, "scaling_in", input_snapshot.scaling_input);
+    append_tagged_resource(classification, "scaling_out", input_snapshot.scaling_output);
+    append_tagged_resource(classification, "hudless", input_snapshot.hudless);
+    append_tagged_resource(classification, "ui", input_snapshot.ui);
+  }
   for (uint32_t index = 0u; index < copy_count; ++index) {
     const auto& copy = copies[index];
     const char* storage = "other";
@@ -452,9 +582,12 @@ void CaptureDlssFgFrameClassification(const DlssFgSwapchainSnapshot& snapshot) {
                    << "(event=" << copy.event
                    << ",backbuffer=0x" << std::hex << copy.back_buffer
                    << ",source=0x" << copy.copy_source
+                   << ",cmd=0x" << copy.command_buffer
                    << ",format=" << std::dec << copy.source_format
                    << ",storage=" << storage
                    << ",tag=" << copy.tag_serial
+                   << ",frame=" << copy.frame_index
+                   << ",context=" << (copy.tag_context_match ? 1 : 0)
                    << ",action=" << (copy.roundtrip ? "roundtrip" : "direct")
                    << ",contract=pq)";
   }
@@ -587,8 +720,14 @@ DlssFgPresentAuditToken LogDlssFgPresentIdentity(
     event = dlss_fg_identity_event_serial.fetch_add(1u, std::memory_order_relaxed) + 1u;
     timing = dlss_fg_timing;
     token.entry_event = event;
+    dlss_fg_timing.last_present_entry_event = event;
+    dlss_fg_timing.last_present_entry_backbuffer = native.back_buffer;
+    dlss_fg_timing.last_present_entry_index = native.back_buffer_index;
     if (consume_ad_token) {
       token.ad_execute_event = timing.last_ad_execute_event;
+      dlss_fg_timing.last_consumed_ad_event = timing.last_ad_execute_event;
+      dlss_fg_timing.last_consumed_ad_target = timing.last_ad_target;
+      dlss_fg_timing.last_consumed_ad_effective_target = timing.last_ad_effective_target;
     }
     token.logged = true;
     if (consume_ad_token) {
@@ -706,8 +845,139 @@ const char* GetStreamlineTagName(sl::BufferType type) {
   }
 }
 
-void MarkStreamlineColorTagSubmission(const sl::ResourceTag* tags, uint32_t num_tags) {
-  if (tags == nullptr) return;
+DlssFgTaggedResourceSnapshot DescribeDlssFgTaggedResource(const sl::ResourceTag& tag) {
+  DlssFgTaggedResourceSnapshot snapshot = {};
+  if (tag.resource == nullptr || tag.resource->native == nullptr) return snapshot;
+
+  snapshot.resource = reinterpret_cast<uint64_t>(tag.resource->native);
+  snapshot.native_format = tag.resource->nativeFormat;
+  snapshot.tagged_width = tag.resource->width;
+  snapshot.tagged_height = tag.resource->height;
+  renodx::utils::resource::GetResourceInfo(
+      reshade::api::resource{static_cast<uintptr_t>(snapshot.resource)},
+      [&](const renodx::utils::resource::ResourceInfo& info) {
+        snapshot.actual_format = static_cast<uint32_t>(info.desc.texture.format);
+        snapshot.actual_width = info.desc.texture.width;
+        snapshot.actual_height = info.desc.texture.height;
+      });
+  return snapshot;
+}
+
+void CaptureDlssFgInputSnapshot(
+    const sl::ResourceTag* tags,
+    uint32_t num_tags,
+    uint32_t tag_serial,
+    uint32_t frame_index,
+    sl::CommandBuffer* command_buffer) {
+  if (dlss_fg_frame_classification_remaining.load(std::memory_order_acquire) == 0u) return;
+  const uint64_t generation =
+      dlss_fg_frame_classification_generation.load(std::memory_order_acquire);
+
+  DlssFgInputSnapshot partial = {
+      .generation = generation,
+      .frame_index = frame_index,
+  };
+  if (command_buffer != nullptr) {
+    partial.command_buffers[0] = reinterpret_cast<uint64_t>(command_buffer);
+    partial.command_buffer_count = 1u;
+  }
+  for (uint32_t index = 0u; index < num_tags; ++index) {
+    const auto resource = DescribeDlssFgTaggedResource(tags[index]);
+    switch (tags[index].type) {
+      case sl::kBufferTypeDepth:
+        partial.depth = resource;
+        break;
+      case sl::kBufferTypeMotionVectors:
+        partial.motion = resource;
+        break;
+      case sl::kBufferTypeExposure:
+        partial.exposure = resource;
+        break;
+      case sl::kBufferTypeScalingInputColor:
+        partial.scaling_input = resource;
+        break;
+      case sl::kBufferTypeScalingOutputColor:
+        partial.scaling_output = resource;
+        break;
+      case sl::kBufferTypeHUDLessColor:
+        partial.hudless = resource;
+        partial.color_committed = true;
+        break;
+      case sl::kBufferTypeUIColorAndAlpha:
+        partial.ui = resource;
+        partial.color_committed = true;
+        break;
+      default:
+        break;
+    }
+  }
+  if (frame_index == UINT_MAX && !partial.color_committed) return;
+  if (partial.color_committed) partial.tag_serial = tag_serial;
+
+  std::scoped_lock lock(dlss_fg_input_snapshot_mutex);
+  if (dlss_fg_frame_classification_generation.load(std::memory_order_acquire) != generation
+      || dlss_fg_frame_classification_remaining.load(std::memory_order_acquire) == 0u) {
+    return;
+  }
+  DlssFgInputSnapshot* snapshot = nullptr;
+  for (auto& candidate : dlss_fg_input_snapshots) {
+    const bool same_generation = candidate.generation == generation;
+    const bool same_frame = same_generation && frame_index != UINT_MAX
+        && candidate.frame_index == frame_index;
+    const bool same_serial = same_generation && partial.color_committed
+        && candidate.color_committed
+        && candidate.tag_serial != 0u
+        && candidate.tag_serial == tag_serial;
+    if (same_frame || same_serial) {
+      snapshot = &candidate;
+      break;
+    }
+  }
+  if (snapshot == nullptr) {
+    const uint32_t slot_key = partial.color_committed ? tag_serial : frame_index;
+    snapshot = &dlss_fg_input_snapshots[slot_key % dlss_fg_input_snapshots.size()];
+    if (snapshot->color_committed
+        && (snapshot->tag_serial != partial.tag_serial
+            || snapshot->frame_index != partial.frame_index)) {
+      dlss_fg_input_snapshot_evictions.fetch_add(1u, std::memory_order_relaxed);
+    }
+    *snapshot = partial;
+    return;
+  }
+  snapshot->frame_index = frame_index;
+  if (partial.color_committed) {
+    snapshot->tag_serial = tag_serial;
+    snapshot->color_committed = true;
+  }
+  auto merge = [](DlssFgTaggedResourceSnapshot& target,
+                  const DlssFgTaggedResourceSnapshot& source) {
+    if (source.resource != 0u) target = source;
+  };
+  merge(snapshot->depth, partial.depth);
+  merge(snapshot->motion, partial.motion);
+  merge(snapshot->exposure, partial.exposure);
+  merge(snapshot->scaling_input, partial.scaling_input);
+  merge(snapshot->scaling_output, partial.scaling_output);
+  merge(snapshot->hudless, partial.hudless);
+  merge(snapshot->ui, partial.ui);
+  for (uint32_t index = 0u; index < partial.command_buffer_count; ++index) {
+    const uint64_t command_context = partial.command_buffers[index];
+    const bool known = std::find(
+        snapshot->command_buffers.begin(),
+        snapshot->command_buffers.begin() + snapshot->command_buffer_count,
+        command_context) != snapshot->command_buffers.begin() + snapshot->command_buffer_count;
+    if (!known && snapshot->command_buffer_count < snapshot->command_buffers.size()) {
+      snapshot->command_buffers[snapshot->command_buffer_count++] = command_context;
+    }
+  }
+}
+
+uint32_t MarkStreamlineColorTagSubmission(
+    const sl::ResourceTag* tags,
+    uint32_t num_tags) {
+  if (tags == nullptr) {
+    return dlss_fg_color_tag_serial.load(std::memory_order_acquire);
+  }
   for (uint32_t index = 0u; index < num_tags; ++index) {
     const auto type = tags[index].type;
     if (type == sl::kBufferTypeHUDLessColor || type == sl::kBufferTypeUIColorAndAlpha) {
@@ -723,10 +993,10 @@ void MarkStreamlineColorTagSubmission(const sl::ResourceTag* tags, uint32_t num_
               std::memory_order_relaxed);
         }
       }
-      dlss_fg_color_tag_serial.fetch_add(1u, std::memory_order_relaxed);
-      return;
+      return dlss_fg_color_tag_serial.fetch_add(1u, std::memory_order_acq_rel) + 1u;
     }
   }
+  return dlss_fg_color_tag_serial.load(std::memory_order_acquire);
 }
 void CaptureStreamlineTags(const char* call_name, const sl::ResourceTag* tags, uint32_t num_tags) {
   if (!dlss_fg_tag_capture || tags == nullptr) return;
@@ -969,9 +1239,15 @@ sl::Result HookedSlSetTag(
     const sl::ResourceTag* tags,
     uint32_t num_tags,
     sl::CommandBuffer* cmd_buffer) {
-  MarkStreamlineColorTagSubmission(tags, num_tags);
+  const uint32_t tag_serial = MarkStreamlineColorTagSubmission(tags, num_tags);
   CaptureStreamlineTags("slSetTag", tags, num_tags);
   const auto routed = RouteStreamlineColorTags(tags, num_tags);
+  CaptureDlssFgInputSnapshot(
+      routed.tags,
+      routed.count,
+      tag_serial,
+      UINT_MAX,
+      cmd_buffer);
   BeginDlssFgHandoffAudit(false, tags, routed);
   const auto result = real_sl_set_tag(viewport, routed.tags, routed.count, cmd_buffer);
   CompleteDlssFgHandoffAudit(result);
@@ -984,9 +1260,15 @@ sl::Result HookedSlSetTagForFrame(
     const sl::ResourceTag* tags,
     uint32_t num_tags,
     sl::CommandBuffer* cmd_buffer) {
-  MarkStreamlineColorTagSubmission(tags, num_tags);
+  const uint32_t tag_serial = MarkStreamlineColorTagSubmission(tags, num_tags);
   CaptureStreamlineTags("slSetTagForFrame", tags, num_tags);
   const auto routed = RouteStreamlineColorTags(tags, num_tags);
+  CaptureDlssFgInputSnapshot(
+      routed.tags,
+      routed.count,
+      tag_serial,
+      static_cast<uint32_t>(frame),
+      cmd_buffer);
   BeginDlssFgHandoffAudit(true, tags, routed);
   const auto result = real_sl_set_tag_for_frame(frame, viewport, routed.tags, routed.count, cmd_buffer);
   CompleteDlssFgHandoffAudit(result);
@@ -2163,7 +2445,6 @@ void MarkDlssFgCommandListSwapchainWrite(
   candidate.swapchain_generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
   candidate.back_buffer = resource.handle;
   if (copy_dest) candidate.copy_source = source.handle;
-  candidate.tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_relaxed);
   candidate.bound_swapchain_rtv |= bound_rtv;
   candidate.copied_to_swapchain |= copy_dest;
   candidate.preserved_native_copy |= preserved_native_copy;
@@ -3135,7 +3416,6 @@ void OnDlssFgBackbufferBarrier(
       auto& candidate = dlss_fg_command_list_candidates[reinterpret_cast<uintptr_t>(cmd_list)];
       candidate.swapchain_generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
       candidate.back_buffer = resource.handle;
-      candidate.tag_serial = dlss_fg_color_tag_serial.load(std::memory_order_relaxed);
       if (candidate.transition_count == 0u) {
         candidate.first_old_state = static_cast<uint32_t>(old_states[index]);
       }
@@ -3302,6 +3582,34 @@ void OnDlssFgExecuteCommandList(
   }
   if (remaining == 0u) return;
 
+  if (candidate.preserved_native_copy
+      && dlss_fg_frame_classification_remaining.load(std::memory_order_acquire) != 0u) {
+    const uint64_t native_command_buffer = reinterpret_cast<uint64_t>(cmd_list->get_native());
+    std::scoped_lock input_lock(dlss_fg_input_snapshot_mutex);
+    DlssFgInputSnapshot* matched_input = nullptr;
+    for (auto& input : dlss_fg_input_snapshots) {
+      if (input.generation != classification_generation
+          || !input.color_committed || input.final_copy_consumed
+          || input.frame_index == UINT_MAX) {
+        continue;
+      }
+      const bool context_matches = std::find(
+          input.command_buffers.begin(),
+          input.command_buffers.begin() + input.command_buffer_count,
+          native_command_buffer) != input.command_buffers.begin() + input.command_buffer_count;
+      if (!context_matches) continue;
+      if (matched_input == nullptr || input.tag_serial < matched_input->tag_serial) {
+        matched_input = &input;
+      }
+    }
+    if (matched_input != nullptr) {
+      candidate.tag_serial = matched_input->tag_serial;
+      candidate.frame_index = matched_input->frame_index;
+      candidate.tag_context_match = true;
+      matched_input->final_copy_consumed = true;
+    }
+  }
+
   const int32_t final_color_mode = std::clamp(
       static_cast<int32_t>(dlss_fg_final_color_mode + 0.5f), 0, 10);
   const bool roundtrip_final_color = final_color_mode != 0;
@@ -3332,8 +3640,11 @@ void OnDlssFgExecuteCommandList(
             .event = event,
             .back_buffer = candidate.back_buffer,
             .copy_source = candidate.copy_source,
+            .command_buffer = reinterpret_cast<uint64_t>(cmd_list->get_native()),
             .tag_serial = candidate.tag_serial,
+            .frame_index = candidate.frame_index,
             .source_format = source_format,
+            .tag_context_match = candidate.tag_context_match,
             .roundtrip = roundtrip_final_color,
         };
       } else {
@@ -3383,6 +3694,8 @@ void OnDlssFgExecuteCommandList(
           << "=>0x" << candidate.last_new_state
           << std::dec
           << " tag=" << candidate.tag_serial
+          << " frame=" << candidate.frame_index
+          << " tag_context_match=" << (candidate.tag_context_match ? 1 : 0)
           << " remaining=" << (remaining - 1u);
   renodx::utils::log::i(message.str().c_str());
 }
@@ -4821,9 +5134,9 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
-        .label = "Capture DLSS FG Frame Classification (16)",
+        .label = "Capture DLSS FG Final Color Correlation (16)",
         .section = "Debug",
-        .tooltip = "One-shot read-only capture. Correlates preserved final-color copies with exact 0xAD submissions, color-tag cadence, and the next 16 actual ReShade Present events. Logs rendered/generated candidates, handles, storage format, tag serial, and Direct/Round-trip action without changing rendering.",
+        .tooltip = "One-shot read-only capture. Correlates 16 rendered/generated Presents with the Streamline frame token, Depth, MotionVectors, Exposure, scaling and auxiliary color inputs, the last 0xAD scene target, the Present-entry backbuffer, and Streamline's RGB10 output. No resource mutation, readback, or Present timing change.",
         .on_click = []() {
           dlss_fg_identity_event_serial.store(0u, std::memory_order_release);
           dlss_fg_present_identity_count.store(0u, std::memory_order_release);
@@ -4847,10 +5160,15 @@ renodx::utils::settings::Settings settings = {
                 .remaining = 16u,
             };
           }
+          {
+            std::scoped_lock input_lock(dlss_fg_input_snapshot_mutex);
+            dlss_fg_input_snapshots.fill({});
+          }
+          dlss_fg_input_snapshot_evictions.store(0u, std::memory_order_release);
           dlss_fg_frame_classification_remaining.store(16u, std::memory_order_release);
           std::ostringstream armed;
-          armed << "DL2 DLSS FG frame classification armed: generation=" << generation
-                << " presents=16 submissions=128";
+          armed << "DL2 DLSS FG final color correlation armed: generation=" << generation
+                << " presents=16 submissions=128 inputs=tagged";
           renodx::utils::log::i(armed.str().c_str());
           return false;
         },
