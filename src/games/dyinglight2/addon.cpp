@@ -1920,6 +1920,7 @@ struct UpscalerSourceWriter {
   UpscalerSourceWriterType type = UpscalerSourceWriterType::draw;
   uint32_t shader_hash = 0u;
   uint32_t present_index = 0u;
+  uint64_t command_buffer = 0u;
   uint64_t source = 0u;
   uint64_t target = 0u;
 };
@@ -1939,6 +1940,7 @@ struct UpscalerSourceWriterAuditState {
   uint32_t count = 0u;
   uint32_t compute_candidate_count = 0u;
   uint32_t presents = 0u;
+  bool target_final_fg_output = false;
   bool active = false;
 };
 
@@ -1980,6 +1982,8 @@ std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> gam
 std::unordered_map<reshade::api::command_list*, reshade::api::resource_view> dlss_fg_compute_uav_views;
 std::unordered_map<reshade::api::command_list*, std::vector<reshade::api::resource_view>>
     upscaler_source_compute_uav_views;
+std::unordered_map<reshade::api::command_list*, std::vector<reshade::api::resource_view>>
+    upscaler_source_compute_srv_views;
 std::unordered_map<reshade::api::command_list*, reshade::api::buffer_range> upscaler_input_cb0_ranges;
 std::unordered_map<uint64_t, UpscalerMappedBuffer> upscaler_mapped_buffers;
 std::mutex upscaler_mapped_buffers_mutex;
@@ -2349,6 +2353,23 @@ void OnGammaAuditPushDescriptors(
     }
   }
 
+  if (capture_upscaler_source_writers
+      && renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::compute)
+      && (update.type == reshade::api::descriptor_type::sampler_with_resource_view
+          || update.type == reshade::api::descriptor_type::shader_resource_view
+          || update.type == reshade::api::descriptor_type::buffer_shader_resource_view)) {
+    std::scoped_lock lock(downstream_draw_capture_mutex);
+    auto& views = upscaler_source_compute_srv_views[cmd_list];
+    for (uint32_t index = 0u; index < update.count && views.size() < 32u; ++index) {
+      const auto view = renodx::utils::descriptor::GetResourceViewFromDescriptorUpdate(update, index);
+      if (view.handle == 0u) continue;
+      const bool known = std::any_of(views.begin(), views.end(), [&](const auto candidate) {
+        return candidate.handle == view.handle;
+      });
+      if (!known) views.push_back(view);
+    }
+  }
+
   if (capture_upscaler_inputs
       && renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::pixel)
       && update.type == reshade::api::descriptor_type::constant_buffer) {
@@ -2373,7 +2394,8 @@ void OnGammaAuditPushDescriptors(
     }
   }
 
-  if ((!capture_gamma_input && !capture_downstream_inputs && !capture_upscaler_color_path)
+  if ((!capture_gamma_input && !capture_downstream_inputs && !capture_upscaler_color_path
+       && !capture_upscaler_source_writers)
       || !renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::pixel)) {
     return;
   }
@@ -2412,7 +2434,7 @@ void OnGammaAuditPushDescriptors(
     const auto view = renodx::utils::descriptor::GetResourceViewFromDescriptorUpdate(update, index);
     std::scoped_lock lock(downstream_draw_capture_mutex);
     if (capture_gamma_input) gamma_audit_t0_views[cmd_list] = view;
-    if (capture_downstream_inputs || capture_upscaler_color_path) {
+    if (capture_downstream_inputs || capture_upscaler_color_path || capture_upscaler_source_writers) {
       const auto existing = downstream_capture_t0_views.find(cmd_list);
       if (existing != downstream_capture_t0_views.end()
           || downstream_capture_t0_views.size() < kDownstreamInputViewLimit) {
@@ -2652,7 +2674,8 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       || shader_hash == 0xAD085E81u;
 
   const bool capture_tonemapper_inputs = upscaler_input_audit_state.active
-      || upscaler_source_writer_audit_state.active;
+      || (upscaler_source_writer_audit_state.active
+          && !upscaler_source_writer_audit_state.target_final_fg_output);
   if (capture_tonemapper_inputs && !is_compute && shader_hash == 0x3E36DA5Bu
       && likely_fullscreen_draw
       && (upscaler_input_audit_state.count < 4u || upscaler_source_writer_audit_state.active)) {
@@ -2759,10 +2782,18 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
                   && writer.shader_hash == shader_hash && writer.target == output.resource;
             });
         if (!known) {
+          uint64_t writer_source = 0u;
+          const auto input_it = downstream_capture_t0_views.find(context.cmd_list);
+          if (input_it != downstream_capture_t0_views.end()) {
+            writer_source = DescribeGammaAuditView(
+                context.cmd_list->get_device(), input_it->second).resource;
+          }
           audit.writers[audit.count++] = {
               .type = UpscalerSourceWriterType::draw,
               .shader_hash = shader_hash,
               .present_index = audit.presents + 1u,
+              .command_buffer = reinterpret_cast<uint64_t>(context.cmd_list->get_native()),
+              .source = writer_source,
               .target = output.resource,
           };
         }
@@ -2789,15 +2820,23 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
                   && writer.shader_hash == shader_hash && writer.target == output.resource;
             });
         if (!known && audit.count < audit.writers.size()) {
+          uint64_t writer_source = 0u;
+          const auto inputs_it = upscaler_source_compute_srv_views.find(context.cmd_list);
+          if (inputs_it != upscaler_source_compute_srv_views.end() && !inputs_it->second.empty()) {
+            writer_source = DescribeGammaAuditView(device, inputs_it->second.front()).resource;
+          }
           audit.writers[audit.count++] = {
               .type = UpscalerSourceWriterType::dispatch,
               .shader_hash = shader_hash,
               .present_index = audit.presents + 1u,
+              .command_buffer = reinterpret_cast<uint64_t>(context.cmd_list->get_native()),
+              .source = writer_source,
               .target = output.resource,
           };
         }
       }
       views_it->second.clear();
+      upscaler_source_compute_srv_views[context.cmd_list].clear();
     }
   }
 
@@ -3297,11 +3336,39 @@ bool IsDlssFgFinalHdr10Copy(
             << " preserve=" << (compatible ? 1 : 0);
     renodx::utils::log::i(message.str().c_str());
   }
+  if (compatible) {
+    std::scoped_lock lock(downstream_draw_capture_mutex);
+    auto& audit = upscaler_source_writer_audit_state;
+    if (audit.active && audit.target_final_fg_output) {
+      if (audit.source == 0u) {
+        audit.source = source.handle;
+        audit.effective_source = source.handle;
+        audit.source_info = {
+            .resource = source.handle,
+            .effective = source.handle,
+            .format = source_desc.texture.format,
+            .effective_format = source_desc.texture.format,
+            .width = source_desc.texture.width,
+            .height = source_desc.texture.height,
+        };
+      }
+      const bool known_source = std::find(
+          audit.recent_sources.begin(),
+          audit.recent_sources.begin() + audit.recent_source_count,
+          source.handle) != audit.recent_sources.begin() + audit.recent_source_count;
+      if (!known_source && audit.recent_source_count < audit.recent_sources.size()) {
+        const uint32_t index = audit.recent_source_count++;
+        audit.recent_sources[index] = source.handle;
+        audit.recent_effective_sources[index] = source.handle;
+      }
+    }
+  }
   return compatible;
 }
 
 void RecordUpscalerSourceTransfer(
     UpscalerSourceWriterType type,
+    reshade::api::command_list* cmd_list,
     reshade::api::resource source,
     reshade::api::resource dest) {
   std::scoped_lock lock(downstream_draw_capture_mutex);
@@ -3314,6 +3381,9 @@ void RecordUpscalerSourceTransfer(
   audit.writers[audit.count++] = {
       .type = type,
       .present_index = audit.presents + 1u,
+      .command_buffer = cmd_list != nullptr
+          ? reinterpret_cast<uint64_t>(cmd_list->get_native())
+          : 0u,
       .source = source.handle,
       .target = dest.handle,
   };
@@ -3338,7 +3408,7 @@ bool OnDownstreamCopyResource(
   MarkDlssFgCommandListSwapchainWrite(cmd_list, source, dest, false, true, preserve_native_copy);
   RecordDlssFgTagTransfer(DownstreamTransferType::copy_resource, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::copy_resource, cmd_list, source, dest);
-  RecordUpscalerSourceTransfer(UpscalerSourceWriterType::copy_resource, source, dest);
+  RecordUpscalerSourceTransfer(UpscalerSourceWriterType::copy_resource, cmd_list, source, dest);
   if (preserve_native_copy) {
     // Streamline has already produced the final RGB10 frame. Keep this copy on
     // the real backbuffer instead of letting resource upgrading redirect it to
@@ -3363,7 +3433,8 @@ bool OnDownstreamCopyTextureRegion(
   MarkDlssFgCommandListSwapchainWrite(cmd_list, source, dest, false, true);
   RecordDlssFgTagTransfer(DownstreamTransferType::copy_texture_region, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::copy_texture_region, cmd_list, source, dest);
-  RecordUpscalerSourceTransfer(UpscalerSourceWriterType::copy_texture_region, source, dest);
+  RecordUpscalerSourceTransfer(
+      UpscalerSourceWriterType::copy_texture_region, cmd_list, source, dest);
   return false;
 }
 
@@ -3381,7 +3452,8 @@ bool OnDownstreamResolveTextureRegion(
   MarkDlssFgCommandListSwapchainWrite(cmd_list, source, dest, false, true);
   RecordDlssFgTagTransfer(DownstreamTransferType::resolve_texture_region, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::resolve_texture_region, cmd_list, source, dest);
-  RecordUpscalerSourceTransfer(UpscalerSourceWriterType::resolve_texture_region, source, dest);
+  RecordUpscalerSourceTransfer(
+      UpscalerSourceWriterType::resolve_texture_region, cmd_list, source, dest);
   return false;
 }
 
@@ -3460,6 +3532,8 @@ void OnDlssFgResetCommandList(reshade::api::command_list* cmd_list) {
     std::scoped_lock audit_lock(downstream_draw_capture_mutex);
     dlss_fg_ad_command_list_markers.erase(reinterpret_cast<uintptr_t>(cmd_list));
     ++upscaler_color_command_epochs[reinterpret_cast<uintptr_t>(cmd_list)];
+    upscaler_source_compute_uav_views.erase(cmd_list);
+    upscaler_source_compute_srv_views.erase(cmd_list);
   }
   {
     std::scoped_lock lock(dlss_fg_post_execute_mutex);
@@ -3961,7 +4035,10 @@ void OnDownstreamDrawCapturePresent(
     ++audit.presents;
     if (audit.source != 0u && audit.presents >= 16u) {
       std::ostringstream stream;
-      stream << "DL2 0x3E source-writer audit: capture=" << audit.capture_id
+      stream << (audit.target_final_fg_output
+                     ? "DL2 DLSS FG final RGB10 producer audit: capture="
+                     : "DL2 0x3E source-writer audit: capture=")
+             << audit.capture_id
              << " source=0x" << std::hex << audit.source
              << " effective=0x" << audit.effective_source
              << " exposure=0x" << audit.exposure
@@ -3978,10 +4055,19 @@ void OnDownstreamDrawCapturePresent(
              << dlss_fg_latest_color_clone.load(std::memory_order_relaxed)
              << std::dec
              << " compute_candidates=" << audit.compute_candidate_count;
+      stream << " tracked=" << audit.recent_source_count;
+      for (uint32_t source_index = 0u; source_index < audit.recent_source_count; ++source_index) {
+        stream << " target" << source_index << "=0x" << std::hex
+               << audit.recent_sources[source_index] << std::dec;
+      }
       for (uint32_t candidate_index = 0u; candidate_index < audit.compute_candidate_count; ++candidate_index) {
         const auto& candidate = audit.compute_candidates[candidate_index];
-        if (candidate.resource == audit.source || candidate.effective == audit.source
-            || candidate.resource == audit.effective_source || candidate.effective == audit.effective_source) {
+        const bool matches_target = std::any_of(
+            audit.recent_sources.begin(), audit.recent_sources.begin() + audit.recent_source_count,
+            [&](uint64_t target) {
+              return candidate.resource == target || candidate.effective == target;
+            });
+        if (matches_target) {
           stream << " match=resource=0x" << std::hex << candidate.resource
                  << "=>0x" << candidate.effective << std::dec
                  << " format=" << static_cast<uint32_t>(candidate.format)
@@ -4003,12 +4089,16 @@ void OnDownstreamDrawCapturePresent(
         if (writer.shader_hash != 0u) {
           stream << " shader=0x" << std::hex << std::uppercase << writer.shader_hash << std::dec;
         }
+        if (writer.command_buffer != 0u) {
+          stream << " cmd=0x" << std::hex << writer.command_buffer << std::dec;
+        }
         if (writer.source != 0u) stream << " source=0x" << std::hex << writer.source << std::dec;
         if (writer.target != 0u) stream << " target=0x" << std::hex << writer.target << std::dec;
       }
       renodx::utils::log::i(stream.str().c_str());
       audit = {};
       upscaler_source_compute_uav_views.clear();
+      upscaler_source_compute_srv_views.clear();
     }
   }
   if (upscaler_color_path_audit_state.active) {
@@ -5134,9 +5224,9 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
-        .label = "Capture DLSS FG Final Color Correlation (16)",
+        .label = "Capture DLSS FG Final Color + Producers (16)",
         .section = "Debug",
-        .tooltip = "One-shot read-only capture. Correlates 16 rendered/generated Presents with the Streamline frame token, Depth, MotionVectors, Exposure, scaling and auxiliary color inputs, the last 0xAD scene target, the Present-entry backbuffer, and Streamline's RGB10 output. No resource mutation, readback, or Present timing change.",
+        .tooltip = "One-shot read-only capture. Correlates 16 rendered/generated Presents and traces the two final RGB10 resources backward to visible draw, dispatch/UAV, copy, or resolve producers. No resource mutation, readback, or Present timing change.",
         .on_click = []() {
           dlss_fg_identity_event_serial.store(0u, std::memory_order_release);
           dlss_fg_present_identity_count.store(0u, std::memory_order_release);
@@ -5164,11 +5254,21 @@ renodx::utils::settings::Settings settings = {
             std::scoped_lock input_lock(dlss_fg_input_snapshot_mutex);
             dlss_fg_input_snapshots.fill({});
           }
+          {
+            std::scoped_lock draw_lock(downstream_draw_capture_mutex);
+            upscaler_source_writer_audit_state = {
+                .capture_id = ++upscaler_source_writer_audit_capture_serial,
+                .target_final_fg_output = true,
+                .active = true,
+            };
+            upscaler_source_compute_uav_views.clear();
+            upscaler_source_compute_srv_views.clear();
+          }
           dlss_fg_input_snapshot_evictions.store(0u, std::memory_order_release);
           dlss_fg_frame_classification_remaining.store(16u, std::memory_order_release);
           std::ostringstream armed;
           armed << "DL2 DLSS FG final color correlation armed: generation=" << generation
-                << " presents=16 submissions=128 inputs=tagged";
+                << " presents=16 submissions=128 inputs=tagged producers=rgb10";
           renodx::utils::log::i(armed.str().c_str());
           return false;
         },
@@ -5353,6 +5453,7 @@ renodx::utils::settings::Settings settings = {
               .active = true,
           };
           upscaler_source_compute_uav_views.clear();
+          upscaler_source_compute_srv_views.clear();
           std::ostringstream stream;
           stream << "DL2 0x3E source-writer audit armed: capture=" << capture_id;
           renodx::utils::log::i(stream.str().c_str());

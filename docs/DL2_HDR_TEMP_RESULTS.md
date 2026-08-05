@@ -40,3 +40,7 @@ Conclusion: auxiliary UI/HUD-less tags are excluded as the cause of the deep foc
 The unresolved input is Streamline's automatically intercepted Final Color path, which is separate from these auxiliary tags.
 
 The next diagnostic binds input snapshots by the `slSetTagForFrame` native command context that executes the Final Color copy. Do not interpret a correlation as valid unless `input_match=1`, `tag_source=command_context` (or `carried` for a generated Present), `copy_tag_conflict=0`, `unmatched_copies=0`, and `input_evictions=0`.
+
+Result: the automatic Final Color copy uses Streamline's private, stable command list rather than any `slSetTagForFrame` command buffer. All 16 samples correctly downgraded to `unmatched_copy`; do not repeat direct command-context matching. The focused-FG brightness fault remains at the RGB10 Final Color representation/encode boundary, not at the Game Exposure, Peak Brightness, or downstream scalar controls.
+
+Next diagnostic: arm the existing source-writer tracker against the two dynamically discovered final RGB10 resources. Record draw/RTV, dispatch/UAV, copy, and resolve producers plus their visible source and native command context. This replaces command-buffer identity matching; it does not change rendering or repeat the transfer-function A/B matrix.

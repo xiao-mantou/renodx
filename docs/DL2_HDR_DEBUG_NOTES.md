@@ -285,3 +285,38 @@ The next build keeps Direct and PQ/BT.2020 as controls, fixes all remaining cand
 - This remains read-only. It is intended to identify frame-token/resource skew between the automatically intercepted Final Color path and motion/depth inputs without changing the stable resource chains or Present timing.
 - Only frame-based `slSetTagForFrame` snapshots are accepted as complete correlations. Legacy `slSetTag` calls have no frame token and are deliberately reported as unavailable rather than presenting partial resources as a valid match.
 - Present correlation binds the `CommandBuffer + FrameToken` supplied to `slSetTagForFrame` to the native command list that executes the Final Color/RGB10 copy, rather than reading a globally latest serial during recording or Present. Generated Presents without a new copy carry the last command-context-confirmed serial. A 64-slot input ring and explicit eviction/unmatched/conflicting-copy counters expose capture loss instead of silently pairing adjacent CPU frames.
+- Runtime result from `45e9ec9`: all 16 Final Color copies were `unmatched_copy`, with zero evictions or dropped records. Streamline executed every RGB10 copy on one stable private native command list, while each tagged frame supplied two different, changing command buffers. Direct `CommandBuffer + FrameToken` identity therefore cannot correlate the automatic Final Color path to tagged inputs.
+- The cadence still alternated consistently: every second Present had a new 0xAD submission while the intervening Present had none. The private copy source alternated between two RGB10 resources in two-Present pairs. This preserves the rendered/generated cadence evidence but does not prove motion/depth alignment.
+- Brightness remains unresolved and was not modified by this diagnostic. Every focused-FG copy reached RenoDX as RGB10 (`format=24`) under the PQ output contract. Together with the prior range probe and semantic A/B, this keeps the fault boundary at the automatic Final Color handoff/representation: either Streamline captures RenoDX's frame before the intended HDR encode, or RenoDX reinterprets Streamline's RGB10 result in the wrong domain. Final-frame nit multiplication is not a valid repair.
+
+#### Known FG chain (restaurant roles)
+
+```mermaid
+flowchart TD
+    A["Game scene HDR / ingredients"] --> B["0x3E tonemap input and curve / prep cook"]
+    B --> C["0x268 LUT output / seasoning station"]
+    C --> D["0xAD final scene composite / plating chef"]
+    D --> E["FP16 upgraded intermediates / large HDR plates"]
+    E --> F["RenoDX swapchain proxy / label and color-space printer"]
+    F --> G["HDR10 PQ backbuffer / sealed serving plate"]
+
+    D -. "automatic Final Color interception point is not yet proven" .-> H["Streamline Final Color intake / delivery pickup counter"]
+    E -. "possible alternate interception" .-> H
+    F -. "possible alternate interception" .-> H
+
+    I["Depth tag / table geometry ticket"] --> J["DLSS-G generator / second chef"]
+    K["Motion vectors / movement ticket"] --> J
+    L["Exposure / lighting ticket"] --> J
+    M["FrameToken / order number"] --> J
+    H --> J
+
+    J --> N["Two alternating internal RGB10 resources / two warming trays"]
+    N --> O["Private Streamline copy command list / delivery waiter"]
+    O --> P["Real swapchain backbuffer / customer table"]
+    P --> Q["RenoDX final proxy handling / final label check"]
+    Q --> R["Display / diner"]
+```
+
+Known facts: the private copy command list is stable; tagged command buffers are separate and change every rendered frame; 0xAD advances every second Present; the two RGB10 resources alternate in two-Present pairs; Linear/BT.709 interpretation preserves color but caps at 203 nits; higher linear scale breaks color; PQ interpretation is too deep. Unknown: which exact representation enters `Streamline Final Color intake`, and which writer produces the two warming-tray resources.
+
+The next capture reuses the writer audit with `target_final_fg_output=true`. Once a preserved Final Color copy identifies either RGB10 source, the audit follows subsequent draw/RTV, dispatch/UAV, copy, and resolve writes to both resources, including visible input resources and native command contexts. A zero-writer result proves that production remains internal to Streamline and is not visible through ReShade events.
