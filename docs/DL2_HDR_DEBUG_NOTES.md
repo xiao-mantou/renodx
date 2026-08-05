@@ -170,3 +170,9 @@ Conversation review confirms `787fe68` was capped near 203 nit. Its code change 
 `5ebc218` is a credible HDR-headroom boundary. Its ancestry restored broad full-size Typeless and sRGB FP16 clone rules, changed the 0x3E bridge to emit Linear BT.709 directly, registered the 0x268 LUT replacement, and reconstructed HDR magnitude after the native SDR-domain grade. Those changes are specifically designed to carry values above 1.0 through the LUT instead of returning to the 203-nit reference-white ceiling.
 
 The same code also explains why this was not yet the final shared solution: its Typeless rule matched every back-buffer-sized target rather than a rendering role or a mode-specific resource chain. Historical A/B already records `5ebc218` as Off/Balanced color-inconsistent. The expected old-build result is therefore both modes with HDR headroom, but a visible color difference between them. Runtime measurement of Off peak, Balanced peak, and color parity will confirm or reject that expectation before any new implementation is considered.
+
+### Step 7: `5ebc218` runtime result
+
+Old-build testing confirmed that `5ebc218` is normal only in DLSS Balanced; DLSS Off is not normal under the same broad resource-upgrade implementation. This rejects `5ebc218` as evidence of a previously working shared Off/Balanced solution. Its wide Typeless/sRGB clone rules happened to match the Balanced resource topology while upgrading the wrong or additional Off resources.
+
+No `787fe68` retest is required. The conversation already records its approximately 203-nit ceiling, and its source change only corrected final proxy decoding without adding the FP16 intermediate and HDR LUT preservation introduced later. The remaining design problem is therefore resource-role identification across mode-specific creation topologies, not recovering a lost known-good universal rule.
