@@ -192,3 +192,13 @@ The Luma Framework Watch Dogs 2 implementation was shallow/sparse-cloned at upst
 This implementation can change DLSS quality without restarting because its color topology is invariant. The source is explicitly viewed as `R16G16B16A16_FLOAT`, the game pipeline is documented as linear, and only the NGX feature instance changes. `DLSS::UpdateSettings` compares resolution/settings, releases the old NGX feature and parameters, then creates a replacement feature before drawing. Per-frame source references are released after the injected pass, while owned resources are recreated when dimensions change.
 
 This is useful evidence for the correct form of a safe runtime transition: the upscaler owner must control the feature lifetime, input/output resources, command execution boundary, and history reset together. It does not provide a directly portable fix for DL2, where the game and Streamline own those objects and changing DLSS also changes which native full-size Typeless resources are created. Luma therefore supports the earlier conclusion that a reliable DL2 hot switch requires a coordinated renderer/upscaler reset, not merely changing RenoDX's clone mask.
+
+## 2026-08-05 Next Priority: FG Final-Color Handoff
+
+### Step 10: freeze stable SR chains and isolate FG
+
+Off mode `0` (`4+5+7`) and Balanced/FG-Off mode `32` (`0+1`) are closed, stable baselines. Further FG work must use only Balanced + FG + mode `33` (`2+3`) after a full restart and must not modify the 0x3E/0x268 tone-map math or these two stable resource masks.
+
+The current safe code no longer renders or flushes from the native D3D12 `ExecuteCommandLists` hook; that experiment caused device removal and was reverted to a read-only timing marker. Present owns all proxy rendering again. The unresolved boundary is `preserved_native_copy`: Direct PQ currently skips the proxy for every matched copy, while PQ Round-trip forces the copy source through the proxy. Both branches were confirmed to execute, but neither corrected the generated-frame color.
+
+The next build should therefore be diagnostic-only and classify each preserved copy against the exact Streamline Present cadence/tag serial as rendered or generated, while logging the chosen proxy action and source encoding. No color transform should change in that build. Once one class is proven to receive the wrong interpretation, apply the encode/decode fix only to that class and leave the stable non-FG path untouched.
