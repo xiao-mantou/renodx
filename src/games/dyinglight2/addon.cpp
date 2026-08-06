@@ -288,6 +288,11 @@ struct DlssFgBridgePass {
   std::mutex recording_mutex;
 };
 
+// FP16 resources prepared on the Direct producer list for the later
+// Streamline Compute list. Protected by dlss_fg_bridge_mutex.
+std::unordered_map<uint64_t, reshade::api::resource> dlss_fg_ad_compute_sources;
+std::unordered_map<uint64_t, reshade::api::resource_usage> dlss_fg_ad_compute_source_states;
+
 std::mutex dlss_fg_bridge_mutex;
 std::unordered_map<uint64_t, uint64_t> dlss_fg_ad_effective_targets;
 std::unordered_map<uint64_t, uint64_t> dlss_fg_bridged_trays;
@@ -325,6 +330,12 @@ void DestroyDlssFgBridgePasses(reshade::api::device* device) {
     bridge->pass->DestroyAll(device);
     if (bridge->resource.handle != 0u) device->destroy_resource(bridge->resource);
   }
+  std::scoped_lock lock(dlss_fg_bridge_mutex);
+  for (const auto& entry : dlss_fg_ad_compute_sources) {
+    if (entry.second.handle != 0u) device->destroy_resource(entry.second);
+  }
+  dlss_fg_ad_compute_sources.clear();
+  dlss_fg_ad_compute_source_states.clear();
 }
 
 using DlssFgNativeExecuteCommandLists = void(STDMETHODCALLTYPE *)(
@@ -2638,6 +2649,97 @@ void MarkDlssFgAdCommandList(
   }
 }
 
+bool PrepareDlssFgComputeSource(reshade::api::command_list* cmd_list) {
+  if (cmd_list == nullptr || cmd_list->get_device() == nullptr) return false;
+  auto* device = cmd_list->get_device();
+  if (device->get_api() != reshade::api::device_api::d3d12) return false;
+
+  GammaAuditResource output = {};
+  if (const auto* command_state = renodx::utils::state::GetCurrentState(cmd_list);
+      command_state != nullptr && !command_state->render_targets.empty()) {
+    output = DescribeGammaAuditView(device, command_state->render_targets[0]);
+  }
+  if (output.resource == 0u || output.effective == 0u || output.resource == output.effective) {
+    return false;
+  }
+
+  const auto effective_source = reshade::api::resource{output.effective};
+  const auto source_desc = device->get_resource_desc(effective_source);
+  if (source_desc.type != reshade::api::resource_type::texture_2d
+      || source_desc.texture.format != reshade::api::format::r16g16b16a16_float) {
+    return false;
+  }
+
+  reshade::api::resource staging = {};
+  reshade::api::resource_usage staging_state = reshade::api::resource_usage::copy_dest;
+  {
+    std::scoped_lock lock(dlss_fg_bridge_mutex);
+    const auto existing = dlss_fg_ad_compute_sources.find(output.effective);
+    if (existing == dlss_fg_ad_compute_sources.end()) {
+      auto staging_desc = source_desc;
+      staging_desc.heap = reshade::api::memory_heap::gpu_only;
+      staging_desc.usage = reshade::api::resource_usage::copy_dest
+                            | reshade::api::resource_usage::shader_resource;
+      staging_desc.flags = reshade::api::resource_flags::none;
+      if (!device->create_resource(
+              staging_desc, nullptr, reshade::api::resource_usage::copy_dest, &staging)) {
+        renodx::utils::log::i("DL2 DLSS FG compute staging: create failed");
+        return false;
+      }
+      dlss_fg_ad_compute_sources[output.effective] = staging;
+      dlss_fg_ad_compute_source_states[output.effective] = staging_state;
+    } else {
+      staging = existing->second;
+      const auto state = dlss_fg_ad_compute_source_states.find(output.effective);
+      if (state != dlss_fg_ad_compute_source_states.end()) staging_state = state->second;
+    }
+  }
+  if (staging.handle == 0u) return false;
+
+  if (staging_state != reshade::api::resource_usage::copy_dest) {
+    cmd_list->barrier(
+        staging, staging_state, reshade::api::resource_usage::copy_dest);
+  }
+  cmd_list->barrier(
+      effective_source,
+      reshade::api::resource_usage::render_target,
+      reshade::api::resource_usage::copy_source);
+  cmd_list->copy_resource(effective_source, staging);
+  cmd_list->barrier(
+      effective_source,
+      reshade::api::resource_usage::copy_source,
+      reshade::api::resource_usage::render_target);
+  cmd_list->barrier(
+      staging, reshade::api::resource_usage::copy_dest,
+      reshade::api::resource_usage::shader_resource);
+  {
+    std::scoped_lock lock(dlss_fg_bridge_mutex);
+    dlss_fg_ad_compute_source_states[output.effective] = reshade::api::resource_usage::shader_resource;
+  }
+  const uint32_t diagnostic = dlss_fg_bridge_candidate_diagnostic_count.fetch_add(1u);
+  if (diagnostic < 16u) {
+    std::ostringstream message;
+    message << "DL2 DLSS FG compute staging: original=0x" << std::hex << std::uppercase
+            << output.resource << " source=0x" << output.effective
+            << " staging=0x" << staging.handle << std::dec
+            << " copied=1 state=shader_resource";
+    renodx::utils::log::i(message.str().c_str());
+  }
+  return true;
+}
+
+void DlssFgAdPostDraw(renodx::utils::command_action::CommandContext<
+                          renodx::utils::command_action::DrawArguments>& context,
+                      const void*) {
+  PrepareDlssFgComputeSource(context.cmd_list);
+}
+
+void DlssFgAdPostDrawIndexed(renodx::utils::command_action::CommandContext<
+                                 renodx::utils::command_action::DrawIndexedArguments>& context,
+                             const void*) {
+  PrepareDlssFgComputeSource(context.cmd_list);
+}
+
 inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
     -> renodx::utils::command_action::CallbackResult<Context> {
   if (context.IsDispatch()) return {};
@@ -2652,6 +2754,21 @@ inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
     instance_count = context.arguments.instance_count;
   }
   MarkDlssFgAdCommandList(context.cmd_list, draw_count, instance_count);
+
+  const auto* shader_state = renodx::utils::command_action::GetShaderState(&context);
+  const uint32_t shader_hash = shader_state != nullptr
+                                   ? renodx::utils::shader::GetCurrentShaderHash(
+                                         shader_state, renodx::utils::shader::PIXEL_INDEX)
+                                   : 0u;
+  if (shader_hash == 0xAD085E81u) {
+    if constexpr (std::is_same_v<Context, renodx::utils::command_action::CommandContext<
+                                           renodx::utils::command_action::DrawArguments>>) {
+      return {.post_callback = DlssFgAdPostDraw, .replay = true};
+    } else if constexpr (std::is_same_v<Context, renodx::utils::command_action::CommandContext<
+                                                renodx::utils::command_action::DrawIndexedArguments>>) {
+      return {.post_callback = DlssFgAdPostDrawIndexed, .replay = true};
+    }
+  }
 
   if (!gamma_draw_audit_capture && !gamma_native_input_audit_capture) return {};
 
@@ -3524,10 +3641,10 @@ bool RenderDlssFgAdBridge(
   }
   if (effective_source_handle == 0u || effective_source_handle == source.handle) return false;
 
-  const reshade::api::resource effective_source{effective_source_handle};
+  const reshade::api::resource effective_clone{effective_source_handle};
   bool effective_source_is_clone = false;
   const bool found_effective_source = renodx::utils::resource::GetResourceInfo(
-      effective_source,
+      effective_clone,
       [&](const renodx::utils::resource::ResourceInfo& info) {
         effective_source_is_clone = info.is_clone;
       });
@@ -3538,6 +3655,16 @@ bool RenderDlssFgAdBridge(
   // The clone state is established by the 0xAD producer draw above. Do not
   // substitute ResourceInfo::initial_state here: it is the creation state,
   // and the observed log showed it as GENERAL while the clone was an RTV.
+
+  uint64_t bridge_source_handle = 0u;
+  {
+    std::scoped_lock lock(dlss_fg_bridge_mutex);
+    const auto iterator = dlss_fg_ad_compute_sources.find(effective_source_handle);
+    if (iterator != dlss_fg_ad_compute_sources.end()) bridge_source_handle = iterator->second.handle;
+  }
+  if (bridge_source_handle == 0u) return false;
+  const reshade::api::resource effective_source{bridge_source_handle};
+  effective_source_state = reshade::api::resource_usage::shader_resource;
 
   bool dest_is_swapchain = false;
   bool dest_has_clone = false;

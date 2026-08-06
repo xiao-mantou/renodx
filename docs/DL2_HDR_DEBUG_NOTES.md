@@ -343,3 +343,10 @@ The next capture reuses the writer audit with `target_final_fg_output=true`. Onc
 - The new build replaces that pass with a D3D12 Compute pass: FP16 clone SRV, normalized `RWTexture2D<float4>` RGB10 UAV, UAV-to-copy-source transition, then copy into the exact Streamline tray. It does not create a queue, flush, wait, or change tags.
 - Startup now checks native `R10G10B10A2_UNORM` support for typed UAV view/store. Unsupported hardware safely falls back to Direct PQ and logs `supported=0`, `support1`, `support2`, and the HRESULT.
 - This is a DL2-local RenoDX bridge implemented using D3D12 primitives; it is not a new DirectX feature and does not alter other games or the shared resource-upgrade rules.
+
+### 2026-08-06: Direct-producer staging split
+
+- Runtime proved RGB10 typed UAV support and `rendered=1`, but focused FG still hung. The failing state was `source_state=4` (`RENDER_TARGET`) on the Compute callback.
+- The bridge now uses the command-action post callback for the 0xAD draw. After the original draw is replayed, the Direct command list copies the effective FP16 clone into a DL2-local FP16 staging resource and leaves that staging resource in `shader_resource` state.
+- The Streamline Compute callback no longer transitions or samples the render-target clone. It samples only the prepared staging resource, writes the RGB10 UAV, and copies the result to the exact tray.
+- This preserves the existing shared framework and keeps the Direct final-copy callback native. The new runtime evidence to collect is `DL2 DLSS FG compute staging: ... copied=1` followed by `AD bridge ... rendered=1` without black/stuck focus.
