@@ -28,6 +28,8 @@ The prior probe showed the graphics bridge was being attempted on the wrong comm
 
 The first Compute candidate met those two conditions but still hung because it transitioned the FP16 clone from `render_target` inside the Compute list. The next candidate prepares a separate FP16 staging resource on the Direct 0xAD post-draw callback, then restricts the Compute list to `shader_resource -> UAV` work.
 
+The staging candidate ran without the hang but showed black flashes and ghosting. The current candidate completes the conversion on the Direct producer list and makes the Streamline Compute callback copy-only, removing the asynchronous FP16 staging read.
+
 The focused-FG final proxy source is an RGB10/UNORM handoff. The source-range probe reached the red/high bands while the raw-source quadrant changed between focused and unfocused states. This points to a focused-FG handoff representation/semantic mismatch or an RGB10 headroom bottleneck, not a simple exposure or saturation setting.
 
 Do not repeat the four modes above as blind A/B tests. Future tests should change one handoff property at a time: source representation/encoding, pre-RGB10 scaling, or final-proxy resource format.

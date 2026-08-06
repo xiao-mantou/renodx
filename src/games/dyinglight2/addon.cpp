@@ -264,78 +264,45 @@ std::unordered_map<uintptr_t, DlssFgAdCommandListMarker> dlss_fg_ad_command_list
 std::mutex dlss_fg_post_execute_mutex;
 std::unordered_map<uintptr_t, DlssFgAdCommandListMarker> dlss_fg_post_execute_markers;
 
-struct DlssFgBridgePassKey {
-  uint64_t original = 0u;
-  uint64_t source = 0u;
-  uint64_t dest = 0u;
-  uint64_t generation = 0u;
-
-  bool operator==(const DlssFgBridgePassKey&) const = default;
-};
-
-struct DlssFgBridgePassKeyHash {
-  size_t operator()(const DlssFgBridgePassKey& key) const noexcept {
-    return std::hash<uint64_t>{}(key.original)
-           ^ (std::hash<uint64_t>{}(key.source) << 1u)
-           ^ (std::hash<uint64_t>{}(key.dest) << 2u)
-           ^ (std::hash<uint64_t>{}(key.generation) << 3u);
-  }
-};
-
 struct DlssFgBridgePass {
   reshade::api::resource resource = {};
   std::unique_ptr<renodx::utils::render::RenderPass> pass;
   std::mutex recording_mutex;
 };
 
-// FP16 resources prepared on the Direct producer list for the later
-// Streamline Compute list. Protected by dlss_fg_bridge_mutex.
-std::unordered_map<uint64_t, reshade::api::resource> dlss_fg_ad_compute_sources;
-std::unordered_map<uint64_t, reshade::api::resource_usage> dlss_fg_ad_compute_source_states;
+// RGB10 resources fully prepared on the Direct producer list. The later
+// Streamline Compute list only copies them into its exact tray.
+std::unordered_map<uint64_t, std::shared_ptr<DlssFgBridgePass>> dlss_fg_ad_prepared_sources;
 
 std::mutex dlss_fg_bridge_mutex;
 std::unordered_map<uint64_t, uint64_t> dlss_fg_ad_effective_targets;
 std::unordered_map<uint64_t, uint64_t> dlss_fg_bridged_trays;
 std::unordered_map<uint64_t, reshade::api::resource_usage> dlss_fg_ad_clone_states;
-std::unordered_map<
-    DlssFgBridgePassKey,
-    std::shared_ptr<DlssFgBridgePass>,
-    DlssFgBridgePassKeyHash>
-    dlss_fg_bridge_passes;
-std::vector<std::shared_ptr<DlssFgBridgePass>> dlss_fg_retired_bridge_passes;
 std::atomic_uint32_t dlss_fg_bridge_diagnostic_count = 0u;
 std::atomic_uint32_t dlss_fg_bridge_candidate_diagnostic_count = 0u;
 std::atomic_bool dlss_fg_rgb10_uav_supported = false;
 
 void DestroyDlssFgBridgePasses(reshade::api::device* device) {
   if (device == nullptr) return;
-  std::vector<std::shared_ptr<DlssFgBridgePass>> stale_passes;
   {
     std::scoped_lock lock(dlss_fg_bridge_mutex);
-    stale_passes.reserve(dlss_fg_bridge_passes.size());
-    for (auto& entry : dlss_fg_bridge_passes) {
-      stale_passes.push_back(entry.second);
-    }
-    stale_passes.insert(
-        stale_passes.end(),
-        dlss_fg_retired_bridge_passes.begin(), dlss_fg_retired_bridge_passes.end());
-    dlss_fg_bridge_passes.clear();
-    dlss_fg_retired_bridge_passes.clear();
     dlss_fg_ad_effective_targets.clear();
     dlss_fg_bridged_trays.clear();
     dlss_fg_ad_clone_states.clear();
   }
-  for (auto& bridge : stale_passes) {
-    std::scoped_lock recording_lock(bridge->recording_mutex);
-    bridge->pass->DestroyAll(device);
-    if (bridge->resource.handle != 0u) device->destroy_resource(bridge->resource);
+  std::vector<std::shared_ptr<DlssFgBridgePass>> prepared_sources;
+  {
+    std::scoped_lock lock(dlss_fg_bridge_mutex);
+    for (const auto& entry : dlss_fg_ad_prepared_sources) {
+      prepared_sources.push_back(entry.second);
+    }
+    dlss_fg_ad_prepared_sources.clear();
   }
-  std::scoped_lock lock(dlss_fg_bridge_mutex);
-  for (const auto& entry : dlss_fg_ad_compute_sources) {
-    if (entry.second.handle != 0u) device->destroy_resource(entry.second);
+  for (auto& prepared : prepared_sources) {
+    std::scoped_lock recording_lock(prepared->recording_mutex);
+    prepared->pass->DestroyAll(device);
+    if (prepared->resource.handle != 0u) device->destroy_resource(prepared->resource);
   }
-  dlss_fg_ad_compute_sources.clear();
-  dlss_fg_ad_compute_source_states.clear();
 }
 
 using DlssFgNativeExecuteCommandLists = void(STDMETHODCALLTYPE *)(
@@ -2132,13 +2099,7 @@ void OnTypelessAuditDestroyResource(reshade::api::device*, reshade::api::resourc
     });
     dlss_fg_bridged_trays.erase(resource.handle);
     dlss_fg_ad_clone_states.erase(resource.handle);
-    std::erase_if(dlss_fg_bridge_passes, [&](const auto& entry) {
-      const bool stale = entry.first.original == resource.handle
-                         || entry.first.source == resource.handle
-                         || entry.first.dest == resource.handle;
-      if (stale) dlss_fg_retired_bridge_passes.push_back(entry.second);
-      return stale;
-    });
+    dlss_fg_ad_prepared_sources.erase(resource.handle);
   }
 }
 
@@ -2670,62 +2631,79 @@ bool PrepareDlssFgComputeSource(reshade::api::command_list* cmd_list) {
     return false;
   }
 
-  reshade::api::resource staging = {};
-  reshade::api::resource_usage staging_state = reshade::api::resource_usage::copy_dest;
+  std::shared_ptr<DlssFgBridgePass> prepared;
   {
     std::scoped_lock lock(dlss_fg_bridge_mutex);
-    const auto existing = dlss_fg_ad_compute_sources.find(output.effective);
-    if (existing == dlss_fg_ad_compute_sources.end()) {
-      auto staging_desc = source_desc;
-      staging_desc.heap = reshade::api::memory_heap::gpu_only;
-      staging_desc.usage = reshade::api::resource_usage::copy_dest
-                            | reshade::api::resource_usage::shader_resource;
-      staging_desc.flags = reshade::api::resource_flags::none;
+    auto& cached = dlss_fg_ad_prepared_sources[output.effective];
+    if (cached == nullptr) {
+      auto prepared_desc = source_desc;
+      prepared_desc.texture.format = reshade::api::format::r10g10b10a2_unorm;
+      prepared_desc.heap = reshade::api::memory_heap::gpu_only;
+      prepared_desc.usage = reshade::api::resource_usage::unordered_access
+                            | reshade::api::resource_usage::copy_source;
+      prepared_desc.flags = reshade::api::resource_flags::none;
+      auto created = std::make_shared<DlssFgBridgePass>();
       if (!device->create_resource(
-              staging_desc, nullptr, reshade::api::resource_usage::copy_dest, &staging)) {
-        renodx::utils::log::i("DL2 DLSS FG compute staging: create failed");
+              prepared_desc, nullptr, reshade::api::resource_usage::copy_source,
+              &created->resource)) {
+        dlss_fg_ad_prepared_sources.erase(output.effective);
+        renodx::utils::log::i("DL2 DLSS FG Direct prepare: RGB10 create failed");
         return false;
       }
-      dlss_fg_ad_compute_sources[output.effective] = staging;
-      dlss_fg_ad_compute_source_states[output.effective] = staging_state;
-    } else {
-      staging = existing->second;
-      const auto state = dlss_fg_ad_compute_source_states.find(output.effective);
-      if (state != dlss_fg_ad_compute_source_states.end()) staging_state = state->second;
+      created->pass = std::make_unique<renodx::utils::render::RenderPass>();
+      created->pass->shader_resource_slots.resources = {effective_source};
+      created->pass->unordered_access_slots.resources = {created->resource};
+      created->pass->pipeline_subobjects.compute_shader = __dlss_fg_bridge_compute_shader_dx12;
+      created->pass->dispatch_group_counts = {
+          (source_desc.texture.width + 7u) / 8u,
+          (source_desc.texture.height + 7u) / 8u,
+          1u};
+      created->pass->revert_state_after_render = true;
+      created->pass->use_render_pass = false;
+      created->pass->push_constants[{
+          .slot = 13,
+          .space = 50,
+      }] = std::span<const float>(
+          reinterpret_cast<const float*>(&shader_injection),
+          sizeof(shader_injection) / sizeof(float));
+      cached = std::move(created);
     }
+    prepared = cached;
   }
-  if (staging.handle == 0u) return false;
+  if (prepared == nullptr || prepared->resource.handle == 0u) return false;
 
-  if (staging_state != reshade::api::resource_usage::copy_dest) {
-    cmd_list->barrier(
-        staging, staging_state, reshade::api::resource_usage::copy_dest);
-  }
-  cmd_list->barrier(
-      effective_source,
-      reshade::api::resource_usage::render_target,
-      reshade::api::resource_usage::copy_source);
-  cmd_list->copy_resource(effective_source, staging);
-  cmd_list->barrier(
-      effective_source,
-      reshade::api::resource_usage::copy_source,
-      reshade::api::resource_usage::render_target);
-  cmd_list->barrier(
-      staging, reshade::api::resource_usage::copy_dest,
-      reshade::api::resource_usage::shader_resource);
+  bool rendered = false;
   {
-    std::scoped_lock lock(dlss_fg_bridge_mutex);
-    dlss_fg_ad_compute_source_states[output.effective] = reshade::api::resource_usage::shader_resource;
+    std::scoped_lock recording_lock(prepared->recording_mutex);
+    cmd_list->barrier(
+        effective_source,
+        reshade::api::resource_usage::render_target,
+        reshade::api::resource_usage::shader_resource);
+    cmd_list->barrier(
+        prepared->resource,
+        reshade::api::resource_usage::copy_source,
+        reshade::api::resource_usage::unordered_access);
+    rendered = prepared->pass->Render(cmd_list);
+    cmd_list->barrier(
+        prepared->resource,
+        reshade::api::resource_usage::unordered_access,
+        reshade::api::resource_usage::copy_source);
+    cmd_list->barrier(
+        effective_source,
+        reshade::api::resource_usage::shader_resource,
+        reshade::api::resource_usage::render_target);
   }
   const uint32_t diagnostic = dlss_fg_bridge_candidate_diagnostic_count.fetch_add(1u);
-  if (diagnostic < 16u) {
+  if (diagnostic < 16u || !rendered) {
     std::ostringstream message;
-    message << "DL2 DLSS FG compute staging: original=0x" << std::hex << std::uppercase
+    message << "DL2 DLSS FG Direct prepare: original=0x" << std::hex << std::uppercase
             << output.resource << " source=0x" << output.effective
-            << " staging=0x" << staging.handle << std::dec
-            << " copied=1 state=shader_resource";
+            << " prepared=0x" << prepared->resource.handle << std::dec
+            << " rendered=" << (rendered ? 1 : 0)
+            << " state=copy_source";
     renodx::utils::log::i(message.str().c_str());
   }
-  return true;
+  return rendered;
 }
 
 void DlssFgAdPostDraw(renodx::utils::command_action::CommandContext<
@@ -3656,15 +3634,14 @@ bool RenderDlssFgAdBridge(
   // substitute ResourceInfo::initial_state here: it is the creation state,
   // and the observed log showed it as GENERAL while the clone was an RTV.
 
-  uint64_t bridge_source_handle = 0u;
+  std::shared_ptr<DlssFgBridgePass> prepared;
   {
     std::scoped_lock lock(dlss_fg_bridge_mutex);
-    const auto iterator = dlss_fg_ad_compute_sources.find(effective_source_handle);
-    if (iterator != dlss_fg_ad_compute_sources.end()) bridge_source_handle = iterator->second.handle;
+    const auto iterator = dlss_fg_ad_prepared_sources.find(effective_source_handle);
+    if (iterator != dlss_fg_ad_prepared_sources.end()) prepared = iterator->second;
   }
-  if (bridge_source_handle == 0u) return false;
-  const reshade::api::resource effective_source{bridge_source_handle};
-  effective_source_state = reshade::api::resource_usage::shader_resource;
+  if (prepared == nullptr || prepared->resource.handle == 0u) return false;
+  const reshade::api::resource effective_source = prepared->resource;
 
   bool dest_is_swapchain = false;
   bool dest_has_clone = false;
@@ -3692,8 +3669,8 @@ bool RenderDlssFgAdBridge(
     rejection = "not_texture_2d";
   } else if (source_desc.texture.format != reshade::api::format::r8g8b8a8_unorm) {
     rejection = "source_not_rgba8_unorm";
-  } else if (effective_desc.texture.format != reshade::api::format::r16g16b16a16_float) {
-    rejection = "effective_not_fp16";
+  } else if (effective_desc.texture.format != reshade::api::format::r10g10b10a2_unorm) {
+    rejection = "prepared_not_rgb10";
   } else if (dest_desc.texture.format != reshade::api::format::r10g10b10a2_unorm) {
     rejection = "dest_not_rgb10";
   } else if (source_desc.texture.width != dest_desc.texture.width
@@ -3721,103 +3698,35 @@ bool RenderDlssFgAdBridge(
     return false;
   }
 
-  const DlssFgBridgePassKey key{
-      .original = source.handle,
-      .source = effective_source.handle,
-      .dest = dest.handle,
-      .generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire),
-  };
-  bool rendered = false;
-  uint64_t bridge_handle = 0u;
-  std::shared_ptr<DlssFgBridgePass> bridge;
-  {
-    std::scoped_lock lock(dlss_fg_bridge_mutex);
-    auto& cached_bridge = dlss_fg_bridge_passes[key];
-    if (cached_bridge == nullptr) {
-      auto bridge_desc = dest_desc;
-      bridge_desc.heap = reshade::api::memory_heap::gpu_only;
-      bridge_desc.usage = reshade::api::resource_usage::unordered_access
-                          | reshade::api::resource_usage::copy_source;
-      bridge_desc.flags = reshade::api::resource_flags::none;
-      auto new_bridge = std::make_shared<DlssFgBridgePass>();
-      if (!device->create_resource(
-              bridge_desc, nullptr, reshade::api::resource_usage::copy_source,
-              &new_bridge->resource)) {
-        dlss_fg_bridge_passes.erase(key);
-        return false;
-      }
-      new_bridge->pass = std::make_unique<renodx::utils::render::RenderPass>();
-      new_bridge->pass->shader_resource_slots.resources = {effective_source};
-      new_bridge->pass->unordered_access_slots.resources = {new_bridge->resource};
-      new_bridge->pass->pipeline_subobjects.compute_shader = __dlss_fg_bridge_compute_shader_dx12;
-      new_bridge->pass->dispatch_group_counts = {
-          (dest_desc.texture.width + 7u) / 8u,
-          (dest_desc.texture.height + 7u) / 8u,
-          1u};
-      new_bridge->pass->revert_state_after_render = true;
-      new_bridge->pass->use_render_pass = false;
-      new_bridge->pass->push_constants[{
-          .slot = 13,
-          .space = 50,
-      }] = std::span<const float>(
-          reinterpret_cast<const float*>(&shader_injection),
-          sizeof(shader_injection) / sizeof(float));
-      cached_bridge = std::move(new_bridge);
-    }
-    bridge = cached_bridge;
-  }
-
   static thread_local bool bridge_recording = false;
   if (bridge_recording) return false;
   bridge_recording = true;
   {
-    std::scoped_lock recording_lock(bridge->recording_mutex);
-    bridge_handle = bridge->resource.handle;
-    if (effective_source_state != reshade::api::resource_usage::shader_resource) {
-      cmd_list->barrier(
-          effective_source, effective_source_state,
-          reshade::api::resource_usage::shader_resource);
-    }
-    cmd_list->barrier(
-        bridge->resource,
-        reshade::api::resource_usage::copy_source,
-        reshade::api::resource_usage::unordered_access);
-    rendered = bridge->pass->Render(cmd_list);
-    cmd_list->barrier(
-        bridge->resource,
-        reshade::api::resource_usage::unordered_access,
-        reshade::api::resource_usage::copy_source);
-    if (effective_source_state != reshade::api::resource_usage::shader_resource) {
-      cmd_list->barrier(
-          effective_source, reshade::api::resource_usage::shader_resource,
-          effective_source_state);
-    }
-    if (rendered) cmd_list->copy_resource(bridge->resource, dest);
+    std::scoped_lock recording_lock(prepared->recording_mutex);
+    cmd_list->copy_resource(prepared->resource, dest);
   }
   bridge_recording = false;
-  if (rendered) {
+  {
     std::scoped_lock lock(dlss_fg_bridge_mutex);
     dlss_fg_bridged_trays[dest.handle] =
         dlss_fg_swapchain_generation.load(std::memory_order_acquire);
   }
 
   const uint32_t diagnostic = dlss_fg_bridge_diagnostic_count.fetch_add(1u, std::memory_order_relaxed);
-  if (diagnostic < 24u || !rendered) {
+  if (diagnostic < 24u) {
     std::ostringstream message;
     message << "DL2 DLSS FG AD bridge: source=0x" << std::hex << std::uppercase
             << source.handle << "=>0x" << effective_source.handle
             << " dest=0x" << dest.handle
-            << std::dec << " rendered=" << (rendered ? 1 : 0)
+            << std::dec << " copied=1"
             << " formats=" << static_cast<uint32_t>(source_desc.texture.format)
             << "=>" << static_cast<uint32_t>(effective_desc.texture.format)
             << "=>" << static_cast<uint32_t>(dest_desc.texture.format)
             << " peak=" << shader_injection.peak_white_nits
-            << " bridge=0x" << std::hex << bridge_handle
-            << std::dec << " source_state=" << static_cast<uint32_t>(effective_source_state)
-            << " bridge_state=copy_source";
+            << " prepared_state=copy_source";
     renodx::utils::log::i(message.str().c_str());
   }
-  return rendered;
+  return true;
 }
 
 bool IsDlssFgBridgedTray(uint64_t resource) {

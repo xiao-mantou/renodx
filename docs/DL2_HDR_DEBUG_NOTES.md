@@ -350,3 +350,9 @@ The next capture reuses the writer audit with `target_final_fg_output=true`. Onc
 - The bridge now uses the command-action post callback for the 0xAD draw. After the original draw is replayed, the Direct command list copies the effective FP16 clone into a DL2-local FP16 staging resource and leaves that staging resource in `shader_resource` state.
 - The Streamline Compute callback no longer transitions or samples the render-target clone. It samples only the prepared staging resource, writes the RGB10 UAV, and copies the result to the exact tray.
 - This preserves the existing shared framework and keeps the Direct final-copy callback native. The new runtime evidence to collect is `DL2 DLSS FG compute staging: ... copied=1` followed by `AD bridge ... rendered=1` without black/stuck focus.
+
+### 2026-08-06: Direct-produced RGB10 handoff
+
+- The staging version removed the black/stuck state transition, but its FP16 staging resource was still written by the Direct queue and asynchronously read by Streamline Compute. The resulting black flashes and ghosting indicate an ownership/timing hazard rather than an RGB10 format failure.
+- The bridge is now tightened further: the Direct 0xAD post-draw performs the FP16-to-RGB10 Compute conversion itself and leaves a completed RGB10 resource in `copy_source`. The Streamline Compute callback only copies that prepared RGB10 resource into the exact tray.
+- This eliminates FP16 reads and shader dispatches from the Streamline Compute callback. The expected runtime pair is now `DL2 DLSS FG Direct prepare ... rendered=1 state=copy_source` followed by `DL2 DLSS FG AD bridge ... copied=1 prepared_state=copy_source`.
