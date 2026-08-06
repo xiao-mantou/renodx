@@ -367,3 +367,10 @@ The next capture reuses the writer audit with `target_final_fg_output=true`. Onc
 
 - `07b32df` exposed the ordering hazard, but its first fence implementation waited before every foreign Compute submission once a prepared Direct value existed. That can stall unrelated game/Streamline Compute work and make the game appear unresponsive.
 - The corrected implementation marks only the Compute command list that records the prepared-RGB10-to-Streamline-tray copy. The native queue hook waits on the Direct fence only when that marked list is submitted, then retires the marker. Off/Balanced resource rules and the Direct final-copy path are unchanged.
+
+### 2026-08-07: native HDR10 output contract and PQ handoff
+
+- A fresh 16-Present Direct-PQ capture confirmed that both alternating Streamline Final Color resources are `R10G10B10A2_UNORM`, every final copy is `RGB10 -> RGB10`, `preserve_copy=1`, `output_hdr10=1`, and `proxy_action=skip_generated_proxy`. A correctly encoded Streamline result therefore must remain a native final copy; mode 11 must never re-enter the RenoDX final proxy.
+- The producer audit again showed Streamline copying the three rotating original 0xAD targets into its two internal RGB10 resources. RenoDX's completed HDR scene remains in the corresponding FP16 clones, so the missing operation is before DLSS-G intake rather than after generated output.
+- Mode 11 is now `AD FP16 -> PQ RGB10 Handoff`. The Direct 0xAD post-draw converts linear BT.709 FP16 units (`1.0 = 203 nit`) to linear BT.2020 and ST.2084 PQ, writes RGB10, and leaves it in `copy_source`. Streamline then copies that exact prepared resource into its native tray, and the tray-to-backbuffer copy stays native.
+- Synchronization is versioned per prepared RGB10 resource. Recording a new Direct write invalidates only that resource's prior fence value; a successful Direct submission assigns the new value; only the Compute command list copying that resource waits for that value. A missing submitted value rejects the handoff and keeps the native Direct-PQ fallback instead of performing an unsynchronized copy.

@@ -286,11 +286,21 @@ Microsoft::WRL::ComPtr<ID3D12Fence> dlss_fg_prepared_fence;
 std::atomic_uint64_t dlss_fg_prepared_fence_value = 0u;
 std::atomic_uintptr_t dlss_fg_prepared_queue = 0u;
 std::mutex dlss_fg_prepared_command_mutex;
-std::unordered_set<uintptr_t> dlss_fg_prepared_command_lists;
-std::unordered_set<uintptr_t> dlss_fg_bridge_compute_command_lists;
+std::unordered_map<uintptr_t, std::unordered_map<uint64_t, uint64_t>>
+    dlss_fg_prepared_command_resources;
+std::unordered_map<uint64_t, uint64_t> dlss_fg_prepared_resource_record_serials;
+std::unordered_map<uint64_t, uint64_t> dlss_fg_prepared_resource_fence_values;
+std::unordered_map<uintptr_t, uint64_t> dlss_fg_bridge_compute_wait_values;
 
 void DestroyDlssFgBridgePasses(reshade::api::device* device) {
   if (device == nullptr) return;
+  {
+    std::scoped_lock lock(dlss_fg_prepared_command_mutex);
+    dlss_fg_prepared_command_resources.clear();
+    dlss_fg_prepared_resource_record_serials.clear();
+    dlss_fg_prepared_resource_fence_values.clear();
+    dlss_fg_bridge_compute_wait_values.clear();
+  }
   {
     std::scoped_lock lock(dlss_fg_bridge_mutex);
     dlss_fg_ad_effective_targets.clear();
@@ -2618,7 +2628,14 @@ void MarkDlssFgAdCommandList(
 }
 
 bool PrepareDlssFgComputeSource(reshade::api::command_list* cmd_list) {
-  if (cmd_list == nullptr || cmd_list->get_device() == nullptr) return false;
+  const int32_t final_color_mode = std::clamp(
+      static_cast<int32_t>(dlss_fg_final_color_mode + 0.5f), 0, 11);
+  if (final_color_mode != 11
+      || !dlss_fg_mode_active.load(std::memory_order_acquire)
+      || swap_chain_use_hdr10 < 0.5f
+      || cmd_list == nullptr || cmd_list->get_device() == nullptr) {
+    return false;
+  }
   auto* device = cmd_list->get_device();
   if (device->get_api() != reshade::api::device_api::d3d12) return false;
 
@@ -2702,8 +2719,12 @@ bool PrepareDlssFgComputeSource(reshade::api::command_list* cmd_list) {
   }
   if (rendered) {
     std::scoped_lock lock(dlss_fg_prepared_command_mutex);
-    dlss_fg_prepared_command_lists.insert(
-        reinterpret_cast<uintptr_t>(cmd_list->get_native()));
+    const auto command_handle = reinterpret_cast<uintptr_t>(cmd_list->get_native());
+    const auto record_serial = ++dlss_fg_prepared_resource_record_serials[prepared->resource.handle];
+    dlss_fg_prepared_command_resources[command_handle][prepared->resource.handle] = record_serial;
+    // This resource is being overwritten by the current Direct submission.
+    // Do not let Streamline consume the previous fence value for it.
+    dlss_fg_prepared_resource_fence_values.erase(prepared->resource.handle);
   }
   const uint32_t diagnostic = dlss_fg_bridge_candidate_diagnostic_count.fetch_add(1u);
   if (diagnostic < 16u || !rendered) {
@@ -2712,7 +2733,7 @@ bool PrepareDlssFgComputeSource(reshade::api::command_list* cmd_list) {
             << output.resource << " source=0x" << output.effective
             << " prepared=0x" << prepared->resource.handle << std::dec
             << " rendered=" << (rendered ? 1 : 0)
-            << " state=copy_source";
+            << " state=copy_source contract=pq_bt2100";
     renodx::utils::log::i(message.str().c_str());
   }
   return rendered;
@@ -3710,6 +3731,27 @@ bool RenderDlssFgAdBridge(
     return false;
   }
 
+  uint64_t required_fence_value = 0u;
+  {
+    std::scoped_lock lock(dlss_fg_prepared_command_mutex);
+    const auto fence_iterator =
+        dlss_fg_prepared_resource_fence_values.find(prepared->resource.handle);
+    if (fence_iterator != dlss_fg_prepared_resource_fence_values.end()) {
+      required_fence_value = fence_iterator->second;
+    }
+  }
+  if (required_fence_value == 0u) {
+    const uint32_t diagnostic =
+        dlss_fg_bridge_candidate_diagnostic_count.fetch_add(1u, std::memory_order_relaxed);
+    if (diagnostic < 24u) {
+      std::ostringstream message;
+      message << "DL2 DLSS FG PQ handoff skipped: prepared=0x" << std::hex
+              << prepared->resource.handle << " dest=0x" << dest.handle
+              << " reason=prepared_not_submitted";
+      renodx::utils::log::i(message.str().c_str());
+    }
+    return false;
+  }
   static thread_local bool bridge_recording = false;
   if (bridge_recording) return false;
   bridge_recording = true;
@@ -3717,13 +3759,14 @@ bool RenderDlssFgAdBridge(
     std::scoped_lock recording_lock(prepared->recording_mutex);
     cmd_list->copy_resource(prepared->resource, dest);
   }
-  // The prepared RGB10 resource is produced on the Direct queue. Mark only
-  // this Compute command list so the native queue hook can order this copy
-  // without stalling unrelated Streamline Compute submissions.
+  // The prepared PQ/RGB10 resource was produced on the Direct queue. Associate
+  // this exact version with only the Streamline Compute command list that
+  // copies it, so unrelated Compute submissions are never stalled.
   {
     std::scoped_lock lock(dlss_fg_prepared_command_mutex);
-    dlss_fg_bridge_compute_command_lists.insert(
-        reinterpret_cast<uintptr_t>(cmd_list->get_native()));
+    auto& wait_value = dlss_fg_bridge_compute_wait_values[
+        reinterpret_cast<uintptr_t>(cmd_list->get_native())];
+    wait_value = std::max(wait_value, required_fence_value);
   }
   bridge_recording = false;
   {
@@ -3743,7 +3786,8 @@ bool RenderDlssFgAdBridge(
             << "=>" << static_cast<uint32_t>(effective_desc.texture.format)
             << "=>" << static_cast<uint32_t>(dest_desc.texture.format)
             << " peak=" << shader_injection.peak_white_nits
-            << " prepared_state=copy_source";
+            << " prepared_state=copy_source contract=pq_bt2100"
+            << " fence=" << required_fence_value;
     renodx::utils::log::i(message.str().c_str());
   }
   return true;
@@ -3923,8 +3967,9 @@ void OnDlssFgBackbufferBarrier(
 void OnDlssFgResetCommandList(reshade::api::command_list* cmd_list) {
   {
     std::scoped_lock lock(dlss_fg_prepared_command_mutex);
-    dlss_fg_prepared_command_lists.erase(reinterpret_cast<uintptr_t>(cmd_list->get_native()));
-    dlss_fg_bridge_compute_command_lists.erase(reinterpret_cast<uintptr_t>(cmd_list->get_native()));
+    const auto command_handle = reinterpret_cast<uintptr_t>(cmd_list->get_native());
+    dlss_fg_prepared_command_resources.erase(command_handle);
+    dlss_fg_bridge_compute_wait_values.erase(command_handle);
   }
   {
     std::scoped_lock lock(dlss_fg_command_list_candidate_mutex);
@@ -4037,8 +4082,7 @@ void OnDlssFgExecuteCommandList(
   if (candidate.preserved_native_copy) {
     const int32_t final_color_mode = std::clamp(
         static_cast<int32_t>(dlss_fg_final_color_mode + 0.5f), 0, 11);
-    const bool bridge_ready = IsDlssFgBridgedTray(candidate.copy_source);
-    if (final_color_mode == 0 || (final_color_mode == 11 && !bridge_ready)) {
+    if (final_color_mode == 0 || final_color_mode == 11) {
       renodx::mods::swapchain::ConsumeProxySourceForBackBuffer({candidate.back_buffer});
       renodx::mods::swapchain::SkipProxyDrawForBackBuffer({candidate.back_buffer});
     } else {
@@ -4090,8 +4134,7 @@ void OnDlssFgExecuteCommandList(
   const int32_t final_color_mode = std::clamp(
       static_cast<int32_t>(dlss_fg_final_color_mode + 0.5f), 0, 11);
   const bool bridge_ready = IsDlssFgBridgedTray(candidate.copy_source);
-  const bool roundtrip_final_color =
-      final_color_mode != 0 && (final_color_mode != 11 || bridge_ready);
+  const bool roundtrip_final_color = final_color_mode != 0 && final_color_mode != 11;
   uint32_t source_format = 0u;
   const bool classification_active =
       dlss_fg_frame_classification_remaining.load(std::memory_order_acquire) != 0u;
@@ -4233,61 +4276,77 @@ void STDMETHODCALLTYPE HookedDlssFgNativeExecuteCommandLists(
     ID3D12CommandQueue* queue,
     UINT count,
     ID3D12CommandList* const* command_lists) {
-  bool bridge_compute_submission = false;
+  uint64_t bridge_wait_value = 0u;
   if (command_lists != nullptr) {
     std::scoped_lock lock(dlss_fg_prepared_command_mutex);
     for (UINT index = 0u; index < count; ++index) {
       if (command_lists[index] == nullptr) continue;
-      if (dlss_fg_bridge_compute_command_lists.contains(
-              reinterpret_cast<uintptr_t>(command_lists[index]))) {
-        bridge_compute_submission = true;
-        break;
+      const auto iterator = dlss_fg_bridge_compute_wait_values.find(
+          reinterpret_cast<uintptr_t>(command_lists[index]));
+      if (iterator != dlss_fg_bridge_compute_wait_values.end()) {
+        bridge_wait_value = std::max(bridge_wait_value, iterator->second);
       }
     }
   }
   if (queue != nullptr && dlss_fg_prepared_fence != nullptr) {
     const auto queue_type = queue->GetDesc().Type;
     const auto prepared_queue = dlss_fg_prepared_queue.load(std::memory_order_acquire);
-    const auto prepared_value = dlss_fg_prepared_fence_value.load(std::memory_order_acquire);
-    if (bridge_compute_submission
+    if (bridge_wait_value != 0u
         && queue_type == D3D12_COMMAND_LIST_TYPE_COMPUTE
         && prepared_queue != 0u
         && prepared_queue != reinterpret_cast<uintptr_t>(queue)
-        && prepared_value != 0u) {
-      queue->Wait(dlss_fg_prepared_fence.Get(), prepared_value);
+        && SUCCEEDED(queue->Wait(dlss_fg_prepared_fence.Get(), bridge_wait_value))) {
       static std::atomic_uint32_t bridge_wait_diagnostic_count = 0u;
       const auto diagnostic = bridge_wait_diagnostic_count.fetch_add(1u, std::memory_order_relaxed);
       if (diagnostic < 8u) {
         std::ostringstream message;
         message << "DL2 DLSS FG bridge fence: wait queue=0x" << std::hex
-                << reinterpret_cast<uintptr_t>(queue) << " value=" << std::dec << prepared_value;
+                << reinterpret_cast<uintptr_t>(queue) << " value=" << std::dec << bridge_wait_value
+                << " scope=prepared_resource";
         renodx::utils::log::i(message.str().c_str());
       }
     }
   }
   real_dlss_fg_native_execute_command_lists(queue, count, command_lists);
 
-  bool prepared_submission = false;
+  std::unordered_map<uint64_t, uint64_t> prepared_resources;
   if (command_lists != nullptr) {
     std::scoped_lock lock(dlss_fg_prepared_command_mutex);
     for (UINT index = 0u; index < count; ++index) {
       if (command_lists[index] == nullptr) continue;
       const auto command_handle = reinterpret_cast<uintptr_t>(command_lists[index]);
-      dlss_fg_bridge_compute_command_lists.erase(command_handle);
-      if (dlss_fg_prepared_command_lists.erase(command_handle) != 0u) {
-        prepared_submission = true;
+      dlss_fg_bridge_compute_wait_values.erase(command_handle);
+      const auto resources_iterator = dlss_fg_prepared_command_resources.find(command_handle);
+      if (resources_iterator != dlss_fg_prepared_command_resources.end()) {
+        for (const auto& [resource, record_serial] : resources_iterator->second) {
+          auto& submitted_serial = prepared_resources[resource];
+          submitted_serial = std::max(submitted_serial, record_serial);
+        }
+        dlss_fg_prepared_command_resources.erase(resources_iterator);
       }
     }
   }
-  if (prepared_submission && queue != nullptr && dlss_fg_prepared_fence != nullptr
+  if (!prepared_resources.empty() && queue != nullptr && dlss_fg_prepared_fence != nullptr
       && queue->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
     const auto value = dlss_fg_prepared_fence_value.fetch_add(1u, std::memory_order_acq_rel) + 1u;
     if (SUCCEEDED(queue->Signal(dlss_fg_prepared_fence.Get(), value))) {
       dlss_fg_prepared_queue.store(reinterpret_cast<uintptr_t>(queue), std::memory_order_release);
+      {
+        std::scoped_lock lock(dlss_fg_prepared_command_mutex);
+        for (const auto& [resource, record_serial] : prepared_resources) {
+          const auto serial_iterator =
+              dlss_fg_prepared_resource_record_serials.find(resource);
+          if (serial_iterator != dlss_fg_prepared_resource_record_serials.end()
+              && serial_iterator->second == record_serial) {
+            dlss_fg_prepared_resource_fence_values[resource] = value;
+          }
+        }
+      }
       if (value <= 8u) {
         std::ostringstream fence_message;
         fence_message << "DL2 DLSS FG bridge fence: signal queue=0x" << std::hex
-                      << reinterpret_cast<uintptr_t>(queue) << " value=" << std::dec << value;
+                      << reinterpret_cast<uintptr_t>(queue) << " value=" << std::dec << value
+                      << " resources=" << prepared_resources.size();
         renodx::utils::log::i(fence_message.str().c_str());
       }
     }
@@ -5598,7 +5657,7 @@ renodx::utils::settings::Settings settings = {
         .can_reset = false,
         .label = "DLSS FG Final Color",
         .section = "Compatibility",
-        .tooltip = "Live A/B for Streamline's focused-FG RGB10 output. The final mode normalizes the exact 0xAD FP16 clone into Streamline's Linear/BT.709 RGB10 tray, then restores the configured Peak in the final proxy; Off/Balanced and the stable resource masks are unchanged.",
+        .tooltip = "Live diagnostics for Streamline's focused-FG RGB10 output. The final mode encodes the exact 0xAD FP16 clone as BT.2100 PQ/RGB10 before Streamline and preserves the native RGB10 final copy; Off/Balanced and the stable resource masks are unchanged.",
         .labels = {
             "Direct PQ",
             "PQ / BT.2020",
@@ -5611,7 +5670,7 @@ renodx::utils::settings::Settings settings = {
             "Linear / BT.709 (1600 nit)",
             "Linear / BT.709 (Peak setting)",
             "Linear / BT.709 (4000 nit control)",
-            "AD FP16 -> Linear RGB10 Bridge",
+            "AD FP16 -> PQ RGB10 Handoff",
         },
         .on_change_value = [](float previous, float current) {
           const int32_t previous_mode = std::clamp(static_cast<int32_t>(previous + 0.5f), 0, 11);

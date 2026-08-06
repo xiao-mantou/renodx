@@ -61,6 +61,8 @@ The broad producer/consumer fence caused an unresponsive game because it waited 
 
 Runtime result for `933e223`: the narrowed wait is reached (`wait queue=... value=7293`) immediately after `AD bridge ... copied=1`, but focused entry still produces a black frame. This rejects the hypothesis that broad wait scope alone caused the black frame. The bridge's cross-queue resource handoff remains unsafe or cyclic even when the consumer list is identified precisely; stop adding queue waits to this path.
 
+The subsequent Direct-PQ capture established the safe output contract: all 16 final submissions were RGB10 sources copied to RGB10 backbuffers with `preserve_copy=1`, `output_hdr10=1`, and `proxy_action=skip_generated_proxy`. The two Streamline sources alternated deterministically, while their visible producers remained `CopyResource` operations from the rotating original 0xAD targets. The next mutation therefore encodes the FP16 clone to BT.2100 PQ/RGB10 before Streamline, keeps the final copy native, and replaces the global-latest fence with per-prepared-resource fence values.
+
 ## Exact FG Producer Boundary
 
 Build `89f9b8d` closed the writer question:

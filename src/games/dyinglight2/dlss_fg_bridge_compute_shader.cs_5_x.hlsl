@@ -10,10 +10,11 @@ void main(uint3 dispatch_thread_id : SV_DispatchThreadID) {
   t0.GetDimensions(width, height);
   if (dispatch_thread_id.x >= width || dispatch_thread_id.y >= height) return;
 
-  // The FP16 clone contains the linear scene signal. RGB10 UAV stores are
-  // normalized, so divide by the fixed bridge reference before the copy into
-  // Streamline's HDR10 tray. The final proxy restores the absolute peak.
-  const float range = max(RENODX_PEAK_WHITE_NITS / RENODX_GRAPHICS_WHITE_NITS, 1e-4f);
-  const float3 value = saturate(t0.Load(int3(dispatch_thread_id.xy, 0)).rgb / range);
-  u0[dispatch_thread_id.xy] = float4(value, 1.f);
+  // DLSS-G requires RGB10 in the HDR10/BT.2100 contract. The FP16 clone is
+  // linear BT.709 with one unit equal to DL2's 203-nit graphics white.
+  const float3 linear_bt709 = max(0.f, t0.Load(int3(dispatch_thread_id.xy, 0)).rgb);
+  const float3 linear_bt2020 = max(0.f, renodx::color::bt2020::from::BT709(linear_bt709));
+  const float3 pq_bt2020 = renodx::color::pq::EncodeSafe(
+      linear_bt2020, RENODX_GRAPHICS_WHITE_NITS);
+  u0[dispatch_thread_id.xy] = float4(saturate(pq_bt2020), 1.f);
 }
