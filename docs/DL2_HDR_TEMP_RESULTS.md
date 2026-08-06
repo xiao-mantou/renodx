@@ -78,3 +78,13 @@ Safety requirements for that A/B are now explicit: final-proxy semantic 11 is ga
 `ea4ad80` reached `rendered=1` but logged `source_state=2147483648` (`general`), followed by focused-FG black/stuck output. For the next build, the state is taken from the known 0xAD producer role (`render_target`) rather than the clone creation-state metadata.
 
 `bf10d3c` then logged `source_state=4` but still black/stuck under focus. The follow-up build is probe-only: it reports the native command-list type and deliberately records no bridge render/copy, so Direct-PQ behavior can be isolated without another GPU stall.
+
+### Completion-tracked slot result (2026-08-07)
+
+Mode 11's PQ handoff executed for both Streamline trays, but focused FG flashed whole black frames. `DLSS FG Auxiliary Color Tags = None (Final Color only)` applied live (`mode=3`, both tags null) without changing the flash, so this test must not be repeated.
+
+The remaining concrete race is prepared-resource reuse: the existing fence orders the Direct producer before the Compute copy, but the singleton resource can be overwritten by a later Direct frame before that Compute copy finishes. The next build uses a bounded per-source slot pool plus a consumer completion fence signaled by whichever queue submits the exact Compute list. Success requires repeated `consumer fence: signal ... uses=1`, no persistent `pool_exhausted=1` or `signal failed`, stable focused FG, and unchanged Off/Balanced behavior. It adds no Direct queue wait and no color compensation.
+
+Final review tightened this to per-slot producer and consumer fences; a single shared monotonic value is unsafe when more than one native queue can signal it. Reset now releases unsubmitted reservations, and mode/swapchain changes advance a handoff epoch so late old work cannot publish a current tray. The live Auxiliary-tag switch is already proven effective and is not part of this build's test matrix.
+
+Source destruction now moves prepared slots to deferred retirement and releases them during bridge teardown, avoiding both unsafe immediate destruction and an ownership leak across resource recreation.
