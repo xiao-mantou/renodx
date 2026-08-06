@@ -56,3 +56,5 @@ Build `89f9b8d` closed the writer question:
 Do not repeat source-semantic or final-nit multiplier grids against the normalized RGB10 output. `cea9a1b` did not execute its bridge because it matched the 0xAD original as RGB10 instead of its observed RGBA8 UNORM format. The revised A/B is `AD FP16 -> Linear RGB10 Bridge`: normalize the FP16 source by `Peak / 203` before Streamline, then restore Peak in the final proxy. This is a paired representation change rather than an unpaired brightness or saturation compensation.
 
 Safety requirements for that A/B are now explicit: final-proxy semantic 11 is gated by a successful bridge render for the exact RGB10 tray and current swapchain generation; failures and unmatched trays retain Direct PQ. A proposed pre-draw barrier mirror was not retained because it could not prove the clone's first physical state.
+
+`ea4ad80` reached `rendered=1` but logged `source_state=2147483648` (`general`), followed by focused-FG black/stuck output. For the next build, the state is taken from the known 0xAD producer role (`render_target`) rather than the clone creation-state metadata.

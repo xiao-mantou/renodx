@@ -290,6 +290,7 @@ struct DlssFgBridgePass {
 std::mutex dlss_fg_bridge_mutex;
 std::unordered_map<uint64_t, uint64_t> dlss_fg_ad_effective_targets;
 std::unordered_map<uint64_t, uint64_t> dlss_fg_bridged_trays;
+std::unordered_map<uint64_t, reshade::api::resource_usage> dlss_fg_ad_clone_states;
 std::unordered_map<
     DlssFgBridgePassKey,
     std::shared_ptr<DlssFgBridgePass>,
@@ -315,6 +316,7 @@ void DestroyDlssFgBridgePasses(reshade::api::device* device) {
     dlss_fg_retired_bridge_passes.clear();
     dlss_fg_ad_effective_targets.clear();
     dlss_fg_bridged_trays.clear();
+    dlss_fg_ad_clone_states.clear();
   }
   for (auto& bridge : stale_passes) {
     std::scoped_lock recording_lock(bridge->recording_mutex);
@@ -2116,6 +2118,7 @@ void OnTypelessAuditDestroyResource(reshade::api::device*, reshade::api::resourc
       return entry.second == resource.handle;
     });
     dlss_fg_bridged_trays.erase(resource.handle);
+    dlss_fg_ad_clone_states.erase(resource.handle);
     std::erase_if(dlss_fg_bridge_passes, [&](const auto& entry) {
       const bool stale = entry.first.original == resource.handle
                          || entry.first.source == resource.handle
@@ -2627,6 +2630,9 @@ void MarkDlssFgAdCommandList(
   if (output.resource != 0u && output.effective != 0u && output.resource != output.effective) {
     std::scoped_lock bridge_lock(dlss_fg_bridge_mutex);
     dlss_fg_ad_effective_targets[output.resource] = output.effective;
+    // This callback is associated with the 0xAD draw that writes the target.
+    // The clone's actual rest state for the later copy is therefore RTV.
+    dlss_fg_ad_clone_states[output.effective] = reshade::api::resource_usage::render_target;
   }
 }
 
@@ -3480,29 +3486,33 @@ bool RenderDlssFgAdBridge(
   if (device == nullptr || device->get_api() != reshade::api::device_api::d3d12) return false;
 
   uint64_t effective_source_handle = 0u;
+  reshade::api::resource_usage effective_source_state = reshade::api::resource_usage::undefined;
   {
     std::scoped_lock lock(dlss_fg_bridge_mutex);
     const auto iterator = dlss_fg_ad_effective_targets.find(source.handle);
     if (iterator == dlss_fg_ad_effective_targets.end()) return false;
     effective_source_handle = iterator->second;
+    const auto state_iterator = dlss_fg_ad_clone_states.find(effective_source_handle);
+    if (state_iterator != dlss_fg_ad_clone_states.end()) {
+      effective_source_state = state_iterator->second;
+    }
   }
   if (effective_source_handle == 0u || effective_source_handle == source.handle) return false;
 
   const reshade::api::resource effective_source{effective_source_handle};
-  reshade::api::resource_usage effective_source_state = reshade::api::resource_usage::undefined;
   bool effective_source_is_clone = false;
   const bool found_effective_source = renodx::utils::resource::GetResourceInfo(
       effective_source,
       [&](const renodx::utils::resource::ResourceInfo& info) {
-        effective_source_state = info.initial_state;
         effective_source_is_clone = info.is_clone;
       });
   if (!found_effective_source || !effective_source_is_clone
       || effective_source_state == reshade::api::resource_usage::undefined) {
     return false;
   }
-  // D3D12 resource-upgrade clones do not mirror original barriers. Keep this
-  // bridge paired around the clone's framework-defined rest state.
+  // The clone state is established by the 0xAD producer draw above. Do not
+  // substitute ResourceInfo::initial_state here: it is the creation state,
+  // and the observed log showed it as GENERAL while the clone was an RTV.
 
   bool dest_is_swapchain = false;
   bool dest_has_clone = false;
