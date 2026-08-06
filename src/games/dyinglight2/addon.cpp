@@ -3492,8 +3492,9 @@ bool RenderDlssFgAdBridge(
   const auto command_list_type = native_command_list != nullptr
                                      ? native_command_list->GetType()
                                      : D3D12_COMMAND_LIST_TYPE_DIRECT;
-  const uint32_t diagnostic = dlss_fg_bridge_diagnostic_count.fetch_add(1u, std::memory_order_relaxed);
-  if (diagnostic < 16u) {
+  const uint32_t probe_diagnostic =
+      dlss_fg_bridge_diagnostic_count.fetch_add(1u, std::memory_order_relaxed);
+  if (probe_diagnostic < 16u) {
     std::ostringstream message;
     message << "DL2 DLSS FG AD bridge context probe: command_list_type="
             << static_cast<uint32_t>(command_list_type)
