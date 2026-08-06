@@ -2755,7 +2755,7 @@ inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
   }
   MarkDlssFgAdCommandList(context.cmd_list, draw_count, instance_count);
 
-  const auto* shader_state = renodx::utils::command_action::GetShaderState(&context);
+  auto* shader_state = renodx::utils::command_action::GetShaderState(&context);
   const uint32_t shader_hash = shader_state != nullptr
                                    ? renodx::utils::shader::GetCurrentShaderHash(
                                          shader_state, renodx::utils::shader::PIXEL_INDEX)
