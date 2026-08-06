@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <d3d11.h>
@@ -299,6 +300,7 @@ std::unordered_map<
 std::vector<std::shared_ptr<DlssFgBridgePass>> dlss_fg_retired_bridge_passes;
 std::atomic_uint32_t dlss_fg_bridge_diagnostic_count = 0u;
 std::atomic_uint32_t dlss_fg_bridge_candidate_diagnostic_count = 0u;
+std::atomic_bool dlss_fg_bridge_probe_only = true;
 
 void DestroyDlssFgBridgePasses(reshade::api::device* device) {
   if (device == nullptr) return;
@@ -3484,6 +3486,24 @@ bool RenderDlssFgAdBridge(
 
   auto* device = cmd_list->get_device();
   if (device == nullptr || device->get_api() != reshade::api::device_api::d3d12) return false;
+
+  const auto native_command_list = std::bit_cast<ID3D12CommandList*>(
+      static_cast<uintptr_t>(cmd_list->get_native()));
+  const auto command_list_type = native_command_list != nullptr
+                                     ? native_command_list->GetType()
+                                     : D3D12_COMMAND_LIST_TYPE_DIRECT;
+  const uint32_t diagnostic = dlss_fg_bridge_diagnostic_count.fetch_add(1u, std::memory_order_relaxed);
+  if (diagnostic < 16u) {
+    std::ostringstream message;
+    message << "DL2 DLSS FG AD bridge context probe: command_list_type="
+            << static_cast<uint32_t>(command_list_type)
+            << " render_skipped=1 reason=probe_only";
+    renodx::utils::log::i(message.str().c_str());
+  }
+  // Rendering a graphics pass from an unknown Streamline copy callback context
+  // can stall focused FG. Keep this build read-only until the list type and
+  // queue ownership are confirmed.
+  if (dlss_fg_bridge_probe_only.load(std::memory_order_relaxed)) return false;
 
   uint64_t effective_source_handle = 0u;
   reshade::api::resource_usage effective_source_state = reshade::api::resource_usage::undefined;
