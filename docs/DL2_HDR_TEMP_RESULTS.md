@@ -55,6 +55,10 @@ Result: the automatic Final Color copy uses Streamline's private, stable command
 
 Next diagnostic: arm the existing source-writer tracker against the two dynamically discovered final RGB10 resources. Record draw/RTV, dispatch/UAV, copy, and resolve producers plus their visible source and native command context. This replaces command-buffer identity matching; it does not change rendering or repeat the transfer-function A/B matrix.
 
+### Fence experiment note (2026-08-06)
+
+The broad producer/consumer fence caused an unresponsive game because it waited on every Compute queue submission. The next build narrows the wait to command lists that actually contain the DLSS-FG bridge copy. This is an ordering-only change; it should be judged first by responsiveness and absence of global flashes, then by focused-FG color/headroom.
+
 ## Exact FG Producer Boundary
 
 Build `89f9b8d` closed the writer question:

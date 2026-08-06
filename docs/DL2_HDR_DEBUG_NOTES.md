@@ -362,3 +362,8 @@ The next capture reuses the writer audit with `target_final_fg_output=true`. Onc
 - Runtime showed both RGB10 trays eventually `bridge_ready=1`, yet the whole image flashed between bright and dark. This rules out a per-tray proxy fallback as the primary cause.
 - The Direct-produced RGB10 resource is custom to RenoDX, so Streamline has no reason to synchronize its Compute queue against the Direct queue that filled it. A DL2-local D3D12 fence now signals after prepared Direct command lists execute and inserts a GPU-side wait before foreign Compute command lists execute.
 - No CPU wait or queue flush is used. Expected evidence is `DL2 DLSS FG bridge fence: signal ...` and stable output without whole-frame flashes.
+
+### 2026-08-06: fence scope correction
+
+- `07b32df` exposed the ordering hazard, but its first fence implementation waited before every foreign Compute submission once a prepared Direct value existed. That can stall unrelated game/Streamline Compute work and make the game appear unresponsive.
+- The corrected implementation marks only the Compute command list that records the prepared-RGB10-to-Streamline-tray copy. The native queue hook waits on the Direct fence only when that marked list is submitted, then retires the marker. Off/Balanced resource rules and the Direct final-copy path are unchanged.

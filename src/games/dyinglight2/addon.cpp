@@ -287,6 +287,7 @@ std::atomic_uint64_t dlss_fg_prepared_fence_value = 0u;
 std::atomic_uintptr_t dlss_fg_prepared_queue = 0u;
 std::mutex dlss_fg_prepared_command_mutex;
 std::unordered_set<uintptr_t> dlss_fg_prepared_command_lists;
+std::unordered_set<uintptr_t> dlss_fg_bridge_compute_command_lists;
 
 void DestroyDlssFgBridgePasses(reshade::api::device* device) {
   if (device == nullptr) return;
@@ -3716,6 +3717,14 @@ bool RenderDlssFgAdBridge(
     std::scoped_lock recording_lock(prepared->recording_mutex);
     cmd_list->copy_resource(prepared->resource, dest);
   }
+  // The prepared RGB10 resource is produced on the Direct queue. Mark only
+  // this Compute command list so the native queue hook can order this copy
+  // without stalling unrelated Streamline Compute submissions.
+  {
+    std::scoped_lock lock(dlss_fg_prepared_command_mutex);
+    dlss_fg_bridge_compute_command_lists.insert(
+        reinterpret_cast<uintptr_t>(cmd_list->get_native()));
+  }
   bridge_recording = false;
   {
     std::scoped_lock lock(dlss_fg_bridge_mutex);
@@ -3915,6 +3924,7 @@ void OnDlssFgResetCommandList(reshade::api::command_list* cmd_list) {
   {
     std::scoped_lock lock(dlss_fg_prepared_command_mutex);
     dlss_fg_prepared_command_lists.erase(reinterpret_cast<uintptr_t>(cmd_list->get_native()));
+    dlss_fg_bridge_compute_command_lists.erase(reinterpret_cast<uintptr_t>(cmd_list->get_native()));
   }
   {
     std::scoped_lock lock(dlss_fg_command_list_candidate_mutex);
@@ -4223,15 +4233,36 @@ void STDMETHODCALLTYPE HookedDlssFgNativeExecuteCommandLists(
     ID3D12CommandQueue* queue,
     UINT count,
     ID3D12CommandList* const* command_lists) {
+  bool bridge_compute_submission = false;
+  if (command_lists != nullptr) {
+    std::scoped_lock lock(dlss_fg_prepared_command_mutex);
+    for (UINT index = 0u; index < count; ++index) {
+      if (command_lists[index] == nullptr) continue;
+      if (dlss_fg_bridge_compute_command_lists.contains(
+              reinterpret_cast<uintptr_t>(command_lists[index]))) {
+        bridge_compute_submission = true;
+        break;
+      }
+    }
+  }
   if (queue != nullptr && dlss_fg_prepared_fence != nullptr) {
     const auto queue_type = queue->GetDesc().Type;
     const auto prepared_queue = dlss_fg_prepared_queue.load(std::memory_order_acquire);
     const auto prepared_value = dlss_fg_prepared_fence_value.load(std::memory_order_acquire);
-    if (queue_type == D3D12_COMMAND_LIST_TYPE_COMPUTE
+    if (bridge_compute_submission
+        && queue_type == D3D12_COMMAND_LIST_TYPE_COMPUTE
         && prepared_queue != 0u
         && prepared_queue != reinterpret_cast<uintptr_t>(queue)
         && prepared_value != 0u) {
       queue->Wait(dlss_fg_prepared_fence.Get(), prepared_value);
+      static std::atomic_uint32_t bridge_wait_diagnostic_count = 0u;
+      const auto diagnostic = bridge_wait_diagnostic_count.fetch_add(1u, std::memory_order_relaxed);
+      if (diagnostic < 8u) {
+        std::ostringstream message;
+        message << "DL2 DLSS FG bridge fence: wait queue=0x" << std::hex
+                << reinterpret_cast<uintptr_t>(queue) << " value=" << std::dec << prepared_value;
+        renodx::utils::log::i(message.str().c_str());
+      }
     }
   }
   real_dlss_fg_native_execute_command_lists(queue, count, command_lists);
@@ -4242,6 +4273,7 @@ void STDMETHODCALLTYPE HookedDlssFgNativeExecuteCommandLists(
     for (UINT index = 0u; index < count; ++index) {
       if (command_lists[index] == nullptr) continue;
       const auto command_handle = reinterpret_cast<uintptr_t>(command_lists[index]);
+      dlss_fg_bridge_compute_command_lists.erase(command_handle);
       if (dlss_fg_prepared_command_lists.erase(command_handle) != 0u) {
         prepared_submission = true;
       }
