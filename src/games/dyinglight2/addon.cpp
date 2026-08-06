@@ -300,7 +300,7 @@ std::unordered_map<
 std::vector<std::shared_ptr<DlssFgBridgePass>> dlss_fg_retired_bridge_passes;
 std::atomic_uint32_t dlss_fg_bridge_diagnostic_count = 0u;
 std::atomic_uint32_t dlss_fg_bridge_candidate_diagnostic_count = 0u;
-std::atomic_bool dlss_fg_bridge_probe_only = true;
+std::atomic_bool dlss_fg_rgb10_uav_supported = false;
 
 void DestroyDlssFgBridgePasses(reshade::api::device* device) {
   if (device == nullptr) return;
@@ -3498,13 +3498,17 @@ bool RenderDlssFgAdBridge(
     std::ostringstream message;
     message << "DL2 DLSS FG AD bridge context probe: command_list_type="
             << static_cast<uint32_t>(command_list_type)
-            << " render_skipped=1 reason=probe_only";
+            << " compute_uav_supported="
+            << (dlss_fg_rgb10_uav_supported.load(std::memory_order_relaxed) ? 1 : 0);
     renodx::utils::log::i(message.str().c_str());
   }
-  // Rendering a graphics pass from an unknown Streamline copy callback context
-  // can stall focused FG. Keep this build read-only until the list type and
-  // queue ownership are confirmed.
-  if (dlss_fg_bridge_probe_only.load(std::memory_order_relaxed)) return false;
+  // The callback is observed on both the final DIRECT copy list and the
+  // Streamline COMPUTE list. Only the latter is a valid context for this
+  // bridge; never record graphics work into a compute command list.
+  if (command_list_type != D3D12_COMMAND_LIST_TYPE_COMPUTE
+      || !dlss_fg_rgb10_uav_supported.load(std::memory_order_acquire)) {
+    return false;
+  }
 
   uint64_t effective_source_handle = 0u;
   reshade::api::resource_usage effective_source_state = reshade::api::resource_usage::undefined;
@@ -3605,7 +3609,7 @@ bool RenderDlssFgAdBridge(
     if (cached_bridge == nullptr) {
       auto bridge_desc = dest_desc;
       bridge_desc.heap = reshade::api::memory_heap::gpu_only;
-      bridge_desc.usage = reshade::api::resource_usage::render_target
+      bridge_desc.usage = reshade::api::resource_usage::unordered_access
                           | reshade::api::resource_usage::copy_source;
       bridge_desc.flags = reshade::api::resource_flags::none;
       auto new_bridge = std::make_shared<DlssFgBridgePass>();
@@ -3616,12 +3620,13 @@ bool RenderDlssFgAdBridge(
         return false;
       }
       new_bridge->pass = std::make_unique<renodx::utils::render::RenderPass>();
-      new_bridge->pass->render_target_slots.resources = {new_bridge->resource};
       new_bridge->pass->shader_resource_slots.resources = {effective_source};
-      new_bridge->pass->sampler_descs.push_back({});
-      new_bridge->pass->pipeline_subobjects.vertex_shader = __swap_chain_proxy_vertex_shader_dx12;
-      new_bridge->pass->pipeline_subobjects.pixel_shader = __dlss_fg_bridge_pixel_shader_dx12;
-      new_bridge->pass->pipeline_subobjects.compute_shader = {};
+      new_bridge->pass->unordered_access_slots.resources = {new_bridge->resource};
+      new_bridge->pass->pipeline_subobjects.compute_shader = __dlss_fg_bridge_compute_shader_dx12;
+      new_bridge->pass->dispatch_group_counts = {
+          (dest_desc.texture.width + 7u) / 8u,
+          (dest_desc.texture.height + 7u) / 8u,
+          1u};
       new_bridge->pass->revert_state_after_render = true;
       new_bridge->pass->use_render_pass = false;
       new_bridge->pass->push_constants[{
@@ -3649,11 +3654,11 @@ bool RenderDlssFgAdBridge(
     cmd_list->barrier(
         bridge->resource,
         reshade::api::resource_usage::copy_source,
-        reshade::api::resource_usage::render_target);
+        reshade::api::resource_usage::unordered_access);
     rendered = bridge->pass->Render(cmd_list);
     cmd_list->barrier(
         bridge->resource,
-        reshade::api::resource_usage::render_target,
+        reshade::api::resource_usage::unordered_access,
         reshade::api::resource_usage::copy_source);
     if (effective_source_state != reshade::api::resource_usage::shader_resource) {
       cmd_list->barrier(
@@ -5947,6 +5952,29 @@ void OnInitDevice(reshade::api::device* device) {
     renodx::mods::swapchain::expected_constant_buffer_space = 50;
     renodx::mods::swapchain::swap_chain_proxy_vertex_shader = __swap_chain_proxy_vertex_shader_dx12;
     renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx12;
+
+    auto* native_device = reinterpret_cast<ID3D12Device*>(
+        static_cast<uintptr_t>(device->get_native()));
+    D3D12_FEATURE_DATA_FORMAT_SUPPORT format_support = {};
+    format_support.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+    const HRESULT support_hr = native_device != nullptr
+                                   ? native_device->CheckFeatureSupport(
+                                         D3D12_FEATURE_FORMAT_SUPPORT,
+                                         &format_support,
+                                         sizeof(format_support))
+                                   : E_POINTER;
+    const bool typed_uav = SUCCEEDED(support_hr)
+                           && (format_support.Support1
+                               & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW) != 0
+                           && (format_support.Support2
+                               & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE) != 0;
+    dlss_fg_rgb10_uav_supported.store(typed_uav, std::memory_order_release);
+    std::ostringstream support_message;
+    support_message << "DL2 DLSS FG RGB10 compute bridge: supported=" << (typed_uav ? 1 : 0)
+                    << " hr=0x" << std::hex << static_cast<uint32_t>(support_hr)
+                    << " support1=0x" << format_support.Support1
+                    << " support2=0x" << format_support.Support2;
+    renodx::utils::log::i(support_message.str().c_str());
   }
 
   TryInstallStreamlineHook();

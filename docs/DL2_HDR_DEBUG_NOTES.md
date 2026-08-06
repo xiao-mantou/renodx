@@ -335,3 +335,11 @@ The next capture reuses the writer audit with `target_final_fg_output=true`. Onc
 - D3D12 clone barriers are not mirrored by the generic resource-upgrade callback. The bridge therefore uses the effective clone's tracked creation `initial_state` as its actual state contract, transitions from that state only while sampling, and restores it immediately. Global cache locking ends before draw recording; each cached bridge has its own recording lock and generation key. Destroyed source/tray entries are retired and are released only after the existing FG resize fence succeeds.
 - The bridge does not flush, wait, create a queue, modify tags, change tone-map math, or alter the stable Off/Balanced resource masks. Final tray-to-backbuffer copies remain Direct PQ and skip the normal final proxy so the bridge output cannot be encoded twice.
 - Test after a full restart with Balanced + FG, HDR10, `ResourceUpgradeTest=33`, and `DLSS FG Final Color = AD FP16 -> Linear RGB10 Bridge`. Success requires repeated `DL2 DLSS FG AD bridge ... rendered=1`, normal color, HDR headroom above 203 nit, and improved FG motion. Bounded `DL2 DLSS FG AD bridge candidate` lines now state the rejected source/effective/destination formats and reason, so a matcher miss is diagnosable from one build.
+
+### 2026-08-06: Compute-context bridge implementation
+
+- The command-list probe established that the eligible `RGBA8 -> FP16 -> RGB10` handoff is recorded on a D3D12 `COMPUTE` list (`type=2`); `DIRECT` (`type=0`) callbacks are final copy work and must remain native.
+- The previous bridge was a graphics RenderPass. Recording RTV/Draw work from the Compute callback explains the focused black/stuck result even after the clone state was corrected.
+- The new build replaces that pass with a D3D12 Compute pass: FP16 clone SRV, normalized `RWTexture2D<float4>` RGB10 UAV, UAV-to-copy-source transition, then copy into the exact Streamline tray. It does not create a queue, flush, wait, or change tags.
+- Startup now checks native `R10G10B10A2_UNORM` support for typed UAV view/store. Unsupported hardware safely falls back to Direct PQ and logs `supported=0`, `support1`, `support2`, and the HRESULT.
+- This is a DL2-local RenoDX bridge implemented using D3D12 primitives; it is not a new DirectX feature and does not alter other games or the shared resource-upgrade rules.

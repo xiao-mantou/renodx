@@ -22,6 +22,10 @@ Confirmed results:
 
 ## Current Diagnostic Conclusion
 
+### Compute bridge candidate (not runtime-tested yet)
+
+The prior probe showed the graphics bridge was being attempted on the wrong command-list class. The next candidate uses the existing Streamline Compute list and writes a temporary RGB10 UAV before the native tray copy. No brightness/saturation compensation is used. The result is valid only if startup reports `RGB10 compute bridge: supported=1` and runtime reports `AD bridge ... command_list_type=2` followed by `rendered=1`.
+
 The focused-FG final proxy source is an RGB10/UNORM handoff. The source-range probe reached the red/high bands while the raw-source quadrant changed between focused and unfocused states. This points to a focused-FG handoff representation/semantic mismatch or an RGB10 headroom bottleneck, not a simple exposure or saturation setting.
 
 Do not repeat the four modes above as blind A/B tests. Future tests should change one handoff property at a time: source representation/encoding, pre-RGB10 scaling, or final-proxy resource format.
