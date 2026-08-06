@@ -59,6 +59,8 @@ Next diagnostic: arm the existing source-writer tracker against the two dynamica
 
 The broad producer/consumer fence caused an unresponsive game because it waited on every Compute queue submission. The next build narrows the wait to command lists that actually contain the DLSS-FG bridge copy. This is an ordering-only change; it should be judged first by responsiveness and absence of global flashes, then by focused-FG color/headroom.
 
+Runtime result for `933e223`: the narrowed wait is reached (`wait queue=... value=7293`) immediately after `AD bridge ... copied=1`, but focused entry still produces a black frame. This rejects the hypothesis that broad wait scope alone caused the black frame. The bridge's cross-queue resource handoff remains unsafe or cyclic even when the consumer list is identified precisely; stop adding queue waits to this path.
+
 ## Exact FG Producer Boundary
 
 Build `89f9b8d` closed the writer question:
