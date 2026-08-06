@@ -356,3 +356,9 @@ The next capture reuses the writer audit with `target_final_fg_output=true`. Onc
 - The staging version removed the black/stuck state transition, but its FP16 staging resource was still written by the Direct queue and asynchronously read by Streamline Compute. The resulting black flashes and ghosting indicate an ownership/timing hazard rather than an RGB10 format failure.
 - The bridge is now tightened further: the Direct 0xAD post-draw performs the FP16-to-RGB10 Compute conversion itself and leaves a completed RGB10 resource in `copy_source`. The Streamline Compute callback only copies that prepared RGB10 resource into the exact tray.
 - This eliminates FP16 reads and shader dispatches from the Streamline Compute callback. The expected runtime pair is now `DL2 DLSS FG Direct prepare ... rendered=1 state=copy_source` followed by `DL2 DLSS FG AD bridge ... copied=1 prepared_state=copy_source`.
+
+### 2026-08-06: producer/consumer fence
+
+- Runtime showed both RGB10 trays eventually `bridge_ready=1`, yet the whole image flashed between bright and dark. This rules out a per-tray proxy fallback as the primary cause.
+- The Direct-produced RGB10 resource is custom to RenoDX, so Streamline has no reason to synchronize its Compute queue against the Direct queue that filled it. A DL2-local D3D12 fence now signals after prepared Direct command lists execute and inserts a GPU-side wait before foreign Compute command lists execute.
+- No CPU wait or queue flush is used. Expected evidence is `DL2 DLSS FG bridge fence: signal ...` and stable output without whole-frame flashes.

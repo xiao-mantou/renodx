@@ -30,6 +30,8 @@ The first Compute candidate met those two conditions but still hung because it t
 
 The staging candidate ran without the hang but showed black flashes and ghosting. The current candidate completes the conversion on the Direct producer list and makes the Streamline Compute callback copy-only, removing the asynchronous FP16 staging read.
 
+The Direct-produced RGB10 candidate still flashed whole frames. Since both trays were marked bridged, the remaining likely fault is missing cross-queue ordering for the custom prepared resource. The next build adds a GPU-only Direct-to-Compute fence wait.
+
 The focused-FG final proxy source is an RGB10/UNORM handoff. The source-range probe reached the red/high bands while the raw-source quadrant changed between focused and unfocused states. This points to a focused-FG handoff representation/semantic mismatch or an RGB10 headroom bottleneck, not a simple exposure or saturation setting.
 
 Do not repeat the four modes above as blind A/B tests. Future tests should change one handoff property at a time: source representation/encoding, pre-RGB10 scaling, or final-proxy resource format.
