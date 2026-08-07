@@ -92,3 +92,7 @@ Source destruction now moves prepared slots to deferred retirement and releases 
 Runtime result: `6202457` improved the black flash but still alternated final submissions between `bridge_ready=0` and `bridge_ready=1`; the same log also showed `pool_exhausted=1`. The next focused change retains the last published tray during replacement and increases the bounded slot pool to 8 per source. No PQ or color compensation changes are included.
 
 Follow-up result: `bridge_ready=1` became stable, but residual previous-frame content remained. `d1c1799` added a targeted consumer-fence wait at final copy submission; it produced a jelly-like queue delay and did not remove the flash. The wait is rolled back while the per-slot lifetime fix remains. The next diagnostic should correlate generated Present identity with the exact source/tray serial rather than add another global or final-copy wait.
+
+### Streamline trace
+
+The bounded v2.9 interposer trace now covers `Present1`, `Present`, resize, and tag recycle. It is read-only and exists only to align Streamline display submissions with RenoDX FG tray/serial logs.
