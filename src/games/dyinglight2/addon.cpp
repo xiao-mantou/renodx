@@ -110,6 +110,7 @@ float dlss_fg_color_buffer_format_mode = 0.f;
 float dlss_fg_skip_generated_proxy = 0.f;
 float dlss_fg_bypass_all_proxy = 0.f;
 float dlss_fg_final_color_mode = 0.f;
+float dlss_fg_creation_format_fix = 1.f;
 bool dlss_fg_tag_capture = false;
 bool dlss_fg_present_cadence_capture = false;
 std::atomic_uint32_t dlss_fg_backbuffer_barrier_capture = 0u;
@@ -159,8 +160,18 @@ decltype(&slDLSSSetOptions) real_sl_dlss_set_options = nullptr;
 decltype(&slDLSSGGetState) real_sl_dlssg_get_state = nullptr;
 using SlDlssGHookPresent = HRESULT(IDXGISwapChain*, UINT, UINT, bool&);
 using SlDlssGHookPresent1 = HRESULT(IDXGISwapChain*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*, bool&);
+using SlDlssGHookCreateSwapChainForHwnd = HRESULT(
+    IDXGIFactory2*,
+    IUnknown*,
+    HWND,
+    const DXGI_SWAP_CHAIN_DESC1*,
+    const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*,
+    IDXGIOutput*,
+    IDXGISwapChain1**,
+    bool&);
 SlDlssGHookPresent* real_sl_dlssg_hook_present = nullptr;
 SlDlssGHookPresent1* real_sl_dlssg_hook_present1 = nullptr;
+SlDlssGHookCreateSwapChainForHwnd* real_sl_dlssg_hook_create_swapchain_for_hwnd = nullptr;
 bool dlss_fg_options_logged = false;
 bool dlss_fg_options_hook_installed = false;
 bool dlss_sr_options_hook_installed = false;
@@ -962,6 +973,62 @@ HRESULT HookedSlDlssGPresent1(
   return result;
 }
 
+HRESULT HookedSlDlssGCreateSwapChainForHwnd(
+    IDXGIFactory2* factory,
+    IUnknown* device,
+    HWND hwnd,
+    const DXGI_SWAP_CHAIN_DESC1* desc,
+    const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreen_desc,
+    IDXGIOutput* restrict_to_output,
+    IDXGISwapChain1** swapchain,
+    bool& skip) {
+  DXGI_SWAP_CHAIN_DESC1 forwarded_desc = desc != nullptr ? *desc : DXGI_SWAP_CHAIN_DESC1{};
+  const DXGI_SWAP_CHAIN_DESC1* forwarded = desc;
+
+  Microsoft::WRL::ComPtr<ID3D12CommandQueue> d3d12_queue;
+  const bool is_d3d12_queue = device != nullptr
+                              && SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&d3d12_queue)));
+  const bool target_swapchain = desc != nullptr
+                                && is_d3d12_queue
+                                && desc->Width >= 128u
+                                && desc->Height >= 128u
+                                && desc->BufferCount >= 3u
+                                && (desc->Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) != 0u;
+  const bool rewrite = target_swapchain
+                       && dlss_fg_creation_format_fix >= 0.5f
+                       && swap_chain_use_hdr10 >= 0.5f
+                       && desc->Format == DXGI_FORMAT_R8G8B8A8_UNORM;
+  if (rewrite) {
+    forwarded_desc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+    forwarded = &forwarded_desc;
+  }
+
+  const HRESULT result = real_sl_dlssg_hook_create_swapchain_for_hwnd(
+      factory,
+      device,
+      hwnd,
+      forwarded,
+      fullscreen_desc,
+      restrict_to_output,
+      swapchain,
+      skip);
+
+  std::ostringstream message;
+  message << "DL2 DLSS FG creation format: target=" << (target_swapchain ? 1 : 0)
+          << " rewrite=" << (rewrite ? 1 : 0)
+          << " requested=" << (desc != nullptr ? static_cast<uint32_t>(desc->Format) : 0u)
+          << " forwarded=" << (forwarded != nullptr ? static_cast<uint32_t>(forwarded->Format) : 0u)
+          << " returned_desc=deferred"
+          << " returned_resource=deferred"
+          << " buffers=" << (desc != nullptr ? desc->BufferCount : 0u)
+          << " size=" << (desc != nullptr ? desc->Width : 0u)
+          << "x" << (desc != nullptr ? desc->Height : 0u)
+          << " skip=" << (skip ? 1 : 0)
+          << " hr=0x" << std::hex << std::uppercase << static_cast<uint32_t>(result);
+  renodx::utils::log::i(message.str().c_str());
+  return result;
+}
+
 const char* GetStreamlineTagName(sl::BufferType type) {
   switch (type) {
     case sl::kBufferTypeDepth:
@@ -1625,25 +1692,39 @@ bool TryInstallDlssGPresentHook() {
       get_plugin_function("slHookPresent"));
   real_sl_dlssg_hook_present1 = reinterpret_cast<SlDlssGHookPresent1*>(
       get_plugin_function("slHookPresent1"));
+  real_sl_dlssg_hook_create_swapchain_for_hwnd =
+      reinterpret_cast<SlDlssGHookCreateSwapChainForHwnd*>(
+          get_plugin_function("slHookCreateSwapChainForHwnd"));
   if (real_sl_dlssg_hook_present == nullptr || real_sl_dlssg_hook_present1 == nullptr) return false;
 
   if (DetourTransactionBegin() != NO_ERROR) return false;
   if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR
       || DetourAttach(
              reinterpret_cast<void**>(&real_sl_dlssg_hook_present),
-             reinterpret_cast<void*>(&HookedSlDlssGPresent)) != NO_ERROR
+             reinterpret_cast<void*>(&HookedSlDlssGPresent))
+             != NO_ERROR
       || DetourAttach(
              reinterpret_cast<void**>(&real_sl_dlssg_hook_present1),
-             reinterpret_cast<void*>(&HookedSlDlssGPresent1)) != NO_ERROR
+             reinterpret_cast<void*>(&HookedSlDlssGPresent1))
+             != NO_ERROR
+      || (real_sl_dlssg_hook_create_swapchain_for_hwnd != nullptr
+          && DetourAttach(
+                 reinterpret_cast<void**>(&real_sl_dlssg_hook_create_swapchain_for_hwnd),
+                 reinterpret_cast<void*>(&HookedSlDlssGCreateSwapChainForHwnd))
+                 != NO_ERROR)
       || DetourTransactionCommit() != NO_ERROR) {
     DetourTransactionAbort();
     real_sl_dlssg_hook_present = nullptr;
     real_sl_dlssg_hook_present1 = nullptr;
+    real_sl_dlssg_hook_create_swapchain_for_hwnd = nullptr;
     return false;
   }
   dlss_fg_present_hook_installed = true;
   dlss_fg_present_hook_wait_logged = false;
-  renodx::utils::log::i("DL2 DLSS FG: read-only plugin Present identity hook installed.");
+  renodx::utils::log::i(
+      real_sl_dlssg_hook_create_swapchain_for_hwnd != nullptr
+          ? "DL2 DLSS FG: plugin creation-contract and Present identity hooks installed."
+          : "DL2 DLSS FG: Present identity hooks installed; creation-contract export unavailable.");
   return true;
 }
 
@@ -1681,7 +1762,7 @@ void TryInstallStreamlineHook() {
   if (!dlss_fg_present_hook_installed && !TryInstallDlssGPresentHook()
       && !dlss_fg_present_hook_wait_logged) {
     dlss_fg_present_hook_wait_logged = true;
-    renodx::utils::log::w("DL2 DLSS FG: read-only plugin Present identity hook was not installed.");
+    renodx::utils::log::w("DL2 DLSS FG: plugin creation-contract and Present identity hooks were not installed.");
   }
   TryInstallDlssSrOptionsHook(module);
 }
@@ -1697,7 +1778,8 @@ void RemoveStreamlineHook() {
         && DetourUpdateThread(GetCurrentThread()) == NO_ERROR
         && DetourDetach(
                reinterpret_cast<void**>(&real_sl_dlssg_set_options),
-               reinterpret_cast<void*>(&HookedSlDLSSGSetOptions)) == NO_ERROR) {
+               reinterpret_cast<void*>(&HookedSlDLSSGSetOptions))
+               == NO_ERROR) {
       DetourTransactionCommit();
     } else {
       DetourTransactionAbort();
@@ -1711,7 +1793,8 @@ void RemoveStreamlineHook() {
         && DetourUpdateThread(GetCurrentThread()) == NO_ERROR
         && DetourDetach(
                reinterpret_cast<void**>(&real_sl_dlssg_get_state),
-               reinterpret_cast<void*>(&HookedSlDLSSGGetState)) == NO_ERROR) {
+               reinterpret_cast<void*>(&HookedSlDLSSGGetState))
+               == NO_ERROR) {
       DetourTransactionCommit();
     } else {
       DetourTransactionAbort();
@@ -1721,23 +1804,36 @@ void RemoveStreamlineHook() {
   dlss_fg_state_hook_installed = false;
   dlss_fg_state_hook_wait_logged = false;
   if (dlss_fg_present_hook_installed) {
+    bool detached = false;
     if (DetourTransactionBegin() == NO_ERROR
         && DetourUpdateThread(GetCurrentThread()) == NO_ERROR
         && DetourDetach(
                reinterpret_cast<void**>(&real_sl_dlssg_hook_present),
-               reinterpret_cast<void*>(&HookedSlDlssGPresent)) == NO_ERROR
+               reinterpret_cast<void*>(&HookedSlDlssGPresent))
+               == NO_ERROR
         && DetourDetach(
                reinterpret_cast<void**>(&real_sl_dlssg_hook_present1),
-               reinterpret_cast<void*>(&HookedSlDlssGPresent1)) == NO_ERROR) {
-      DetourTransactionCommit();
+               reinterpret_cast<void*>(&HookedSlDlssGPresent1))
+               == NO_ERROR
+        && (real_sl_dlssg_hook_create_swapchain_for_hwnd == nullptr
+            || DetourDetach(
+                   reinterpret_cast<void**>(&real_sl_dlssg_hook_create_swapchain_for_hwnd),
+                   reinterpret_cast<void*>(&HookedSlDlssGCreateSwapChainForHwnd))
+                   == NO_ERROR)
+        && DetourTransactionCommit() == NO_ERROR) {
+      detached = true;
     } else {
       DetourTransactionAbort();
+      renodx::utils::log::w("DL2 DLSS FG: Present/creation detour removal failed; retaining hook state for retry.");
+    }
+    if (detached) {
+      real_sl_dlssg_hook_present = nullptr;
+      real_sl_dlssg_hook_present1 = nullptr;
+      real_sl_dlssg_hook_create_swapchain_for_hwnd = nullptr;
+      dlss_fg_present_hook_installed = false;
+      dlss_fg_present_hook_wait_logged = false;
     }
   }
-  real_sl_dlssg_hook_present = nullptr;
-  real_sl_dlssg_hook_present1 = nullptr;
-  dlss_fg_present_hook_installed = false;
-  dlss_fg_present_hook_wait_logged = false;
   dlss_fg_mode_active.store(false, std::memory_order_release);
   dlss_fg_execute_candidate_remaining.store(0u, std::memory_order_release);
   {
@@ -2153,6 +2249,10 @@ void OnTypelessAuditInitSwapchain(reshade::api::swapchain* swapchain, bool) {
   if (swapchain == nullptr) return;
   auto* device = swapchain->get_device();
   if (device == nullptr) return;
+  // Streamline can load after init_device but before its first DLSS-G buffer
+  // allocation. Retry here so the creation-contract hook is present before
+  // the first presentation rather than waiting for a downstream draw.
+  TryInstallStreamlineHook();
   if (device->get_api() == reshade::api::device_api::d3d12) {
     dlss_fg_active_swapchain.store(reinterpret_cast<uintptr_t>(swapchain), std::memory_order_release);
   }
@@ -6017,6 +6117,17 @@ renodx::utils::settings::Settings settings = {
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
+        .key = "DLSSFGCreationFormatFix",
+        .binding = &dlss_fg_creation_format_fix,
+        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+        .default_value = 1.f,
+        .can_reset = false,
+        .label = "DLSS FG RGB10 Creation Contract (Restart)",
+        .section = "Compatibility",
+        .tooltip = "DL2-specific creation-time fix. Before DLSS-G creates its fake swapchain buffers, reports the same RGB10 format used by RenoDX's real HDR10 backbuffers. Requires a game restart; it does not affect DLSS SR or non-FG swapchains.",
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
         .key = "DLSSFGSkipGeneratedProxy",
         .binding = &dlss_fg_skip_generated_proxy,
         .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
@@ -6439,6 +6550,7 @@ void OnPresetOff() {
       {"FxLensFlare", 100.f},
       {"FrameGenerationCompatibility", 0.f},
       {"DLSSFGColorBufferFormat", 0.f},
+      {"DLSSFGCreationFormatFix", 1.f},
       {"DLSSFGAuxiliaryColorTags", 0.f},
       {"DLSSFGUseTaggedClone", 0.f},
       {"DLSSFGSuppressPrePQTags", 0.f},
