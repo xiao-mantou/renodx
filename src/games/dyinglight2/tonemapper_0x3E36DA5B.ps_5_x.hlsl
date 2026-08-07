@@ -38,6 +38,31 @@ float3 ScaleToneMappedScene(float3 color) {
   return color * (RENODX_DIFFUSE_WHITE_NITS / 203.0);
 }
 
+// DL2-specific diagnostic curve. The source scene is anchored to 203 nits,
+// so Game Brightness must change the gray output without moving the input
+// value that reaches Peak Brightness. The generic three-argument path uses
+// Peak/Game for both decisions and therefore moves that highlight anchor.
+float3 ToneMapDL2Anchored(
+    float3 untonemapped,
+    float3 vanilla,
+    float3 neutral_sdr,
+    float input_clip) {
+  if (RENODX_TONE_MAP_TYPE != 3.0) {
+    return ScaleToneMappedScene(
+        renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr));
+  }
+
+  const float3 graded = renodx::draw::ComputeUntonemappedGraded(
+      untonemapped, vanilla, neutral_sdr);
+  const float y = renodx::color::y::from::BT709(max(graded, 0.0));
+  const float peak = max(RENODX_PEAK_WHITE_NITS / 203.0, 1.0);
+  const float game = max(RENODX_DIFFUSE_WHITE_NITS / 203.0, 0.01);
+  const float clip = max(input_clip, 1.0);
+  const float mapped_y = renodx::tonemap::Neutwo(y, peak, clip, 1.0, game);
+  const float scale = y > 0.00001 ? mapped_y / y : 1.0;
+  return max(graded, 0.0) * scale;
+}
+
 // Exact DL2 SDR curve recovered from the original shader. This is evaluated
 // with the original t1 exposure and passed to RenoDRT as the SDR reference.
 float3 ApplyDL2SDRCurve(float3 color, float4 curve0, float4 curve1) {
@@ -325,6 +350,31 @@ void main(
         ? tile_vanilla
         : ScaleToneMappedScene(renodx::draw::ToneMapPass(
               candidate_hdr, tile_vanilla, candidate_neutral));
+    o0.a = tile_source.a;
+    return;
+  }
+
+  // Compare the current Game/Peak coupling with fixed input highlight
+  // anchors. This is diagnostic only; normal rendering remains unchanged.
+  if (RENODX_DEBUG_MODE > 37.5 && RENODX_DEBUG_MODE < 38.5) {
+    const float2 tile_uv = frac(v1.xy * 2.0);
+    const uint quadrant = (v1.x >= 0.5 ? 1u : 0u) + (v1.y >= 0.5 ? 2u : 0u);
+    const float4 tile_source = t0.SampleLevel(s0_s, tile_uv, 0);
+    const float3 tile_scene = tile_source.rgb * 0.6 * adaptive_exposure;
+    const float3 tile_vanilla = ApplyDL2SDRCurve(tile_scene, cb0[0], cb0[1]);
+    const float3 tile_neutral = renodx::tonemap::renodrt::NeutralSDR(tile_scene);
+    const float3 current = ScaleToneMappedScene(
+        renodx::draw::ToneMapPass(tile_scene, tile_vanilla, tile_neutral));
+    const float3 anchored_10 = ToneMapDL2Anchored(
+        tile_scene, tile_vanilla, tile_neutral, 10.0);
+    const float3 anchored_5 = ToneMapDL2Anchored(
+        tile_scene, tile_vanilla, tile_neutral, 5.0);
+    const float3 anchored_20 = ToneMapDL2Anchored(
+        tile_scene, tile_vanilla, tile_neutral, 20.0);
+    o0.rgb = quadrant == 0u ? current
+        : quadrant == 1u ? anchored_10
+        : quadrant == 2u ? anchored_5
+        : anchored_20;
     o0.a = tile_source.a;
     return;
   }
