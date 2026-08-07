@@ -106,3 +106,10 @@ The DL2 Debug setting `Arm Streamline Present1 Trace (256)` creates the same mar
 Overlapped runtime trace: each 0xAD submission was consumed by the immediately following DLSS-G `Present1`; all calls returned success with `skip=1`, and ReShade observed two output Presents per source frame. Timing fall-through is excluded. The creation contract is mismatched instead: the DLSS-G-facing swapchain reports format 28 (RGBA8 UNORM) while every actual backbuffer is format 24 (RGB10 HDR). Streamline startup confirms four RGB10 real buffers but three `sl.dlssg.fake-swapchain-buffer` allocations in RGBA8. The next A/B rewrites only the main D3D12 DLSS-G creation descriptor from RGBA8 to RGB10 before those fake buffers are allocated; no Present wait, exposure, or color compensation is added.
 
 Follow-up review: the first runtime attempt installed the Present hooks only after the initial fake buffers were created, so no creation-format line appeared. Retry now also occurs at `init_swapchain`; missing creation export no longer disables Present tracing. Creation-hook logs label returned descriptors as deferred because this is a Streamline before-hook and the real swapchain is created after the callback.
+
+## Non-FG Brightness Mapping (2026-08-07)
+
+- `HDR Input Range` false color marks source max-channel 4 as red and 8 as white; it is not a nit readout.
+- DL2 then applies `scene_linear = source * 0.6`, so a red source near 4 becomes about 2.4, or roughly 487 nits at the fixed 203-nit intermediate unit before tone mapping.
+- Raising highlight exposure retention from 75 to 100 and its clamp from 2 to 4 produced no meaningful brightness change. Switching Daniele to Neutwo also produced no meaningful change.
+- Next probe: `DL2 HDR Expansion Grid` repeats the image in four quadrants: current baseline, no 0.6 calibration, fixed highlight-only gain, and Peak-driven highlight-only gain. It does not alter the normal path.

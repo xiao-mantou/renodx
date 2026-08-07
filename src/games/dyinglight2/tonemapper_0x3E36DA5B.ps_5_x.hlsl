@@ -295,6 +295,40 @@ void main(
     return;
   }
 
+  // Repeat the same source image in four tiles to isolate scene calibration
+  // from highlight-only expansion. TL is the current path, TR removes DL2's
+  // 0.6 HDR calibration, BL applies a fixed 1.5x highlight gain, and BR uses
+  // Peak Brightness to expand a 2.0 scene value toward the selected peak.
+  // Both highlight expansions preserve values below diffuse white and keep
+  // the original DL2 SDR curve as the graded reference.
+  if (RENODX_DEBUG_MODE > 36.5 && RENODX_DEBUG_MODE < 37.5) {
+    const float2 tile_uv = frac(v1.xy * 2.0);
+    const uint quadrant = (v1.x >= 0.5 ? 1u : 0u) + (v1.y >= 0.5 ? 2u : 0u);
+    const float4 tile_source = t0.SampleLevel(s0_s, tile_uv, 0);
+    const float3 baseline_scene = tile_source.rgb * 0.6;
+    const float baseline_luminance = renodx::color::y::from::BT709(max(baseline_scene, 0.0));
+    const float highlight_weight = smoothstep(1.0, 2.4, baseline_luminance);
+    const float peak_ratio = max(1.0, RENODX_PEAK_WHITE_NITS / 203.0);
+    const float fixed_gain = lerp(1.0, 1.5, highlight_weight);
+    const float peak_gain = lerp(1.0, max(1.0, peak_ratio / 2.0), highlight_weight);
+    const float3 candidate_scene = quadrant == 0u ? baseline_scene
+        : quadrant == 1u ? tile_source.rgb
+        : quadrant == 2u ? baseline_scene * fixed_gain
+        : baseline_scene * peak_gain;
+    const float3 tile_vanilla = ApplyDL2SDRCurve(baseline_scene * exposure, cb0[0], cb0[1]);
+    const float candidate_luminance = renodx::color::y::from::BT709(max(candidate_scene, 0.0));
+    const float candidate_protection = smoothstep(protection_start, protection_end, candidate_luminance);
+    const float candidate_exposure = lerp(exposure, protected_exposure, candidate_protection);
+    const float3 candidate_hdr = candidate_scene * candidate_exposure;
+    const float3 candidate_neutral = renodx::tonemap::renodrt::NeutralSDR(candidate_hdr);
+    o0.rgb = RENODX_TONE_MAP_TYPE == 0.0
+        ? tile_vanilla
+        : ScaleToneMappedScene(renodx::draw::ToneMapPass(
+              candidate_hdr, tile_vanilla, candidate_neutral));
+    o0.a = tile_source.a;
+    return;
+  }
+
   const bool downstream_color_grid = (RENODX_DEBUG_MODE > 28.5 && RENODX_DEBUG_MODE < 31.5)
       || (RENODX_DEBUG_MODE > 34.5 && RENODX_DEBUG_MODE < 35.5);
   if (RENODX_DEBUG_MODE > 5.5 && !downstream_color_grid) {
