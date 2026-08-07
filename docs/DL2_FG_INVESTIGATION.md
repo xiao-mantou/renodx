@@ -25,6 +25,20 @@ Success evidence after a full game restart:
 2. `sl.log` allocates the three `sl.dlssg.fake-swapchain-buffer` resources as RGB10 rather than RGBA8.
 3. Focused FG no longer alternates/black-flashes and does not retain previous-frame content.
 
+## Runtime `0adad73`
+
+The seven-parameter ABI correction still produced no `DL2 DLSS FG creation format` callback. Streamline continued allocating all three `sl.dlssg.fake-swapchain-buffer` resources as RGBA8, so the exported-function detour does not control the cached/active creation path and must not be extended further.
+
+Mode 11 is now rejected as a production fix. The log proves it intercepts Streamline's `RGBA8 -> RGB10 m_pDLFGOutputs` copy but substitutes a separately prepared 0xAD source frame instead of converting Streamline's generated frame. This explains all three visible failures together:
+
+- flash: 11 initial submissions used `bridge_ready=0`, then switched to the replacement path;
+- color: the replacement assumes `linear BT.709 -> PQ BT.2020`, independent of Streamline's generated result;
+- drag/judder: generated frames are discarded and replaced by repeated/misaligned source frames.
+
+The next valid direction is pre-generation semantics: intercept `slGetNativeInterface` for the swapchain and return a DL2-local wrapper whose `GetDesc`/`GetDesc1` report the actual RGB10 HDR10 backbuffer format. Test with `DLSS FG Final Color = Direct PQ`; mode 11 must remain disabled. Success means Streamline itself allocates/generates RGB10 frames, preserving its motion output rather than replacing it afterward.
+
+The wrapper owns one COM reference to the underlying swapchain and now has its own reference count. Its final `Release` deletes the wrapper and the virtual destructor releases the underlying object; repeated `slGetNativeInterface` calls therefore do not leak wrapper instances.
+
 ## Local Formatting
 
 Use `C:\Users\xiaom\Documents\renodx\clang_format\clang_format\data\bin\clang-format.exe` with the repository `.clang-format` file. The launcher under `clang_format\bin` currently fails because its Python package is not on `PYTHONPATH`.

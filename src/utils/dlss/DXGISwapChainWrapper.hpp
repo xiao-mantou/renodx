@@ -10,16 +10,26 @@
 class DXGISwapChainWrapper : public IDXGISwapChain4 {
  public:
   explicit DXGISwapChainWrapper(IDXGISwapChain4* swapchain) : _swap_chain(swapchain) {}
+  virtual ~DXGISwapChainWrapper() {
+    if (_swap_chain != nullptr) {
+      _swap_chain->Release();
+      _swap_chain = nullptr;
+    }
+  }
 
   // IUnknown
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override {
     return _swap_chain->QueryInterface(riid, ppvObject);
   }
   ULONG STDMETHODCALLTYPE AddRef() override {
-    return _swap_chain->AddRef();
+    return static_cast<ULONG>(InterlockedIncrement(&_ref_count));
   }
   ULONG STDMETHODCALLTYPE Release() override {
-    return _swap_chain->Release();
+    const ULONG remaining = static_cast<ULONG>(InterlockedDecrement(&_ref_count));
+    if (remaining == 0u) {
+      delete this;
+    }
+    return remaining;
   }
 
   // IDXGIObject
@@ -151,5 +161,6 @@ class DXGISwapChainWrapper : public IDXGISwapChain4 {
   }
 
  private:
+  volatile LONG _ref_count = 1;
   IDXGISwapChain4* _swap_chain;
 };

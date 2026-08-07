@@ -5,20 +5,20 @@
 
 #define ImTextureID ImU64
 
+#include <d3d11.h>
+#include <d3d12.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstring>
-#include <d3d11.h>
-#include <d3d12.h>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <sstream>
-#include <unordered_set>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <embed/shaders.h>
@@ -26,16 +26,17 @@
 #include <wrl/client.h>
 
 #include <deps/imgui/imgui.h>
-#include <include/reshade.hpp>
 #include <sl.h>
 #include <sl_dlss.h>
 #include <sl_dlss_g.h>
+#include <include/reshade.hpp>
 
 #include "../../mods/shader.hpp"
 #include "../../mods/swapchain.hpp"
 #include "../../utils/build_info.hpp"
-#include "../../utils/descriptor.hpp"
 #include "../../utils/constants.hpp"
+#include "../../utils/descriptor.hpp"
+#include "../../utils/dlss/DXGISwapChainWrapper.hpp"
 #include "../../utils/log.hpp"
 #include "../../utils/pipeline_layout.hpp"
 #include "../../utils/resource.hpp"
@@ -155,22 +156,14 @@ sl::Result (*real_sl_set_tag)(
     sl::CommandBuffer* cmd_buffer) = nullptr;
 
 decltype(&slSetTagForFrame) real_sl_set_tag_for_frame = nullptr;
+decltype(&slGetNativeInterface) real_sl_get_native_interface = nullptr;
 decltype(&slDLSSGSetOptions) real_sl_dlssg_set_options = nullptr;
 decltype(&slDLSSSetOptions) real_sl_dlss_set_options = nullptr;
 decltype(&slDLSSGGetState) real_sl_dlssg_get_state = nullptr;
 using SlDlssGHookPresent = HRESULT(IDXGISwapChain*, UINT, UINT, bool&);
 using SlDlssGHookPresent1 = HRESULT(IDXGISwapChain*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*, bool&);
-using SlDlssGHookCreateSwapChainForHwnd = HRESULT(
-    IDXGIFactory2*,
-    IUnknown*,
-    HWND,
-    const DXGI_SWAP_CHAIN_DESC1*,
-    const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*,
-    IDXGIOutput*,
-    IDXGISwapChain1**);
 SlDlssGHookPresent* real_sl_dlssg_hook_present = nullptr;
 SlDlssGHookPresent1* real_sl_dlssg_hook_present1 = nullptr;
-SlDlssGHookCreateSwapChainForHwnd* real_sl_dlssg_hook_create_swapchain_for_hwnd = nullptr;
 bool dlss_fg_options_logged = false;
 bool dlss_fg_options_hook_installed = false;
 bool dlss_sr_options_hook_installed = false;
@@ -454,7 +447,7 @@ void UpdateDlssFgFence(const sl::DLSSGState& state) {
   dlss_fg_inputs_fence_value = state.lastPresentInputsProcessingCompletionFenceValue;
 }
 
-DlssFgWaitResult WaitForDlssFgInputs(uint64_t *target_value, uint64_t *completed_before) {
+DlssFgWaitResult WaitForDlssFgInputs(uint64_t* target_value, uint64_t* completed_before) {
   Microsoft::WRL::ComPtr<ID3D12Fence> fence;
   uint64_t value = 0u;
   {
@@ -488,12 +481,12 @@ DlssFgWaitResult WaitForDlssFgInputs(uint64_t *target_value, uint64_t *completed
   return set_event_result == S_OK ? DlssFgWaitResult::timeout : DlssFgWaitResult::set_event_failed;
 }
 
-const char *DlssFgWaitResultName(DlssFgWaitResult result) {
+const char* DlssFgWaitResultName(DlssFgWaitResult result) {
   switch (result) {
-    case DlssFgWaitResult::no_fence: return "no_fence";
+    case DlssFgWaitResult::no_fence:         return "no_fence";
     case DlssFgWaitResult::already_complete: return "already_complete";
-    case DlssFgWaitResult::wait_completed: return "wait_completed";
-    case DlssFgWaitResult::timeout: return "timeout";
+    case DlssFgWaitResult::wait_completed:   return "wait_completed";
+    case DlssFgWaitResult::timeout:          return "timeout";
     case DlssFgWaitResult::set_event_failed: return "set_event_failed";
   }
   return "unknown";
@@ -518,14 +511,14 @@ sl::Result HookedSlDLSSGGetState(
     UpdateDlssFgFence(state);
     const uint32_t diagnostic_count = dlss_fg_state_diagnostic_count.fetch_add(1u);
     if (diagnostic_count < 64u) {
-      auto *fence = static_cast<ID3D12Fence *>(state.inputsProcessingCompletionFence);
+      auto* fence = static_cast<ID3D12Fence*>(state.inputsProcessingCompletionFence);
       const uint64_t completed = fence != nullptr ? fence->GetCompletedValue() : 0u;
       std::ostringstream message;
       message << "DL2 DLSS FG: GetState viewport=" << static_cast<uint32_t>(viewport)
               << " status=" << static_cast<uint32_t>(state.status)
               << " presented=" << state.numFramesActuallyPresented
               << " generate_max=" << state.numFramesToGenerateMax
-              << " fence=" << static_cast<void *>(fence)
+              << " fence=" << static_cast<void*>(fence)
               << " target=" << state.lastPresentInputsProcessingCompletionFenceValue
               << " completed=" << completed;
       renodx::utils::log::i(message.str().c_str());
@@ -615,8 +608,8 @@ void CaptureDlssFgFrameClassification(const DlssFgSwapchainSnapshot& snapshot) {
     }
     if (conflicting_copy_tags || unmatched_copy_count != 0u) tag_serial = 0u;
     copied_final_color = tag_serial != 0u
-        && !conflicting_copy_tags
-        && unmatched_copy_count == 0u;
+                         && !conflicting_copy_tags
+                         && unmatched_copy_count == 0u;
     if (copy_count == 0u) tag_serial = audit.last_tag_serial;
     audit.pending_count = 0u;
     audit.dropped_count = 0u;
@@ -650,9 +643,9 @@ void CaptureDlssFgFrameClassification(const DlssFgSwapchainSnapshot& snapshot) {
     }
   }
   const bool input_matches = input_snapshot.color_committed
-      && input_snapshot.frame_index != UINT_MAX
-      && input_snapshot.tag_serial != 0u
-      && input_snapshot.tag_serial == tag_serial;
+                             && input_snapshot.frame_index != UINT_MAX
+                             && input_snapshot.tag_serial != 0u
+                             && input_snapshot.tag_serial == tag_serial;
 
   auto append_tagged_resource = [](std::ostringstream& stream,
                                    const char* name,
@@ -675,11 +668,11 @@ void CaptureDlssFgFrameClassification(const DlssFgSwapchainSnapshot& snapshot) {
                  << " tag_source="
                  << (conflicting_copy_tags
                          ? "conflict"
-                         : unmatched_copy_count != 0u
-                               ? "unmatched_copy"
-                         : copied_final_color
-                               ? "command_context"
-                               : (tag_serial != 0u ? "carried" : "none"))
+                     : unmatched_copy_count != 0u
+                         ? "unmatched_copy"
+                     : copied_final_color
+                         ? "command_context"
+                         : (tag_serial != 0u ? "carried" : "none"))
                  << " copy_tag_conflict=" << (conflicting_copy_tags ? 1 : 0)
                  << " unmatched_copies=" << unmatched_copy_count
                  << " new_ad=" << (new_ad ? 1 : 0)
@@ -972,55 +965,82 @@ HRESULT HookedSlDlssGPresent1(
   return result;
 }
 
-HRESULT HookedSlDlssGCreateSwapChainForHwnd(
-    IDXGIFactory2* factory,
-    IUnknown* device,
-    HWND hwnd,
-    const DXGI_SWAP_CHAIN_DESC1* desc,
-    const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreen_desc,
-    IDXGIOutput* restrict_to_output,
-    IDXGISwapChain1** swapchain) {
-  DXGI_SWAP_CHAIN_DESC1 forwarded_desc = desc != nullptr ? *desc : DXGI_SWAP_CHAIN_DESC1{};
-  const DXGI_SWAP_CHAIN_DESC1* forwarded = desc;
+class Dl2HdrSwapChainWrapper final : public DXGISwapChainWrapper {
+ public:
+  explicit Dl2HdrSwapChainWrapper(IDXGISwapChain4* swapchain)
+      : DXGISwapChainWrapper(swapchain) {}
 
-  Microsoft::WRL::ComPtr<ID3D12CommandQueue> d3d12_queue;
-  const bool is_d3d12_queue = device != nullptr
-                              && SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&d3d12_queue)));
-  const bool target_swapchain = desc != nullptr
-                                && is_d3d12_queue
-                                && desc->Width >= 128u
-                                && desc->Height >= 128u
-                                && desc->BufferCount >= 3u
-                                && (desc->Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) != 0u;
-  const bool rewrite = target_swapchain
-                       && dlss_fg_creation_format_fix >= 0.5f
-                       && swap_chain_use_hdr10 >= 0.5f
-                       && desc->Format == DXGI_FORMAT_R8G8B8A8_UNORM;
-  if (rewrite) {
-    forwarded_desc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
-    forwarded = &forwarded_desc;
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+    if (object == nullptr) return E_POINTER;
+    if (iid == __uuidof(IUnknown)
+        || iid == __uuidof(IDXGIObject)
+        || iid == __uuidof(IDXGIDeviceSubObject)
+        || iid == __uuidof(IDXGISwapChain)
+        || iid == __uuidof(IDXGISwapChain1)
+        || iid == __uuidof(IDXGISwapChain2)
+        || iid == __uuidof(IDXGISwapChain3)
+        || iid == __uuidof(IDXGISwapChain4)) {
+      *object = static_cast<IDXGISwapChain4*>(this);
+      AddRef();
+      return S_OK;
+    }
+    return DXGISwapChainWrapper::QueryInterface(iid, object);
   }
 
-  const HRESULT result = real_sl_dlssg_hook_create_swapchain_for_hwnd(
-      factory,
-      device,
-      hwnd,
-      forwarded,
-      fullscreen_desc,
-      restrict_to_output,
-      swapchain);
+  HRESULT STDMETHODCALLTYPE GetDesc(DXGI_SWAP_CHAIN_DESC* desc) override {
+    const HRESULT result = DXGISwapChainWrapper::GetDesc(desc);
+    if (SUCCEEDED(result) && desc != nullptr) {
+      desc->BufferDesc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+    }
+    return result;
+  }
+
+  HRESULT STDMETHODCALLTYPE GetDesc1(DXGI_SWAP_CHAIN_DESC1* desc) override {
+    const HRESULT result = DXGISwapChainWrapper::GetDesc1(desc);
+    if (SUCCEEDED(result) && desc != nullptr) {
+      desc->Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+    }
+    return result;
+  }
+};
+
+sl::Result HookedSlGetNativeInterface(void* proxy_interface, void** base_interface) {
+  const sl::Result result = real_sl_get_native_interface(proxy_interface, base_interface);
+  if (result != sl::Result::eOk
+      || base_interface == nullptr || *base_interface == nullptr
+      || proxy_interface == nullptr
+      || dlss_fg_creation_format_fix < 0.5f
+      || swap_chain_use_hdr10 < 0.5f) {
+    return result;
+  }
+
+  Microsoft::WRL::ComPtr<IDXGISwapChain4> proxy_swapchain;
+  if (FAILED(static_cast<IUnknown*>(proxy_interface)->QueryInterface(IID_PPV_ARGS(&proxy_swapchain)))) {
+    return result;
+  }
+
+  DXGI_SWAP_CHAIN_DESC1 desc = {};
+  Microsoft::WRL::ComPtr<ID3D12Resource> back_buffer;
+  const bool target = SUCCEEDED(proxy_swapchain->GetDesc1(&desc))
+                      && desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM
+                      && desc.Width >= 128u && desc.Height >= 128u
+                      && desc.BufferCount >= 3u
+                      && SUCCEEDED(proxy_swapchain->GetBuffer(
+                          0u, IID_PPV_ARGS(&back_buffer)))
+                      && back_buffer->GetDesc().Format
+                             == DXGI_FORMAT_R10G10B10A2_UNORM;
+  if (!target) return result;
+
+  static_cast<IUnknown*>(*base_interface)->Release();
+  *base_interface = new Dl2HdrSwapChainWrapper(proxy_swapchain.Detach());
 
   std::ostringstream message;
-  message << "DL2 DLSS FG creation format: target=" << (target_swapchain ? 1 : 0)
-          << " rewrite=" << (rewrite ? 1 : 0)
-          << " requested=" << (desc != nullptr ? static_cast<uint32_t>(desc->Format) : 0u)
-          << " forwarded=" << (forwarded != nullptr ? static_cast<uint32_t>(forwarded->Format) : 0u)
-          << " returned_desc=deferred"
-          << " returned_resource=deferred"
-          << " buffers=" << (desc != nullptr ? desc->BufferCount : 0u)
-          << " size=" << (desc != nullptr ? desc->Width : 0u)
-          << "x" << (desc != nullptr ? desc->Height : 0u)
-          << " hr=0x" << std::hex << std::uppercase << static_cast<uint32_t>(result);
+  message << "DL2 DLSS FG native swapchain contract: wrapped=1 reported="
+          << static_cast<uint32_t>(desc.Format)
+          << " resource=" << static_cast<uint32_t>(back_buffer->GetDesc().Format)
+          << " forwarded=" << static_cast<uint32_t>(DXGI_FORMAT_R10G10B10A2_UNORM)
+          << " buffers=" << desc.BufferCount
+          << " size=" << desc.Width << "x" << desc.Height;
   renodx::utils::log::i(message.str().c_str());
   return result;
 }
@@ -1126,11 +1146,11 @@ void CaptureDlssFgInputSnapshot(
   for (auto& candidate : dlss_fg_input_snapshots) {
     const bool same_generation = candidate.generation == generation;
     const bool same_frame = same_generation && frame_index != UINT_MAX
-        && candidate.frame_index == frame_index;
+                            && candidate.frame_index == frame_index;
     const bool same_serial = same_generation && partial.color_committed
-        && candidate.color_committed
-        && candidate.tag_serial != 0u
-        && candidate.tag_serial == tag_serial;
+                             && candidate.color_committed
+                             && candidate.tag_serial != 0u
+                             && candidate.tag_serial == tag_serial;
     if (same_frame || same_serial) {
       snapshot = &candidate;
       break;
@@ -1166,9 +1186,10 @@ void CaptureDlssFgInputSnapshot(
   for (uint32_t index = 0u; index < partial.command_buffer_count; ++index) {
     const uint64_t command_context = partial.command_buffers[index];
     const bool known = std::find(
-        snapshot->command_buffers.begin(),
-        snapshot->command_buffers.begin() + snapshot->command_buffer_count,
-        command_context) != snapshot->command_buffers.begin() + snapshot->command_buffer_count;
+                           snapshot->command_buffers.begin(),
+                           snapshot->command_buffers.begin() + snapshot->command_buffer_count,
+                           command_context)
+                       != snapshot->command_buffers.begin() + snapshot->command_buffer_count;
     if (!known && snapshot->command_buffer_count < snapshot->command_buffers.size()) {
       snapshot->command_buffers[snapshot->command_buffer_count++] = command_context;
     }
@@ -1265,8 +1286,8 @@ RoutedStreamlineTags RouteStreamlineColorTags(const sl::ResourceTag* tags, uint3
   if (tags == nullptr || num_tags == 0u) return routed;
 
   const int32_t aux_tag_mode = dlss_fg_suppress_color_tags >= 0.5f
-      ? 3
-      : std::clamp(static_cast<int32_t>(dlss_fg_aux_tag_mode + 0.5f), 0, 3);
+                                   ? 3
+                                   : std::clamp(static_cast<int32_t>(dlss_fg_aux_tag_mode + 0.5f), 0, 3);
   const bool null_ui = aux_tag_mode == 2 || aux_tag_mode == 3;
   const bool null_hudless = aux_tag_mode == 1 || aux_tag_mode == 3;
   const bool has_aux_tag = std::any_of(tags, tags + num_tags, [](const sl::ResourceTag& tag) {
@@ -1288,8 +1309,8 @@ RoutedStreamlineTags RouteStreamlineColorTags(const sl::ResourceTag* tags, uint3
   }
 
   const int32_t previous_mode = has_aux_tag
-      ? dlss_fg_aux_tag_mode_logged.exchange(aux_tag_mode, std::memory_order_relaxed)
-      : aux_tag_mode;
+                                    ? dlss_fg_aux_tag_mode_logged.exchange(aux_tag_mode, std::memory_order_relaxed)
+                                    : aux_tag_mode;
   if (has_aux_tag && previous_mode != aux_tag_mode) {
     static constexpr std::array<const char*, 4> mode_names = {
         "original",
@@ -1386,8 +1407,8 @@ void BeginDlssFgHandoffAudit(
     audit.original_resource = reinterpret_cast<uint64_t>(original_resource->native);
     audit.original_format = original_resource->nativeFormat;
     audit.submitted_resource = submitted_resource == nullptr
-        ? 0u
-        : reinterpret_cast<uint64_t>(submitted_resource->native);
+                                   ? 0u
+                                   : reinterpret_cast<uint64_t>(submitted_resource->native);
     audit.submitted_format = submitted_resource == nullptr ? 0u : submitted_resource->nativeFormat;
     audit.submitted_clone = audit.original_resource != audit.submitted_resource;
 
@@ -1420,9 +1441,8 @@ void LogDlssFgHandoffAudit(const DlssFgHandoffAudit& audit) {
   stream << "DL2 DLSS FG handoff audit ("
          << (audit.set_tag_for_frame ? "slSetTagForFrame" : "slSetTag")
          << "): color_tags=" << audit.color_tag_count
-         << " route=" << (audit.submitted_resource == 0u ? "null"
-                              : audit.submitted_clone             ? "clone"
-                                                                  : "original")
+         << " route=" << (audit.submitted_resource == 0u ? "null" : audit.submitted_clone ? "clone"
+                                                                                          : "original")
          << " result=" << audit.result
          << " original=0x" << std::hex << std::uppercase << audit.original_resource
          << "," << audit.original_format
@@ -1590,7 +1610,8 @@ bool TryInstallDlssSrOptionsHook(HMODULE module) {
   if (DetourTransactionBegin() != NO_ERROR) return false;
   if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR
       || DetourAttach(reinterpret_cast<void**>(&real_sl_dlss_set_options),
-                      reinterpret_cast<void*>(&HookedSlDLSSSetOptions)) != NO_ERROR
+                      reinterpret_cast<void*>(&HookedSlDLSSSetOptions))
+             != NO_ERROR
       || DetourTransactionCommit() != NO_ERROR) {
     DetourTransactionAbort();
     real_sl_dlss_set_options = nullptr;
@@ -1602,7 +1623,12 @@ bool TryInstallDlssSrOptionsHook(HMODULE module) {
 }
 
 const auto& GetStreamlineHooks() {
-  static const std::array<renodx::utils::vtable::HookItem, 2> hooks = {
+  static const std::array<renodx::utils::vtable::HookItem, 3> hooks = {
+      renodx::utils::vtable::HookItem{
+          "slGetNativeInterface",
+          reinterpret_cast<void**>(&real_sl_get_native_interface),
+          reinterpret_cast<void*>(&HookedSlGetNativeInterface),
+      },
       renodx::utils::vtable::HookItem{
           "slSetTag",
           reinterpret_cast<void**>(&real_sl_set_tag),
@@ -1634,7 +1660,8 @@ bool TryInstallDlssGOptionsHook(HMODULE module) {
   if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR
       || DetourAttach(
              reinterpret_cast<void**>(&real_sl_dlssg_set_options),
-             reinterpret_cast<void*>(&HookedSlDLSSGSetOptions)) != NO_ERROR
+             reinterpret_cast<void*>(&HookedSlDLSSGSetOptions))
+             != NO_ERROR
       || DetourTransactionCommit() != NO_ERROR) {
     DetourTransactionAbort();
     real_sl_dlssg_set_options = nullptr;
@@ -1663,7 +1690,8 @@ bool TryInstallDlssGStateHook(HMODULE module) {
   if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR
       || DetourAttach(
              reinterpret_cast<void**>(&real_sl_dlssg_get_state),
-             reinterpret_cast<void*>(&HookedSlDLSSGGetState)) != NO_ERROR
+             reinterpret_cast<void*>(&HookedSlDLSSGGetState))
+             != NO_ERROR
       || DetourTransactionCommit() != NO_ERROR) {
     DetourTransactionAbort();
     real_sl_dlssg_get_state = nullptr;
@@ -1688,9 +1716,6 @@ bool TryInstallDlssGPresentHook() {
       get_plugin_function("slHookPresent"));
   real_sl_dlssg_hook_present1 = reinterpret_cast<SlDlssGHookPresent1*>(
       get_plugin_function("slHookPresent1"));
-  real_sl_dlssg_hook_create_swapchain_for_hwnd =
-      reinterpret_cast<SlDlssGHookCreateSwapChainForHwnd*>(
-          get_plugin_function("slHookCreateSwapChainForHwnd"));
   if (real_sl_dlssg_hook_present == nullptr || real_sl_dlssg_hook_present1 == nullptr) return false;
 
   if (DetourTransactionBegin() != NO_ERROR) return false;
@@ -1703,24 +1728,15 @@ bool TryInstallDlssGPresentHook() {
              reinterpret_cast<void**>(&real_sl_dlssg_hook_present1),
              reinterpret_cast<void*>(&HookedSlDlssGPresent1))
              != NO_ERROR
-      || (real_sl_dlssg_hook_create_swapchain_for_hwnd != nullptr
-          && DetourAttach(
-                 reinterpret_cast<void**>(&real_sl_dlssg_hook_create_swapchain_for_hwnd),
-                 reinterpret_cast<void*>(&HookedSlDlssGCreateSwapChainForHwnd))
-                 != NO_ERROR)
       || DetourTransactionCommit() != NO_ERROR) {
     DetourTransactionAbort();
     real_sl_dlssg_hook_present = nullptr;
     real_sl_dlssg_hook_present1 = nullptr;
-    real_sl_dlssg_hook_create_swapchain_for_hwnd = nullptr;
     return false;
   }
   dlss_fg_present_hook_installed = true;
   dlss_fg_present_hook_wait_logged = false;
-  renodx::utils::log::i(
-      real_sl_dlssg_hook_create_swapchain_for_hwnd != nullptr
-          ? "DL2 DLSS FG: plugin creation-contract and Present identity hooks installed."
-          : "DL2 DLSS FG: Present identity hooks installed; creation-contract export unavailable.");
+  renodx::utils::log::i("DL2 DLSS FG: Present identity hooks installed.");
   return true;
 }
 
@@ -1758,7 +1774,7 @@ void TryInstallStreamlineHook() {
   if (!dlss_fg_present_hook_installed && !TryInstallDlssGPresentHook()
       && !dlss_fg_present_hook_wait_logged) {
     dlss_fg_present_hook_wait_logged = true;
-    renodx::utils::log::w("DL2 DLSS FG: plugin creation-contract and Present identity hooks were not installed.");
+    renodx::utils::log::w("DL2 DLSS FG: Present identity hooks were not installed.");
   }
   TryInstallDlssSrOptionsHook(module);
 }
@@ -1811,21 +1827,15 @@ void RemoveStreamlineHook() {
                reinterpret_cast<void**>(&real_sl_dlssg_hook_present1),
                reinterpret_cast<void*>(&HookedSlDlssGPresent1))
                == NO_ERROR
-        && (real_sl_dlssg_hook_create_swapchain_for_hwnd == nullptr
-            || DetourDetach(
-                   reinterpret_cast<void**>(&real_sl_dlssg_hook_create_swapchain_for_hwnd),
-                   reinterpret_cast<void*>(&HookedSlDlssGCreateSwapChainForHwnd))
-                   == NO_ERROR)
         && DetourTransactionCommit() == NO_ERROR) {
       detached = true;
     } else {
       DetourTransactionAbort();
-      renodx::utils::log::w("DL2 DLSS FG: Present/creation detour removal failed; retaining hook state for retry.");
+      renodx::utils::log::w("DL2 DLSS FG: Present detour removal failed; retaining hook state for retry.");
     }
     if (detached) {
       real_sl_dlssg_hook_present = nullptr;
       real_sl_dlssg_hook_present1 = nullptr;
-      real_sl_dlssg_hook_create_swapchain_for_hwnd = nullptr;
       dlss_fg_present_hook_installed = false;
       dlss_fg_present_hook_wait_logged = false;
     }
@@ -2246,7 +2256,7 @@ void OnTypelessAuditInitSwapchain(reshade::api::swapchain* swapchain, bool) {
   auto* device = swapchain->get_device();
   if (device == nullptr) return;
   // Streamline can load after init_device but before its first DLSS-G buffer
-  // allocation. Retry here so the creation-contract hook is present before
+  // allocation. Retry here so the native-interface contract is active before
   // the first presentation rather than waiting for a downstream draw.
   TryInstallStreamlineHook();
   if (device->get_api() == reshade::api::device_api::d3d12) {
@@ -2418,7 +2428,8 @@ bool FindGraphicsDescriptorBinding(
       [&](const renodx::utils::pipeline_layout::PipelineLayoutData* layout_data) {
         for (uint32_t table_index = 0u;
              !found && table_index < layout_data->params.size()
-             && table_index < command_state->graphics_descriptor_tables.size(); ++table_index) {
+             && table_index < command_state->graphics_descriptor_tables.size();
+             ++table_index) {
           const auto& param = layout_data->params[table_index];
           if (param.type != reshade::api::pipeline_layout_param_type::descriptor_table) continue;
           const auto table = command_state->graphics_descriptor_tables[table_index];
@@ -2554,14 +2565,15 @@ void OnGammaAuditPushDescriptors(
   // Bindings are normally established before the Gamma draw, so start this
   // bounded cache when the one-shot button is armed rather than afterwards.
   const bool capture_downstream_inputs = downstream_draw_capture >= 0.5f
-      && !downstream_draw_capture_state.consumed;
+                                         && !downstream_draw_capture_state.consumed;
   const bool capture_fg_compute_writer = dlss_fg_compute_writer_audit_state.active;
   const bool capture_upscaler_color_path = upscaler_color_path_audit_state.active;
   const bool capture_upscaler_inputs = upscaler_input_audit_state.active;
   const bool capture_upscaler_source_writers = upscaler_source_writer_audit_state.active;
   if ((!capture_gamma_input && !capture_downstream_inputs && !capture_fg_compute_writer
        && !capture_upscaler_color_path && !capture_upscaler_inputs
-       && !capture_upscaler_source_writers) || update.count == 0u) {
+       && !capture_upscaler_source_writers)
+      || update.count == 0u) {
     return;
   }
 
@@ -2615,8 +2627,7 @@ void OnGammaAuditPushDescriptors(
                 return existing.resource == candidate.resource && existing.view_format == candidate.view_format;
               });
           if (!known_candidate && candidate.resource != 0u) {
-            upscaler_source_writer_audit_state.compute_candidates[
-                upscaler_source_writer_audit_state.compute_candidate_count++] = candidate;
+            upscaler_source_writer_audit_state.compute_candidates[upscaler_source_writer_audit_state.compute_candidate_count++] = candidate;
           }
         }
       }
@@ -2746,7 +2757,7 @@ void OnDownstreamBindRenderTargets(
     reshade::api::command_list* cmd_list,
     uint32_t count,
     const reshade::api::resource_view* rtvs,
-  reshade::api::resource_view) {
+    reshade::api::resource_view) {
   if (count != 0u && rtvs != nullptr && cmd_list != nullptr) {
     auto* device = cmd_list->get_device();
     if (device != nullptr) {
@@ -2764,13 +2775,13 @@ void OnDownstreamBindRenderTargets(
   // here, so it could report post-Gamma shader hashes but had already erased
   // every target binding before those draws executed.
   const bool keep_target_binding = downstream_draw_capture >= 0.5f
-      || downstream_transfer_capture >= 0.5f
-      || dlss_fg_producer_audit_state.active
-      || gamma_draw_audit_capture
-      || gamma_native_input_audit_capture
-      || upscaler_color_path_audit_state.active
-      || upscaler_source_writer_audit_state.active
-      || (downstream_draw_capture_state.active && !downstream_draw_capture_state.consumed);
+                                   || downstream_transfer_capture >= 0.5f
+                                   || dlss_fg_producer_audit_state.active
+                                   || gamma_draw_audit_capture
+                                   || gamma_native_input_audit_capture
+                                   || upscaler_color_path_audit_state.active
+                                   || upscaler_source_writer_audit_state.active
+                                   || (downstream_draw_capture_state.active && !downstream_draw_capture_state.consumed);
   if (!keep_target_binding || count == 0u || rtvs == nullptr) {
     downstream_capture_rtvs.erase(cmd_list);
     return;
@@ -3053,10 +3064,10 @@ inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
                                    : 0u;
   if (shader_hash == 0xAD085E81u) {
     if constexpr (std::is_same_v<Context, renodx::utils::command_action::CommandContext<
-                                           renodx::utils::command_action::DrawArguments>>) {
+                                              renodx::utils::command_action::DrawArguments>>) {
       return {.post_callback = DlssFgAdPostDraw, .replay = true};
     } else if constexpr (std::is_same_v<Context, renodx::utils::command_action::CommandContext<
-                                                renodx::utils::command_action::DrawIndexedArguments>>) {
+                                                     renodx::utils::command_action::DrawIndexedArguments>>) {
       return {.post_callback = DlssFgAdPostDrawIndexed, .replay = true};
     }
   }
@@ -3120,8 +3131,8 @@ inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
 
   auto& draw = audit.draws[audit.count];
   draw.input = input != gamma_audit_t0_views.end()
-      ? DescribeGammaAuditView(device, input->second)
-      : GammaAuditResource{};
+                   ? DescribeGammaAuditView(device, input->second)
+                   : GammaAuditResource{};
   draw.output = DescribeGammaAuditView(device, output->second);
   for (uint32_t index = 0u; index < audit.count; ++index) {
     const auto& prior_output = audit.draws[index].output;
@@ -3181,14 +3192,14 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
     instance_count = context.arguments.instance_count;
   }
   const bool likely_fullscreen_draw = draw_count >= 3u && draw_count <= 6u
-      && instance_count >= 1u && instance_count <= 4u;
+                                      && instance_count >= 1u && instance_count <= 4u;
   const bool targeted_color_shader = shader_hash == 0x3E36DA5Bu
-      || shader_hash == 0x268BAB6Du
-      || shader_hash == 0xAD085E81u;
+                                     || shader_hash == 0x268BAB6Du
+                                     || shader_hash == 0xAD085E81u;
 
   const bool capture_tonemapper_inputs = upscaler_input_audit_state.active
-      || (upscaler_source_writer_audit_state.active
-          && !upscaler_source_writer_audit_state.target_final_fg_output);
+                                         || (upscaler_source_writer_audit_state.active
+                                             && !upscaler_source_writer_audit_state.target_final_fg_output);
   if (capture_tonemapper_inputs && !is_compute && shader_hash == 0x3E36DA5Bu
       && likely_fullscreen_draw
       && (upscaler_input_audit_state.count < 4u || upscaler_source_writer_audit_state.active)) {
@@ -3208,8 +3219,8 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
         reshade::api::descriptor_type::constant_buffer, &cb0_binding);
 
     auto source = t0_binding.found
-        ? DescribeGammaAuditView(device, t0_binding.slot.resource_view)
-        : GammaAuditResource{};
+                      ? DescribeGammaAuditView(device, t0_binding.slot.resource_view)
+                      : GammaAuditResource{};
     // D3D11 may not expose the layout metadata, but its push-descriptor event
     // has already captured t0 by the time this draw callback executes.
     if (source.resource == 0u) {
@@ -3219,8 +3230,8 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       }
     }
     const auto exposure = t1_binding.found
-        ? DescribeGammaAuditView(device, t1_binding.slot.resource_view)
-        : GammaAuditResource{};
+                              ? DescribeGammaAuditView(device, t1_binding.slot.resource_view)
+                              : GammaAuditResource{};
     auto& source_writer_audit = upscaler_source_writer_audit_state;
     if (source_writer_audit.active && source.resource != 0u) {
       if (source_writer_audit.source == 0u) {
@@ -3241,8 +3252,8 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       source_writer_audit.effective_exposure = exposure.effective;
     }
     auto curve = cb0_binding.found
-        ? DescribeUpscalerCurve(device, cb0_binding.slot.buffer_range)
-        : UpscalerCurveAudit{};
+                     ? DescribeUpscalerCurve(device, cb0_binding.slot.buffer_range)
+                     : UpscalerCurveAudit{};
     if (curve.resource == 0u) {
       const auto curve_it = upscaler_input_cb0_ranges.find(context.cmd_list);
       if (curve_it != upscaler_input_cb0_ranges.end()) {
@@ -3292,14 +3303,15 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
             audit.writers.begin(), audit.writers.begin() + audit.count,
             [&](const auto& writer) {
               return writer.type == UpscalerSourceWriterType::draw
-                  && writer.shader_hash == shader_hash && writer.target == output.resource;
+                     && writer.shader_hash == shader_hash && writer.target == output.resource;
             });
         if (!known) {
           uint64_t writer_source = 0u;
           const auto input_it = downstream_capture_t0_views.find(context.cmd_list);
           if (input_it != downstream_capture_t0_views.end()) {
             writer_source = DescribeGammaAuditView(
-                context.cmd_list->get_device(), input_it->second).resource;
+                                context.cmd_list->get_device(), input_it->second)
+                                .resource;
           }
           audit.writers[audit.count++] = {
               .type = UpscalerSourceWriterType::draw,
@@ -3330,7 +3342,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
             audit.writers.begin(), audit.writers.begin() + audit.count,
             [&](const auto& writer) {
               return writer.type == UpscalerSourceWriterType::dispatch
-                  && writer.shader_hash == shader_hash && writer.target == output.resource;
+                     && writer.shader_hash == shader_hash && writer.target == output.resource;
             });
         if (!known && audit.count < audit.writers.size()) {
           uint64_t writer_source = 0u;
@@ -3362,8 +3374,8 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       if (output.width >= 128u && output.height >= 128u) {
         const auto input_it = downstream_capture_t0_views.find(context.cmd_list);
         auto input = input_it != downstream_capture_t0_views.end()
-            ? DescribeGammaAuditView(device, input_it->second)
-            : GammaAuditResource{};
+                         ? DescribeGammaAuditView(device, input_it->second)
+                         : GammaAuditResource{};
         uint32_t input_table = UINT_MAX;
         uint32_t input_binding = UINT_MAX;
         uint32_t viewport_width = 0u;
@@ -3382,7 +3394,8 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
               [&](const renodx::utils::pipeline_layout::PipelineLayoutData* layout_data) {
                 for (uint32_t table_index = 0u;
                      table_index < layout_data->params.size()
-                     && table_index < command_state->graphics_descriptor_tables.size(); ++table_index) {
+                     && table_index < command_state->graphics_descriptor_tables.size();
+                     ++table_index) {
                   const auto& param = layout_data->params[table_index];
                   if (param.type != reshade::api::pipeline_layout_param_type::descriptor_table) continue;
                   for (uint32_t range_index = 0u; range_index < param.descriptor_table.count; ++range_index) {
@@ -3465,7 +3478,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
               bound_pipeline = pixel_state->pipeline.handle;
               replacement_pipeline = pixel_state->pipeline_details->replacement_pipeline.handle;
               replacement_bound = pixel_state->pipeline_details->is_replacement
-                  || (replacement_pipeline != 0u && bound_pipeline == replacement_pipeline);
+                                  || (replacement_pipeline != 0u && bound_pipeline == replacement_pipeline);
             }
           }
           upscaler_audit.entries[upscaler_audit.count++] = {
@@ -3528,7 +3541,10 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
           || output.effective == fg_producer_audit.clone_resource) {
         bool known_shader = false;
         for (uint32_t index = 0u; index < fg_producer_audit.count; ++index) {
-          if (fg_producer_audit.pixel_shader_hashes[index] == shader_hash) { known_shader = true; break; }
+          if (fg_producer_audit.pixel_shader_hashes[index] == shader_hash) {
+            known_shader = true;
+            break;
+          }
         }
         if (!known_shader && fg_producer_audit.count < fg_producer_audit.pixel_shader_hashes.size()) {
           fg_producer_audit.pixel_shader_hashes[fg_producer_audit.count++] = shader_hash;
@@ -3643,9 +3659,9 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
     };
   }
   const bool full_size_target = candidate_target.width != 0u && candidate_target.height != 0u
-      && (capture.gamma_target == 0u
-          || (candidate_target.width * 10u >= capture.gamma_target_width * 9u
-              && candidate_target.height * 10u >= capture.gamma_target_height * 9u));
+                                && (capture.gamma_target == 0u
+                                    || (candidate_target.width * 10u >= capture.gamma_target_width * 9u
+                                        && candidate_target.height * 10u >= capture.gamma_target_height * 9u));
   if (!known_popup_ui && !full_size_target) return {};
 
   // DL2 records late work across multiple command lists. Stay bounded by the
@@ -3866,9 +3882,10 @@ bool IsDlssFgFinalHdr10Copy(
         };
       }
       const bool known_source = std::find(
-          audit.recent_sources.begin(),
-          audit.recent_sources.begin() + audit.recent_source_count,
-          source.handle) != audit.recent_sources.begin() + audit.recent_source_count;
+                                    audit.recent_sources.begin(),
+                                    audit.recent_sources.begin() + audit.recent_source_count,
+                                    source.handle)
+                                != audit.recent_sources.begin() + audit.recent_source_count;
       if (!known_source && audit.recent_source_count < audit.recent_sources.size()) {
         const uint32_t index = audit.recent_source_count++;
         audit.recent_sources[index] = source.handle;
@@ -4136,8 +4153,8 @@ void RecordUpscalerSourceTransfer(
       .type = type,
       .present_index = audit.presents + 1u,
       .command_buffer = cmd_list != nullptr
-          ? reinterpret_cast<uint64_t>(cmd_list->get_native())
-          : 0u,
+                            ? reinterpret_cast<uint64_t>(cmd_list->get_native())
+                            : 0u,
       .source = source.handle,
       .target = dest.handle,
   };
@@ -4227,7 +4244,7 @@ void OnDlssFgBackbufferBarrier(
     return;
   }
   const bool submission_audit_active = dlss_fg_mode_active.load(std::memory_order_acquire)
-                                        && dlss_fg_execute_candidate_remaining.load(std::memory_order_relaxed) != 0u;
+                                       && dlss_fg_execute_candidate_remaining.load(std::memory_order_relaxed) != 0u;
   const bool manual_capture_active = dlss_fg_backbuffer_barrier_capture.load(std::memory_order_relaxed) != 0u;
   if (!submission_audit_active && !manual_capture_active) return;
 
@@ -4457,9 +4474,10 @@ void OnDlssFgExecuteCommandList(
         continue;
       }
       const bool context_matches = std::find(
-          input.command_buffers.begin(),
-          input.command_buffers.begin() + input.command_buffer_count,
-          native_command_buffer) != input.command_buffers.begin() + input.command_buffer_count;
+                                       input.command_buffers.begin(),
+                                       input.command_buffers.begin() + input.command_buffer_count,
+                                       native_command_buffer)
+                                   != input.command_buffers.begin() + input.command_buffer_count;
       if (!context_matches) continue;
       if (matched_input == nullptr || input.tag_serial < matched_input->tag_serial) {
         matched_input = &input;
@@ -4817,7 +4835,8 @@ void RegisterDlssFgNativeQueue(reshade::api::command_queue* queue) {
   if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR
       || DetourAttach(
              reinterpret_cast<void**>(&real_dlss_fg_native_execute_command_lists),
-             reinterpret_cast<void*>(&HookedDlssFgNativeExecuteCommandLists)) != NO_ERROR
+             reinterpret_cast<void*>(&HookedDlssFgNativeExecuteCommandLists))
+             != NO_ERROR
       || DetourTransactionCommit() != NO_ERROR) {
     DetourTransactionAbort();
     real_dlss_fg_native_execute_command_lists = nullptr;
@@ -4842,7 +4861,8 @@ void RemoveDlssFgNativeExecuteHook() {
         && DetourUpdateThread(GetCurrentThread()) == NO_ERROR
         && DetourDetach(
                reinterpret_cast<void**>(&real_dlss_fg_native_execute_command_lists),
-               reinterpret_cast<void*>(&HookedDlssFgNativeExecuteCommandLists)) == NO_ERROR
+               reinterpret_cast<void*>(&HookedDlssFgNativeExecuteCommandLists))
+               == NO_ERROR
         && DetourTransactionCommit() == NO_ERROR) {
       dlss_fg_native_execute_hook_installed = false;
       real_dlss_fg_native_execute_command_lists = nullptr;
@@ -5026,11 +5046,11 @@ void OnDownstreamDrawCapturePresent(
       stream << " presents=" << audit.presents << " count=" << audit.count;
       for (uint32_t index = 0u; index < audit.count; ++index) {
         const auto& writer = audit.writers[index];
-        const char* type = writer.type == UpscalerSourceWriterType::draw ? "draw"
-                         : writer.type == UpscalerSourceWriterType::dispatch ? "dispatch"
-                         : writer.type == UpscalerSourceWriterType::copy_resource ? "CopyResource"
-                         : writer.type == UpscalerSourceWriterType::copy_texture_region ? "CopyTexture"
-                                                                                       : "ResolveTexture";
+        const char* type = writer.type == UpscalerSourceWriterType::draw                  ? "draw"
+                           : writer.type == UpscalerSourceWriterType::dispatch            ? "dispatch"
+                           : writer.type == UpscalerSourceWriterType::copy_resource       ? "CopyResource"
+                           : writer.type == UpscalerSourceWriterType::copy_texture_region ? "CopyTexture"
+                                                                                          : "ResolveTexture";
         stream << " #" << (index + 1u) << " present=" << writer.present_index
                << " " << type;
         if (writer.shader_hash != 0u) {
@@ -5132,9 +5152,9 @@ void OnDownstreamDrawCapturePresent(
            << " count=" << std::dec << audit.count;
     for (uint32_t index = 0u; index < audit.count; ++index) {
       const auto& transfer = audit.transfers[index];
-      const char* type = transfer.type == DownstreamTransferType::copy_resource ? "CopyResource"
+      const char* type = transfer.type == DownstreamTransferType::copy_resource         ? "CopyResource"
                          : transfer.type == DownstreamTransferType::copy_texture_region ? "CopyTexture"
-                                                                                         : "ResolveTexture";
+                                                                                        : "ResolveTexture";
       stream << " " << type << "(0x" << std::hex << std::uppercase << transfer.source
              << "," << static_cast<uint32_t>(transfer.source_format)
              << ",clone=0x" << transfer.source_clone
@@ -5320,11 +5340,11 @@ void OnDownstreamDrawCapturePresent(
       const auto& input = capture.inputs[index];
       if (input.resource != 0u) {
         const bool reads_anchor = input.resource == capture.gamma_target
-            || input.resource == capture.gamma_target_clone
-            || input.resource == capture.gamma_target_effective
-            || input.effective == capture.gamma_target
-            || input.effective == capture.gamma_target_clone
-            || input.effective == capture.gamma_target_effective;
+                                  || input.resource == capture.gamma_target_clone
+                                  || input.resource == capture.gamma_target_effective
+                                  || input.effective == capture.gamma_target
+                                  || input.effective == capture.gamma_target_clone
+                                  || input.effective == capture.gamma_target_effective;
         stream << "<-t0(0x" << input.resource << ", " << static_cast<uint32_t>(input.format)
                << "=>0x" << input.effective << ", " << static_cast<uint32_t>(input.effective_format)
                << ", view=" << static_cast<uint32_t>(input.view_format) << "=>"
@@ -5339,9 +5359,9 @@ void OnDownstreamDrawCapturePresent(
     stream << "DL2 post-Gamma transfers (" << capture.transfer_count << "):";
     for (uint32_t index = 0u; index < capture.transfer_count; ++index) {
       const auto& transfer = capture.transfers[index];
-      const char* type = transfer.type == DownstreamTransferType::copy_resource ? "CopyResource"
+      const char* type = transfer.type == DownstreamTransferType::copy_resource         ? "CopyResource"
                          : transfer.type == DownstreamTransferType::copy_texture_region ? "CopyTexture"
-                                                                                         : "ResolveTexture";
+                                                                                        : "ResolveTexture";
       stream << " " << type << "(0x" << std::hex << std::uppercase << transfer.source << ", "
              << static_cast<uint32_t>(transfer.source_format) << " => 0x" << transfer.dest << ", "
              << static_cast<uint32_t>(transfer.dest_format)
@@ -5432,8 +5452,8 @@ bool ActivateDl2HdrTarget(reshade::api::command_list* cmd_list) {
         rtv,
         [&](const renodx::utils::resource::ResourceViewInfo& info) {
           has_active_clone = has_active_clone
-              || info.is_clone
-              || (info.clone_enabled && info.clone.handle != 0u);
+                             || info.is_clone
+                             || (info.clone_enabled && info.clone.handle != 0u);
         });
   }
   if (has_active_clone) {
@@ -5452,8 +5472,7 @@ bool ActivateDl2HdrTarget(reshade::api::command_list* cmd_list) {
                 renodx::utils::shader::GetCurrentShaderHash(
                     shader_state, renodx::utils::shader::PIXEL_INDEX)),
             " bound=", renodx::utils::log::AsPtr(pixel_state->pipeline.handle),
-            " replacement=", renodx::utils::log::AsPtr(
-                pixel_state->pipeline_details->replacement_pipeline.handle),
+            " replacement=", renodx::utils::log::AsPtr(pixel_state->pipeline_details->replacement_pipeline.handle),
             " is_replacement=", pixel_state->pipeline_details->is_replacement ? 1 : 0);
       }
     }
@@ -5509,7 +5528,8 @@ bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
             [&](const renodx::utils::pipeline_layout::PipelineLayoutData* layout_data) {
               for (uint32_t table_index = 0u;
                    table_index < layout_data->params.size()
-                   && table_index < command_state->graphics_descriptor_tables.size(); ++table_index) {
+                   && table_index < command_state->graphics_descriptor_tables.size();
+                   ++table_index) {
                 const auto& param = layout_data->params[table_index];
                 if (param.type != reshade::api::pipeline_layout_param_type::descriptor_table) continue;
                 for (uint32_t range_index = 0u; range_index < param.descriptor_table.count; ++range_index) {
@@ -5624,17 +5644,17 @@ renodx::mods::shader::CustomShader CreateDl2UiWriterProbeShader(
   return shader;
 }
 
-#define Dl2UiWriterProbeShader(__crc32__)                                \
-  {                                                                      \
-      __crc32__, CreateDl2UiWriterProbeShader(                           \
-                     __crc32__,                                          \
-                     RENODX_JOIN_MACRO(__##__crc32__, _dx11),            \
+#define Dl2UiWriterProbeShader(__crc32__)                     \
+  {                                                           \
+      __crc32__, CreateDl2UiWriterProbeShader(                \
+                     __crc32__,                               \
+                     RENODX_JOIN_MACRO(__##__crc32__, _dx11), \
                      RENODX_JOIN_MACRO(__##__crc32__, _dx12))}
 
-#define TargetedDl2HdrShader(__crc32__)                     \
-  {                                                         \
-      __crc32__, CreateDl2HdrShader(                        \
-                     __crc32__,                             \
+#define TargetedDl2HdrShader(__crc32__)                       \
+  {                                                           \
+      __crc32__, CreateDl2HdrShader(                          \
+                     __crc32__,                               \
                      RENODX_JOIN_MACRO(__##__crc32__, _dx11), \
                      RENODX_JOIN_MACRO(__##__crc32__, _dx12))}
 
@@ -6118,9 +6138,9 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
         .default_value = 1.f,
         .can_reset = false,
-        .label = "DLSS FG RGB10 Creation Contract (Restart)",
+        .label = "DLSS FG RGB10 Native Contract (Restart)",
         .section = "Compatibility",
-        .tooltip = "DL2-specific creation-time fix. Before DLSS-G creates its fake swapchain buffers, reports the same RGB10 format used by RenoDX's real HDR10 backbuffers. Requires a game restart; it does not affect DLSS SR or non-FG swapchains.",
+        .tooltip = "DL2-specific Streamline interface fix. When the swapchain reports RGBA8 but its actual RenoDX HDR10 backbuffer is RGB10, GetDesc/GetDesc1 report RGB10 to Streamline before DLSS-G allocates its generated-frame buffers. Requires a game restart.",
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -6767,8 +6787,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         typeless_candidate_mask = (uint64_t{1} << 2) | (uint64_t{1} << 3);
       }
       const bool enable_typeless_upgrade = upgrade_all_typeless
-          || semantic_typeless_hot_swap
-          || typeless_candidate_mask != 0u;
+                                           || semantic_typeless_hot_swap
+                                           || typeless_candidate_mask != 0u;
       const bool enable_unorm_upgrades = resource_upgrade_test != 10;
       renodx::utils::log::i(
           "DL2 typeless candidate test: mode=",
@@ -6793,28 +6813,28 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       if (enable_typeless_upgrade) {
         if (upgrade_all_typeless || semantic_typeless_hot_swap) {
           renodx::mods::swapchain::resource_upgrade_infos.push_back({
-            .old_format = reshade::api::format::r8g8b8a8_typeless,
-            .new_format = semantic_typeless_hot_swap
-                ? reshade::api::format::r16g16b16a16_typeless
-                : reshade::api::format::r16g16b16a16_float,
-            .ignore_size = false,
-            .use_resource_view_cloning = true,
-            .use_resource_view_hot_swap = semantic_typeless_hot_swap,
-            .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
-            .usage_include = reshade::api::resource_usage::render_target,
+              .old_format = reshade::api::format::r8g8b8a8_typeless,
+              .new_format = semantic_typeless_hot_swap
+                                ? reshade::api::format::r16g16b16a16_typeless
+                                : reshade::api::format::r16g16b16a16_float,
+              .ignore_size = false,
+              .use_resource_view_cloning = true,
+              .use_resource_view_hot_swap = semantic_typeless_hot_swap,
+              .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
+              .usage_include = reshade::api::resource_usage::render_target,
           });
         } else {
           for (int32_t candidate_index = 0; candidate_index < 64; ++candidate_index) {
             if ((typeless_candidate_mask & (uint64_t{1} << candidate_index)) == 0u) continue;
             renodx::mods::swapchain::resource_upgrade_infos.push_back({
-              .old_format = reshade::api::format::r8g8b8a8_typeless,
-              .new_format = reshade::api::format::r16g16b16a16_float,
-              .index = candidate_index,
-              .ignore_size = false,
-              .use_resource_view_cloning = true,
-              .use_resource_view_hot_swap = false,
-              .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
-              .usage_include = reshade::api::resource_usage::render_target,
+                .old_format = reshade::api::format::r8g8b8a8_typeless,
+                .new_format = reshade::api::format::r16g16b16a16_float,
+                .index = candidate_index,
+                .ignore_size = false,
+                .use_resource_view_cloning = true,
+                .use_resource_view_hot_swap = false,
+                .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
+                .usage_include = reshade::api::resource_usage::render_target,
             });
           }
         }
@@ -6825,25 +6845,25 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // native passes.
       if (enable_unorm_upgrades) {
         renodx::mods::swapchain::resource_upgrade_infos.push_back({
-          .old_format = reshade::api::format::r8g8b8a8_unorm,
-          .new_format = reshade::api::format::r16g16b16a16_float,
-          .ignore_size = false,
-          .use_resource_view_cloning = true,
-          .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
-          .usage_include = reshade::api::resource_usage::render_target,
+            .old_format = reshade::api::format::r8g8b8a8_unorm,
+            .new_format = reshade::api::format::r16g16b16a16_float,
+            .ignore_size = false,
+            .use_resource_view_cloning = true,
+            .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
+            .usage_include = reshade::api::resource_usage::render_target,
         });
 
-      // Preserve the sRGB composite's HDR headroom as well. Removing this rule
-      // caps the proxy input near 1.0 (about the 203-nit reference white). The
-      // typeless rule above, not this sRGB rule, caused the DLSS mode split.
+        // Preserve the sRGB composite's HDR headroom as well. Removing this rule
+        // caps the proxy input near 1.0 (about the 203-nit reference white). The
+        // typeless rule above, not this sRGB rule, caused the DLSS mode split.
         renodx::mods::swapchain::resource_upgrade_infos.push_back({
-          .old_format = reshade::api::format::r8g8b8a8_unorm_srgb,
-          .new_format = reshade::api::format::r16g16b16a16_float,
-          .ignore_size = false,
-          .use_resource_view_cloning = true,
-          .use_resource_view_hot_swap = true,
-          .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
-          .usage_include = reshade::api::resource_usage::render_target,
+            .old_format = reshade::api::format::r8g8b8a8_unorm_srgb,
+            .new_format = reshade::api::format::r16g16b16a16_float,
+            .ignore_size = false,
+            .use_resource_view_cloning = true,
+            .use_resource_view_hot_swap = true,
+            .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
+            .usage_include = reshade::api::resource_usage::render_target,
         });
       }
 
