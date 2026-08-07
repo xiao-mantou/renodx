@@ -167,8 +167,7 @@ using SlDlssGHookCreateSwapChainForHwnd = HRESULT(
     const DXGI_SWAP_CHAIN_DESC1*,
     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*,
     IDXGIOutput*,
-    IDXGISwapChain1**,
-    bool&);
+    IDXGISwapChain1**);
 SlDlssGHookPresent* real_sl_dlssg_hook_present = nullptr;
 SlDlssGHookPresent1* real_sl_dlssg_hook_present1 = nullptr;
 SlDlssGHookCreateSwapChainForHwnd* real_sl_dlssg_hook_create_swapchain_for_hwnd = nullptr;
@@ -980,8 +979,7 @@ HRESULT HookedSlDlssGCreateSwapChainForHwnd(
     const DXGI_SWAP_CHAIN_DESC1* desc,
     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreen_desc,
     IDXGIOutput* restrict_to_output,
-    IDXGISwapChain1** swapchain,
-    bool& skip) {
+    IDXGISwapChain1** swapchain) {
   DXGI_SWAP_CHAIN_DESC1 forwarded_desc = desc != nullptr ? *desc : DXGI_SWAP_CHAIN_DESC1{};
   const DXGI_SWAP_CHAIN_DESC1* forwarded = desc;
 
@@ -1010,8 +1008,7 @@ HRESULT HookedSlDlssGCreateSwapChainForHwnd(
       forwarded,
       fullscreen_desc,
       restrict_to_output,
-      swapchain,
-      skip);
+      swapchain);
 
   std::ostringstream message;
   message << "DL2 DLSS FG creation format: target=" << (target_swapchain ? 1 : 0)
@@ -1023,7 +1020,6 @@ HRESULT HookedSlDlssGCreateSwapChainForHwnd(
           << " buffers=" << (desc != nullptr ? desc->BufferCount : 0u)
           << " size=" << (desc != nullptr ? desc->Width : 0u)
           << "x" << (desc != nullptr ? desc->Height : 0u)
-          << " skip=" << (skip ? 1 : 0)
           << " hr=0x" << std::hex << std::uppercase << static_cast<uint32_t>(result);
   renodx::utils::log::i(message.str().c_str());
   return result;
