@@ -298,6 +298,7 @@ struct DlssFgBridgeComputeUse {
 };
 
 struct DlssFgBridgedTray {
+  std::shared_ptr<DlssFgBridgePass> prepared;
   uint64_t swapchain_generation = 0u;
   uint64_t handoff_epoch = 0u;
   uint64_t producer_serial = 0u;
@@ -3977,6 +3978,21 @@ bool IsDlssFgBridgedTray(uint64_t resource) {
          && iterator->second.consumer_fence_value != 0u;
 }
 
+std::shared_ptr<DlssFgBridgePass> GetDlssFgBridgedTrayPass(uint64_t resource) {
+  if (resource == 0u) return nullptr;
+  const auto generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
+  const auto handoff_epoch = dlss_fg_handoff_epoch.load(std::memory_order_acquire);
+  std::scoped_lock lock(dlss_fg_bridge_mutex);
+  const auto iterator = dlss_fg_bridged_trays.find(resource);
+  if (iterator == dlss_fg_bridged_trays.end()
+      || iterator->second.swapchain_generation != generation
+      || iterator->second.handoff_epoch != handoff_epoch
+      || iterator->second.consumer_fence_value == 0u) {
+    return nullptr;
+  }
+  return iterator->second.prepared;
+}
+
 void RecordUpscalerSourceTransfer(
     UpscalerSourceWriterType type,
     reshade::api::command_list* cmd_list,
@@ -4332,7 +4348,43 @@ void OnDlssFgExecuteCommandList(
 
   const int32_t final_color_mode = std::clamp(
       static_cast<int32_t>(dlss_fg_final_color_mode + 0.5f), 0, 11);
-  const bool bridge_ready = IsDlssFgBridgedTray(candidate.copy_source);
+  bool bridge_ready = IsDlssFgBridgedTray(candidate.copy_source);
+  if (bridge_ready && queue != nullptr && queue->get_device() != nullptr
+      && queue->get_device()->get_api() == reshade::api::device_api::d3d12) {
+    const auto prepared = GetDlssFgBridgedTrayPass(candidate.copy_source);
+    auto* native_queue = reinterpret_cast<ID3D12CommandQueue*>(
+        static_cast<uintptr_t>(queue->get_native()));
+    if (prepared != nullptr && prepared->consumer_fence != nullptr && native_queue != nullptr) {
+      uint64_t consumer_value = 0u;
+      {
+        std::scoped_lock lock(dlss_fg_prepared_command_mutex);
+        consumer_value = prepared->consumer_fence_value;
+      }
+      if (consumer_value != 0u) {
+        const HRESULT wait_hr = native_queue->Wait(prepared->consumer_fence.Get(), consumer_value);
+        if (FAILED(wait_hr)) {
+          bridge_ready = false;
+          std::ostringstream message;
+          message << "DL2 DLSS FG final tray fence: wait failed hr=0x" << std::hex
+                  << static_cast<uint32_t>(wait_hr) << std::dec
+                  << " tray=0x" << candidate.copy_source << " fallback=native";
+          renodx::utils::log::w(message.str().c_str());
+        } else {
+          static std::atomic_uint32_t final_tray_wait_diagnostic_count = 0u;
+          const auto diagnostic =
+              final_tray_wait_diagnostic_count.fetch_add(1u, std::memory_order_relaxed);
+          if (diagnostic < 16u) {
+            std::ostringstream message;
+            message << "DL2 DLSS FG final tray fence: wait queue=0x" << std::hex
+                    << reinterpret_cast<uintptr_t>(native_queue) << std::dec
+                    << " tray=0x" << std::hex << candidate.copy_source
+                    << " value=" << std::dec << consumer_value;
+            renodx::utils::log::i(message.str().c_str());
+          }
+        }
+      }
+    }
+  }
   const bool roundtrip_final_color = final_color_mode != 0 && final_color_mode != 11;
   uint32_t source_format = 0u;
   const bool classification_active =
@@ -4611,6 +4663,7 @@ void STDMETHODCALLTYPE HookedDlssFgNativeExecuteCommandLists(
       for (const auto& use : completed_uses) {
         if (use.handoff_epoch != current_epoch) continue;
         dlss_fg_bridged_trays[use.tray] = {
+            .prepared = use.prepared,
             .swapchain_generation = use.generation,
             .handoff_epoch = use.handoff_epoch,
             .producer_serial = use.producer_serial,

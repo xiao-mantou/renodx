@@ -90,3 +90,5 @@ Final review tightened this to per-slot producer and consumer fences; a single s
 Source destruction now moves prepared slots to deferred retirement and releases them during bridge teardown, avoiding both unsafe immediate destruction and an ownership leak across resource recreation.
 
 Runtime result: `6202457` improved the black flash but still alternated final submissions between `bridge_ready=0` and `bridge_ready=1`; the same log also showed `pool_exhausted=1`. The next focused change retains the last published tray during replacement and increases the bounded slot pool to 8 per source. No PQ or color compensation changes are included.
+
+Follow-up result: `bridge_ready=1` became stable, but residual previous-frame content remained. The final copy queue and Streamline Compute queue are different handles, so the next build adds a targeted consumer-fence wait at final copy submission. Success requires `DL2 DLSS FG final tray fence: wait ...` without `wait failed`, and no new global stall.
