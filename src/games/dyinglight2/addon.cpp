@@ -2695,7 +2695,11 @@ bool PrepareDlssFgComputeSource(reshade::api::command_list* cmd_list) {
     return false;
   }
 
-  constexpr uint32_t kMaxPreparedSlotsPerSource = 4u;
+  // Streamline can queue several producer frames before its matching Compute
+  // copy is submitted. Keep enough immutable trays to absorb that latency;
+  // falling back to the native tray while a replacement is pending causes a
+  // visible frame-to-frame color/brightness toggle.
+  constexpr uint32_t kMaxPreparedSlotsPerSource = 8u;
   const uint64_t handoff_epoch = dlss_fg_handoff_epoch.load(std::memory_order_acquire);
   std::shared_ptr<DlssFgBridgePass> prepared;
   uint64_t record_serial = 0u;
@@ -3778,9 +3782,9 @@ bool RenderDlssFgAdBridge(
     const auto iterator = dlss_fg_ad_effective_targets.find(source.handle);
     if (iterator == dlss_fg_ad_effective_targets.end()) return false;
     effective_source_handle = iterator->second;
-    // A new eligible 0xAD-to-tray copy supersedes any previously published
-    // tray version, including early exits before a prepared slot is selected.
-    dlss_fg_bridged_trays.erase(dest.handle);
+    // Keep the last submitted tray valid until its replacement is actually
+    // published. Clearing it here creates a window where the final copy falls
+    // back to the native path between the Streamline copy and our bridge copy.
     const auto state_iterator = dlss_fg_ad_clone_states.find(effective_source_handle);
     if (state_iterator != dlss_fg_ad_clone_states.end()) {
       effective_source_state = state_iterator->second;

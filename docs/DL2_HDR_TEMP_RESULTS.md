@@ -88,3 +88,5 @@ The remaining concrete race is prepared-resource reuse: the existing fence order
 Final review tightened this to per-slot producer and consumer fences; a single shared monotonic value is unsafe when more than one native queue can signal it. Reset now releases unsubmitted reservations, and mode/swapchain changes advance a handoff epoch so late old work cannot publish a current tray. The live Auxiliary-tag switch is already proven effective and is not part of this build's test matrix.
 
 Source destruction now moves prepared slots to deferred retirement and releases them during bridge teardown, avoiding both unsafe immediate destruction and an ownership leak across resource recreation.
+
+Runtime result: `6202457` improved the black flash but still alternated final submissions between `bridge_ready=0` and `bridge_ready=1`; the same log also showed `pool_exhausted=1`. The next focused change retains the last published tray during replacement and increases the bounded slot pool to 8 per source. No PQ or color compensation changes are included.
