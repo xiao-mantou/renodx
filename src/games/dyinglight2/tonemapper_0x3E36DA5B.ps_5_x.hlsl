@@ -360,7 +360,11 @@ void main(
     const float2 tile_uv = frac(v1.xy * 2.0);
     const uint quadrant = (v1.x >= 0.5 ? 1u : 0u) + (v1.y >= 0.5 ? 2u : 0u);
     const float4 tile_source = t0.SampleLevel(s0_s, tile_uv, 0);
-    const float3 tile_scene = tile_source.rgb * 0.6 * adaptive_exposure;
+    const float3 tile_scene_linear = tile_source.rgb * 0.6;
+    const float tile_luminance = renodx::color::y::from::BT709(max(tile_scene_linear, 0.0));
+    const float tile_protection = smoothstep(protection_start, protection_end, tile_luminance);
+    const float tile_adaptive_exposure = lerp(exposure, protected_exposure, tile_protection);
+    const float3 tile_scene = tile_scene_linear * tile_adaptive_exposure;
     const float3 tile_vanilla = ApplyDL2SDRCurve(tile_scene, cb0[0], cb0[1]);
     const float3 tile_neutral = renodx::tonemap::renodrt::NeutralSDR(tile_scene);
     const float3 current = ScaleToneMappedScene(
@@ -375,7 +379,9 @@ void main(
         : quadrant == 1u ? anchored_10
         : quadrant == 2u ? anchored_5
         : anchored_20;
-    o0.a = tile_source.a;
+    // Keep this diagnostic opaque so a later composite cannot reveal the
+    // untouched full-screen source underneath the four quadrants.
+    o0.a = 1.0;
     return;
   }
 
