@@ -8,6 +8,7 @@ on:
     paths:
       - .github/workflows/streamline-dl2-trace.yml
       - docs/patches/streamline-v2.9-dl2-trace.patch
+      - docs/patches/streamline-v2.9-dl2-trace-arm.patch
 
 jobs:
   build:
@@ -25,7 +26,9 @@ jobs:
 
       - name: Apply bounded DL2 trace
         shell: pwsh
-        run: git -C streamline apply ../docs/patches/streamline-v2.9-dl2-trace.patch
+        run: |
+          git -C streamline apply --whitespace=fix ../docs/patches/streamline-v2.9-dl2-trace.patch
+          git -C streamline apply --recount --whitespace=fix ../docs/patches/streamline-v2.9-dl2-trace-arm.patch
 
       - name: Generate Visual Studio project
         shell: cmd
@@ -44,7 +47,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force artifact | Out-Null
           Copy-Item streamline/_artifacts/sl.interposer/Develop_x64/sl.interposer.dll artifact/
-          Set-Content artifact/README.txt 'DL2 diagnostic Streamline 2.9.0 interposer only. Back up the original sl.interposer.dll before replacing it. Restore the original after collecting logs; keep sl.common.dll and sl.dlss_g.dll unchanged.'
+          Set-Content artifact/ARM_TRACE.cmd '@echo off', 'type nul > "%~dp0dl2_streamline_trace.arm"'
+          Set-Content artifact/README.txt 'DL2 diagnostic Streamline 2.9.0 interposer only. Copy ARM_TRACE.cmd beside sl.interposer.dll, then run it after entering the target FG scene; its marker is consumed automatically and records the next 256 Present1 calls. Restore the original DLL after collecting sl.log; keep sl.common.dll and sl.dlss_g.dll unchanged.'
 
       - name: Upload diagnostic package
         uses: actions/upload-artifact@v4

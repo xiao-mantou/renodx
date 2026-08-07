@@ -1,0 +1,122 @@
+diff --git a/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp b/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp
+--- a/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp
++++ b/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp
+@@ -24,7 +24,9 @@
+ #include <wrl/client.h>
+ #include <d3d11.h>
+ #include <atomic>
++#include <chrono>
+ #include <mutex>
+ 
+ #include "include/sl_hooks.h"
+@@ -33,6 +35,7 @@
+ #include "source/core/sl.interposer/d3d12/d3d12Device.h"
+ #include "source/core/sl.interposer/d3d12/d3d12CommandQueue.h"
+ #include "source/core/sl.api/internal.h"
++#include "source/core/sl.file/file.h"
+ #include "source/core/sl.log/log.h"
+ #include "source/core/sl.plugin-manager/pluginManager.h"
+ #include "source/core/sl.exception/exception.h"
+@@ -174,7 +177,36 @@
+ static SwapChainTracker g_swapChainTracker;
+ static std::atomic<uint32_t> g_dl2PresentTraceCount{0};
+ static std::atomic<uint32_t> g_dl2Present1TraceCount{0};
++static std::atomic<uint32_t> g_dl2Present1TraceRemaining{0};
+ static std::atomic<uint32_t> g_dl2ResizeTraceCount{0};
++static std::atomic<uint32_t> g_dl2Present1ArmPollCount{0};
++
++static bool beginDL2Present1Trace(uint32_t& traceIndex)
++{
++    if (g_dl2Present1TraceRemaining.load(std::memory_order_relaxed) == 0)
++    {
++        const uint32_t poll = g_dl2Present1ArmPollCount.fetch_add(1, std::memory_order_relaxed);
++        if ((poll & 15u) != 0)
++        {
++            return false;
++        }
++        static const std::wstring armPath = sl::file::getModulePath() + L"\\dl2_streamline_trace.arm";
++        const DWORD attributes = GetFileAttributesW(armPath.c_str());
++        if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0 && DeleteFileW(armPath.c_str()))
++        {
++            g_dl2Present1TraceCount.store(0, std::memory_order_relaxed);
++            g_dl2Present1TraceRemaining.store(256, std::memory_order_relaxed);
++            SL_LOG_INFO("DL2 SL Present1 trace armed path=%ls frames=256", armPath.c_str());
++        }
++    }
++
++    uint32_t remaining = g_dl2Present1TraceRemaining.load(std::memory_order_relaxed);
++    while (remaining != 0)
++    {
++        if (g_dl2Present1TraceRemaining.compare_exchange_weak(
++                remaining, remaining - 1, std::memory_order_relaxed, std::memory_order_relaxed))
++        {
++            traceIndex = g_dl2Present1TraceCount.fetch_add(1, std::memory_order_relaxed);
++            return true;
++        }
++    }
++    return false;
++}
+ 
+ ULONG   STDMETHODCALLTYPE DXGISwapChain::Release()
+ {
+@@ -518,8 +550,9 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present1(UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS* pPresentParameters)
+ {
+     auto present = [this](UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS* pPresentParameters)->HRESULT
+     {
+-        const uint32_t traceIndex = g_dl2Present1TraceCount.fetch_add(1, std::memory_order_relaxed);
+-        const bool trace = traceIndex < 128;
++        uint32_t traceIndex = 0;
++        const bool trace = beginDL2Present1Trace(traceIndex);
++        const auto traceStart = std::chrono::steady_clock::now();
+         if (trace)
+         {
+             SL_LOG_INFO("DL2 SL Present1[%u] begin sc=0x%p tid=%lu sync=%u flags=0x%X params=%u", traceIndex,
+@@ -531,7 +564,17 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present1(UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS* pPresentParameters)
+         HRESULT hr = S_OK;
+         for (auto [hook, feature] : hooks)
+         {
++            if (trace)
++            {
++                SL_LOG_INFO("DL2 SL Present1[%u] before_hook feature=%u skip_before=%u", traceIndex,
++                    static_cast<uint32_t>(feature), skip ? 1 : 0);
++            }
+             hr = ((PFunPresent1Before*)hook)(m_base, SyncInterval, PresentFlags, pPresentParameters, skip);
++            if (trace)
++            {
++                SL_LOG_INFO("DL2 SL Present1[%u] after_hook feature=%u hr=0x%08X skip_after=%u", traceIndex,
++                    static_cast<uint32_t>(feature), static_cast<uint32_t>(hr), skip ? 1 : 0);
++            }
+             if (FAILED(hr))
+             {
+                 SL_LOG_WARN("PFunPresent1Before failed %s", std::system_category().message(hr).c_str());
+@@ -556,7 +599,17 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present1(UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS* pPresentParameters)
+             const auto& hooksAfter = sl::plugin_manager::getInterface()->getAfterHooks(hooksId);
+             for (auto [hook, feature] : hooksAfter)
+             {
++                if (trace)
++                {
++                    SL_LOG_INFO("DL2 SL Present1[%u] after_present_hook_begin feature=%u", traceIndex,
++                        static_cast<uint32_t>(feature));
++                }
+                 hr = ((PFunPresentAfter*)hook)(PresentFlags);
++                if (trace)
++                {
++                    SL_LOG_INFO("DL2 SL Present1[%u] after_present_hook_end feature=%u hr=0x%08X", traceIndex,
++                        static_cast<uint32_t>(feature), static_cast<uint32_t>(hr));
++                }
+                 if (FAILED(hr))
+                 {
+                     SL_LOG_WARN("PFunPresentAfter failed %s", std::system_category().message(hr).c_str());
+@@ -568,7 +621,12 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present1(UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS* pPresentParameters)
+ 
+         if (trace)
+         {
+-            SL_LOG_INFO("DL2 SL Present1[%u] end hr=0x%08X", traceIndex, static_cast<uint32_t>(hr));
++            const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
++                std::chrono::steady_clock::now() - traceStart).count();
++            SL_LOG_INFO("DL2 SL Present1[%u] end hr=0x%08X elapsed_us=%lld remaining=%u", traceIndex,
++                static_cast<uint32_t>(hr), static_cast<long long>(elapsedUs),
++                g_dl2Present1TraceRemaining.load(std::memory_order_relaxed));
+         }
+ 
+         return hr;
