@@ -100,3 +100,5 @@ The bounded v2.9 interposer trace now covers `Present1`, `Present`, resize, and 
 Runtime `bda1b4c`: after adding `sl.interposer.json` with a verbose log path, the diagnostic interposer generated `sl.log` and emitted the expected `DL2 SL Present1` lines. The original 128-call window was exhausted about 5.5 seconds after startup, before the target FG scene, so those samples cannot diagnose the focused-FG handoff.
 
 The follow-up trace is armed by creating `dl2_streamline_trace.arm` beside `sl.interposer.dll` after entering the target scene. The marker is consumed automatically, then the next 256 `Present1` calls record per-feature hook ids, `skip` transitions, base return values, and elapsed time. This remains read-only and adds no queue wait or color mutation.
+
+The DL2 Debug setting `Arm Streamline Present1 Trace (256)` creates the same marker beside the addon DLL, which is the game `x64` directory shared with `sl.interposer.dll`. `sl.interposer.json` still controls the log sink and is not rewritten at runtime.

@@ -47,6 +47,53 @@
 namespace {
 
 ShaderInjectData shader_injection;
+HMODULE addon_module = nullptr;
+
+bool ArmStreamlinePresentTrace() {
+  if (addon_module == nullptr) {
+    renodx::utils::log::e("DL2 Streamline Present1 trace arm failed: addon module unavailable");
+    return false;
+  }
+
+  std::array<wchar_t, 32768> module_path = {};
+  const DWORD length = GetModuleFileNameW(
+      addon_module, module_path.data(), static_cast<DWORD>(module_path.size()));
+  if (length == 0 || length >= module_path.size()) {
+    std::ostringstream stream;
+    stream << "DL2 Streamline Present1 trace arm failed: module path error="
+           << GetLastError();
+    renodx::utils::log::e(stream.str().c_str());
+    return false;
+  }
+
+  std::wstring marker_path(module_path.data(), length);
+  const size_t separator = marker_path.find_last_of(L"\\/");
+  if (separator == std::wstring::npos) {
+    renodx::utils::log::e("DL2 Streamline Present1 trace arm failed: module directory unavailable");
+    return false;
+  }
+  marker_path.resize(separator + 1);
+  marker_path += L"dl2_streamline_trace.arm";
+
+  const HANDLE marker = CreateFileW(
+      marker_path.c_str(),
+      GENERIC_WRITE,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      nullptr,
+      CREATE_ALWAYS,
+      FILE_ATTRIBUTE_NORMAL,
+      nullptr);
+  if (marker == INVALID_HANDLE_VALUE) {
+    std::ostringstream stream;
+    stream << "DL2 Streamline Present1 trace arm failed: create error="
+           << GetLastError();
+    renodx::utils::log::e(stream.str().c_str());
+    return false;
+  }
+  CloseHandle(marker);
+  renodx::utils::log::i("DL2 Streamline Present1 trace armed: frames=256");
+  return true;
+}
 
 // 0 = HDR10 (RGB10 + BT.2100 PQ), 1 = scRGB (FP16 + linear).
 // DLSS Frame Generation requires HDR10/PQ, so that is the default. The value is
@@ -6120,6 +6167,16 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Arm Streamline Present1 Trace (256)",
+        .section = "Debug",
+        .tooltip = "Creates the one-shot marker consumed by the diagnostic Streamline interposer. It records the next 256 Present1 calls in sl.log and does not change rendering, colors, or queue timing. sl.interposer.json must already enable the log path.",
+        .on_click = []() {
+          ArmStreamlinePresentTrace();
+          return false; },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture DLSS FG Present Cadence (16)",
         .section = "Debug",
         .tooltip = "One-shot: records 16 Present events as color-tag serial plus current backbuffer handle. It does not capture draws, descriptors, resources, or GPU data.",
@@ -6450,6 +6507,7 @@ extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION = "RenoDX for
 BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   switch (fdw_reason) {
     case DLL_PROCESS_ATTACH: {
+      addon_module = h_module;
       if (!reshade::register_addon(h_module)) return FALSE;
 
       // This bounded diagnostic needs the D3D12 descriptor heap and command
