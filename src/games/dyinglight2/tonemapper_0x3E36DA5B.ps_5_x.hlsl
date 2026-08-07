@@ -57,7 +57,9 @@ float3 ToneMapDL2Anchored(
   const float y = renodx::color::y::from::BT709(max(graded, 0.0));
   const float peak = max(RENODX_PEAK_WHITE_NITS / 203.0, 1.0);
   const float game = max(RENODX_DIFFUSE_WHITE_NITS / 203.0, 0.01);
-  const float clip = max(input_clip, 1.0);
+  // The input anchor must remain above the output peak ratio. This prevents
+  // the curve from entering its invalid region when Peak is raised.
+  const float clip = max(input_clip, peak + 0.001);
   const float mapped_y = renodx::tonemap::Neutwo(y, peak, clip, 1.0, game);
   const float scale = y > 0.00001 ? mapped_y / y : 1.0;
   return max(graded, 0.0) * scale;
@@ -396,6 +398,7 @@ void main(
 
   o0.rgb = RENODX_TONE_MAP_TYPE == 0.0
       ? vanilla
-      : ScaleToneMappedScene(renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr));
+      : ToneMapDL2Anchored(untonemapped, vanilla, neutral_sdr,
+                           RENODX_RENO_DRT_WHITE_CLIP);
   o0.a = source.a;
 }
