@@ -91,6 +91,22 @@ float3 ToneMapDL2Separated(
   return max(graded, 0.0) * scale;
 }
 
+// Fixed 203-nit scene mapping for post-LUT paper-white diagnostics. Game is
+// deliberately absent so the later 0x268 pass can own that control.
+float3 ToneMapDL2FixedScene(
+    float3 untonemapped,
+    float3 vanilla,
+    float3 neutral_sdr) {
+  const float3 graded = renodx::draw::ComputeUntonemappedGraded(
+      untonemapped, vanilla, neutral_sdr);
+  const float y = renodx::color::y::from::BT709(max(graded, 0.0));
+  const float peak = max(RENODX_PEAK_WHITE_NITS / 203.0, 1.0);
+  const float clip = max(RENODX_RENO_DRT_WHITE_CLIP, peak + 0.001);
+  const float mapped_y = renodx::tonemap::Neutwo(y, peak, clip, 1.0, 1.0);
+  const float scale = y > 0.00001 ? mapped_y / y : 1.0;
+  return max(graded, 0.0) * scale;
+}
+
 // Exact DL2 SDR curve recovered from the original shader. This is evaluated
 // with the original t1 exposure and passed to RenoDRT as the SDR reference.
 float3 ApplyDL2SDRCurve(float3 color, float4 curve0, float4 curve1) {
@@ -443,7 +459,8 @@ void main(
 
   const bool downstream_color_grid = (RENODX_DEBUG_MODE > 28.5 && RENODX_DEBUG_MODE < 31.5)
       || (RENODX_DEBUG_MODE > 34.5 && RENODX_DEBUG_MODE < 35.5);
-  if (RENODX_DEBUG_MODE > 5.5 && !downstream_color_grid) {
+  const bool post_lut_game_probe = RENODX_DEBUG_MODE > 39.5 && RENODX_DEBUG_MODE < 42.5;
+  if (RENODX_DEBUG_MODE > 5.5 && !downstream_color_grid && !post_lut_game_probe) {
     const float target_white = RENODX_PEAK_WHITE_NITS / 203.0;
     o0.rgb = renodx::draw::RenderIntermediatePass(float3(target_white, target_white, target_white));
     o0.a = 1.0;
@@ -452,7 +469,9 @@ void main(
 
   o0.rgb = RENODX_TONE_MAP_TYPE == 0.0
       ? vanilla
-      : ToneMapDL2Anchored(untonemapped, vanilla, neutral_sdr,
-                           RENODX_RENO_DRT_WHITE_CLIP);
+      : post_lut_game_probe
+          ? ToneMapDL2FixedScene(untonemapped, vanilla, neutral_sdr)
+          : ToneMapDL2Anchored(untonemapped, vanilla, neutral_sdr,
+                               RENODX_RENO_DRT_WHITE_CLIP);
   o0.a = source.a;
 }
