@@ -150,15 +150,17 @@ void main(
 
   // Apply Game after the world LUT but before the independently matched UI
   // writers. Modes 40/41 limit the adjustment to low/mid luminance; mode 42
-  // is a whole-frame scaling control.
-  if (RENODX_DEBUG_MODE > 39.5 && RENODX_DEBUG_MODE < 45.5) {
+  // is a whole-frame scaling control. The normal path uses the validated
+  // exit@2 weight: Game changes paper-white and low/mid range only, leaving
+  // the highlight shoulder and cloud peak to Peak Brightness.
+  {
     const float game_scale = max(RENODX_DIFFUSE_WHITE_NITS / 203.0, 0.01);
     const float luminance = renodx::color::y::from::BT709(max(o0.rgb, 0.0));
-    float game_weight = 1.0;
-    if (RENODX_DEBUG_MODE < 40.5 || RENODX_DEBUG_MODE > 42.5) {
-      game_weight = 1.0 - smoothstep(1.0, 2.0, luminance);
-    } else if (RENODX_DEBUG_MODE < 41.5) {
+    float game_weight = 1.0 - smoothstep(1.0, 2.0, luminance);
+    if (RENODX_DEBUG_MODE > 40.5 && RENODX_DEBUG_MODE < 41.5) {
       game_weight = 1.0 - smoothstep(1.0, 4.0, luminance);
+    } else if (RENODX_DEBUG_MODE > 41.5 && RENODX_DEBUG_MODE < 42.5) {
+      game_weight = 1.0;
     }
     o0.rgb *= lerp(1.0, game_scale, game_weight);
   }

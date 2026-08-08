@@ -498,7 +498,14 @@ void main(
                                                : 16.0)
       : post_lut_game_probe
           ? ToneMapDL2FixedScene(untonemapped, vanilla, neutral_sdr)
-          : ToneMapDL2Anchored(untonemapped, vanilla, neutral_sdr,
-                               RENODX_RENO_DRT_WHITE_CLIP);
+          // RenoDRT normal path uses the validated Hermite curve (DebugMode
+          // 44 = Source White 8), now driven by the UI Source White control.
+          // The Anchored and Separated candidates stay available in the
+          // diagnostic grids; ACES/None keep their previous curve.
+          : RENODX_TONE_MAP_TYPE == 3.0
+              ? ToneMapDL2FixedHermite(untonemapped, vanilla, neutral_sdr,
+                                       RENODX_RENO_DRT_WHITE_CLIP)
+              : ToneMapDL2Anchored(untonemapped, vanilla, neutral_sdr,
+                                   RENODX_RENO_DRT_WHITE_CLIP);
   o0.a = source.a;
 }
