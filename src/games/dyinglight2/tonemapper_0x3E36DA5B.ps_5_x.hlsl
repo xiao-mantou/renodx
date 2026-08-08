@@ -60,7 +60,7 @@ float3 ToneMapDL2Anchored(
   // The input anchor must remain above the output peak ratio. This prevents
   // the curve from entering its invalid region when Peak is raised.
   const float clip = max(input_clip, peak + 0.001);
-  const float mapped_y = renodx::tonemap::Neutwo(y, peak, clip, 1.0, game);
+  const float mapped_y = min(renodx::tonemap::Neutwo(y, peak, clip, 1.0, game), peak);
   const float scale = y > 0.00001 ? mapped_y / y : 1.0;
   return max(graded, 0.0) * scale;
 }
@@ -83,7 +83,7 @@ float3 ToneMapDL2Separated(
   const float peak = max(RENODX_PEAK_WHITE_NITS / 203.0, 1.0);
   const float game = max(RENODX_DIFFUSE_WHITE_NITS / 203.0, 0.01);
   const float clip = max(RENODX_RENO_DRT_WHITE_CLIP, peak + 0.001);
-  const float fixed_y = renodx::tonemap::Neutwo(y, peak, clip, 1.0, 1.0);
+  const float fixed_y = min(renodx::tonemap::Neutwo(y, peak, clip, 1.0, 1.0), peak);
   const float low_y = fixed_y * game;
   const float blend = smoothstep(1.0, max(transition_end, 1.001), y);
   const float mapped_y = lerp(low_y, fixed_y, blend);
@@ -102,9 +102,30 @@ float3 ToneMapDL2FixedScene(
   const float y = renodx::color::y::from::BT709(max(graded, 0.0));
   const float peak = max(RENODX_PEAK_WHITE_NITS / 203.0, 1.0);
   const float clip = max(RENODX_RENO_DRT_WHITE_CLIP, peak + 0.001);
-  const float mapped_y = renodx::tonemap::Neutwo(y, peak, clip, 1.0, 1.0);
+  const float mapped_y = min(renodx::tonemap::Neutwo(y, peak, clip, 1.0, 1.0), peak);
   const float scale = y > 0.00001 ? mapped_y / y : 1.0;
   return max(graded, 0.0) * scale;
+}
+
+// Bounded display mapping in DL2's fixed 203-nit scene units. Source White
+// is the scene value mapped to Peak and is independent from Game Brightness.
+float3 ToneMapDL2FixedHermite(
+    float3 untonemapped,
+    float3 vanilla,
+    float3 neutral_sdr,
+    float source_white) {
+  const float3 graded = max(renodx::draw::ComputeUntonemappedGraded(
+                                untonemapped, vanilla, neutral_sdr),
+                            0.0);
+  const float max_channel = max(graded.r, max(graded.g, graded.b));
+  const float peak = max(RENODX_PEAK_WHITE_NITS / 203.0, 1.0);
+  const float mapped_max = max_channel > 0.0
+      ? min(renodx::tonemap::HermiteSplineLuminanceRolloff(
+                max_channel, peak, max(source_white, peak + 0.001)),
+            peak)
+      : 0.0;
+  const float scale = max_channel > 0.00001 ? mapped_max / max_channel : 1.0;
+  return graded * scale;
 }
 
 // Exact DL2 SDR curve recovered from the original shader. This is evaluated
@@ -459,7 +480,7 @@ void main(
 
   const bool downstream_color_grid = (RENODX_DEBUG_MODE > 28.5 && RENODX_DEBUG_MODE < 31.5)
       || (RENODX_DEBUG_MODE > 34.5 && RENODX_DEBUG_MODE < 35.5);
-  const bool post_lut_game_probe = RENODX_DEBUG_MODE > 39.5 && RENODX_DEBUG_MODE < 42.5;
+  const bool post_lut_game_probe = RENODX_DEBUG_MODE > 39.5 && RENODX_DEBUG_MODE < 45.5;
   if (RENODX_DEBUG_MODE > 5.5 && !downstream_color_grid && !post_lut_game_probe) {
     const float target_white = RENODX_PEAK_WHITE_NITS / 203.0;
     o0.rgb = renodx::draw::RenderIntermediatePass(float3(target_white, target_white, target_white));
@@ -469,6 +490,12 @@ void main(
 
   o0.rgb = RENODX_TONE_MAP_TYPE == 0.0
       ? vanilla
+      : RENODX_DEBUG_MODE > 42.5 && RENODX_DEBUG_MODE < 45.5
+          ? ToneMapDL2FixedHermite(
+                untonemapped, vanilla, neutral_sdr,
+                RENODX_DEBUG_MODE < 43.5 ? 4.0
+                    : RENODX_DEBUG_MODE < 44.5 ? 8.0
+                                               : 16.0)
       : post_lut_game_probe
           ? ToneMapDL2FixedScene(untonemapped, vanilla, neutral_sdr)
           : ToneMapDL2Anchored(untonemapped, vanilla, neutral_sdr,
