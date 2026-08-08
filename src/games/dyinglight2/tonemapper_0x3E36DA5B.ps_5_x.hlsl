@@ -65,6 +65,32 @@ float3 ToneMapDL2Anchored(
   return max(graded, 0.0) * scale;
 }
 
+// Strict DL2 separation candidate: Game affects only the paper-white range,
+// while the Neutwo shoulder remains in fixed 203-nit scene units.
+float3 ToneMapDL2Separated(
+    float3 untonemapped,
+    float3 vanilla,
+    float3 neutral_sdr,
+    float transition_end) {
+  if (RENODX_TONE_MAP_TYPE != 3.0) {
+    return ScaleToneMappedScene(
+        renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr));
+  }
+
+  const float3 graded = renodx::draw::ComputeUntonemappedGraded(
+      untonemapped, vanilla, neutral_sdr);
+  const float y = renodx::color::y::from::BT709(max(graded, 0.0));
+  const float peak = max(RENODX_PEAK_WHITE_NITS / 203.0, 1.0);
+  const float game = max(RENODX_DIFFUSE_WHITE_NITS / 203.0, 0.01);
+  const float clip = max(RENODX_RENO_DRT_WHITE_CLIP, peak + 0.001);
+  const float fixed_y = renodx::tonemap::Neutwo(y, peak, clip, 1.0, 1.0);
+  const float low_y = fixed_y * game;
+  const float blend = smoothstep(1.0, max(transition_end, 1.001), y);
+  const float mapped_y = lerp(low_y, fixed_y, blend);
+  const float scale = y > 0.00001 ? mapped_y / y : 1.0;
+  return max(graded, 0.0) * scale;
+}
+
 // Exact DL2 SDR curve recovered from the original shader. This is evaluated
 // with the original t1 exposure and passed to RenoDRT as the SDR reference.
 float3 ApplyDL2SDRCurve(float3 color, float4 curve0, float4 curve1) {
@@ -383,6 +409,34 @@ void main(
         : anchored_20;
     // Keep this diagnostic opaque so a later composite cannot reveal the
     // untouched full-screen source underneath the four quadrants.
+    o0.a = 1.0;
+    return;
+  }
+
+  // Compare strict paper-white separation with two transition widths.
+  if (RENODX_DEBUG_MODE > 38.5 && RENODX_DEBUG_MODE < 39.5) {
+    const float2 tile_uv = frac(v1.xy * 2.0);
+    const uint quadrant = (v1.x >= 0.5 ? 1u : 0u) + (v1.y >= 0.5 ? 2u : 0u);
+    const float4 tile_source = t0.SampleLevel(s0_s, tile_uv, 0);
+    const float3 tile_scene_linear = tile_source.rgb * 0.6;
+    const float tile_luminance = renodx::color::y::from::BT709(max(tile_scene_linear, 0.0));
+    const float tile_protection = smoothstep(protection_start, protection_end, tile_luminance);
+    const float tile_exposure = lerp(exposure, protected_exposure, tile_protection);
+    const float3 tile_scene = tile_scene_linear * tile_exposure;
+    const float3 tile_vanilla = ApplyDL2SDRCurve(tile_scene, cb0[0], cb0[1]);
+    const float3 tile_neutral = renodx::tonemap::renodrt::NeutralSDR(tile_scene);
+    const float3 current = ScaleToneMappedScene(
+        renodx::draw::ToneMapPass(tile_scene, tile_vanilla, tile_neutral));
+    const float3 anchored = ToneMapDL2Anchored(
+        tile_scene, tile_vanilla, tile_neutral, RENODX_RENO_DRT_WHITE_CLIP);
+    const float3 separated_2 = ToneMapDL2Separated(
+        tile_scene, tile_vanilla, tile_neutral, 2.0);
+    const float3 separated_3 = ToneMapDL2Separated(
+        tile_scene, tile_vanilla, tile_neutral, 3.0);
+    o0.rgb = quadrant == 0u ? current
+        : quadrant == 1u ? anchored
+        : quadrant == 2u ? separated_2
+        : separated_3;
     o0.a = 1.0;
     return;
   }
