@@ -28,6 +28,21 @@ float3 DebugChroma(float3 color) {
   return saturate(color / peak);
 }
 
+// Linear segmented false color. Unlike DebugFalseColor, the bands are uniform
+// in the displayed value rather than log2, so low night values do not collapse
+// into one blue region and absolute levels are readable at a glance.
+float3 DebugLinearSegments(float value) {
+  const float v = max(0.0, value);
+  if (v < 0.01) return float3(0.05, 0.05, 0.1);    // near black
+  if (v < 0.25) return float3(0.1, 0.1, 1.0);      // 0.01-0.25 deep blue
+  if (v < 0.5) return float3(0.0, 0.8, 1.0);       // 0.25-0.5 cyan
+  if (v < 1.0) return float3(0.0, 1.0, 0.0);       // 0.5-1.0 green
+  if (v < 2.0) return float3(1.0, 1.0, 0.0);       // 1-2 yellow
+  if (v < 4.0) return float3(1.0, 0.55, 0.0);      // 2-4 orange
+  if (v < 8.0) return float3(1.0, 0.0, 0.0);       // 4-8 red
+  return float3(1.0, 1.0, 1.0);                    // >8 white
+}
+
 // DL2's Linear BT.709 intermediate uses a fixed physical unit of
 // 1.0 = 203 nits. RenoDX ToneMapPass returns values relative to the selected
 // Game Brightness, so convert that relative output back into DL2's fixed unit.
@@ -202,6 +217,17 @@ void main(
   }
   if (RENODX_DEBUG_MODE > 10.5 && RENODX_DEBUG_MODE < 11.5) {
     o0 = float4(renodx::draw::RenderIntermediatePass(DebugFalseColor(exposure)), 1.0);
+    return;
+  }
+  // Same raw t0 source as mode 10, but this time as DL2's full auto-exposed
+  // scene (scene_linear * exposure) and with a linear segmented palette. This
+  // shows what the game actually sees before the SDR curve: low night walls
+  // read blue/green and any light source at or above scene 1.0 reads
+  // yellow/orange/red/white, so the nighttime highlight gap becomes readable.
+  if (RENODX_DEBUG_MODE > 45.5 && RENODX_DEBUG_MODE < 46.5) {
+    const float3 exposed_scene = scene_linear * exposure;
+    const float exposed_range = max(exposed_scene.r, max(exposed_scene.g, exposed_scene.b));
+    o0 = float4(renodx::draw::RenderIntermediatePass(DebugLinearSegments(exposed_range)), 1.0);
     return;
   }
   // Normalize out intensity so DLSS modes can be compared for t0 chroma
