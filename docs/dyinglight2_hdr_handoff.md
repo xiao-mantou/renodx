@@ -59,7 +59,6 @@ DLSS/FG resource upgrade and timing code is fragile. Do not modify it while tuni
 5. Build once, then test Game 100 and 200 with identical Peak/SourceWhite; inspect cloud peak/detail and UI separately.
 
 ## 2026-08-08 Implementation (items 1-4 done, uncommitted)
-
 Working tree on `codex/dl2-hdr-next` now contains:
 
 - `addon.cpp`: `ToneMapWhiteClip` label renamed to `HDR Source White`, default 8, tooltip documents scene units (1.0 = 203 nits) and independence from Game Brightness. `OnPresetOff` reset updated to 8. Key/binding unchanged.
@@ -84,4 +83,31 @@ GitHub Actions is the build path; local FXC is unavailable/unreliable. Use `git 
 ## Streamline note
 
 `sl.log` was mostly startup/exit resource logging (~117 KB/~762 lines); no dedicated `dl2_streamline_trace.arm` was observed. Do not treat it as the primary cause of HDR brightness behavior. Runtime JSON log path was set to the DL2 binary directory.
+
+## 2026-08-09 Night highlight diagnosis and Night Scene Gain
+
+### Night probe results (DebugMode 46, live)
+
+- Mode 10 (raw `source.rgb`, no 0.6, no exposure): all deep blue -> every pixel < 0.25 in raw t0 units.
+- Mode 11 (exposure scalar `t1`): yellow-green -> exposure ~1.5-2.0 at night.
+- Mode 46 (`source * 0.6 * exposure`, linear segmented palette): mostly gray/cyan-blue, scattered purple, occasional green/yellow/red. So exposed scene is mostly 0.05-0.5 with local spikes to 1-8. The scene has real HDR structure (lights register up to ~8 scene units = >1500 nits raw); the majority is just physically dark.
+
+### Two structural findings
+
+1. **The Hermite knee is near scene 1.06.** `ToneMapDL2FixedHermite` runs `HermiteSplineLuminanceRolloff(max_channel, peak, source_white)` in log2 space; the spline knee sits at `1.5*log2(peak)/log2(source_white) - 0.5`, which for peak=422 nit (2.08 scene) and source_white=8 is at luminance ~1.06. Below that, the curve is identity -> the entire night scene (< 1.06) passes through unshaped. This is why night reads flat/gray: the curve only shapes the lights, not the dark bulk. It was validated for daytime cloud preservation, not night contrast.
+2. **Exposure-protection controls barely move at night as configured.** At `RenoExposureStrength=75` and exposure ~2, `protected_exposure = lerp(1, 2, 0.75) = 1.75`, so the protection blend range is 2.0 vs 1.75 - nearly flat. Changing `RenoHDRProtectionStart` (0.75 -> 0.05) moves `adaptive_exposure` by ~0.02. Additionally, DebugMode 46 bypasses protection entirely (it uses raw `exposure`), so tuning protection sliders while Mode 46 is active produces no visible change by design.
+
+### Fix: Night Scene Gain
+
+- New UI slider `Night Scene Gain` (`night_scene_gain`, default 1.0, range 0.1-10, section Tone Mapping, visible at SettingsMode >= 1).
+- Applied as `scene_linear = source.rgb * 0.6 * max(gain, 0.01)` at the top of `0x3E36DA5B`. All downstream paths (`vanilla`, `untonemapped`, `neutral_sdr`, protection) derive from `scene_linear`, so they scale together; wall-vs-light ratios are preserved while the curve shapes the now-in-range values. Mode 46 also uses `scene_linear`, so it doubles as the gain-tuning tool.
+- `ShaderInjectData` gained a trailing `float night_scene_gain`; CB upload size grows in lockstep via `sizeof`. No default behavior change (gain=1.0 is identity).
+- Default 1.0 keeps daytime unchanged; raise to ~2-4 at night until Mode 46 shows walls in green and lights yellow/orange/red, then set DebugMode to Off.
+
+### Recommended night test
+
+1. Full restart with DebugMode=46, Game=203, Peak=422, SourceWhite=8.
+2. Raise Night Scene Gain to ~3; confirm walls lift from deep blue to green/cyan and lights reach yellow/orange/red.
+3. Set DebugMode=0 (normal path). Verify night is visible with lights clearly above the surrounding walls, then tune Game/Peak for the final look.
+4. If walls become too bright (daytime-feel), lower gain rather than Game, since gain is scene calibration and Game is the paper-white reference.
 
