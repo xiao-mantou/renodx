@@ -73,9 +73,8 @@ float3 DebugDarkSceneLinear(float value) {
 }
 
 // 5x7 pixel glyphs (bit k set = column k from the left, 1 = lit).
-// Digit 0-9, then '.' as the last entry.
+// Index 0-9 = digits, 10 = decimal point.
 uint DebugGlyph(int digit, int row) {
-  // k = 0..9 digits, 10 = decimal point.
   const int k = clamp(digit, 0, 10);
   const uint patterns[11][7] = {
       {14, 17, 17, 17, 17, 17, 14},  // 0
@@ -93,23 +92,25 @@ uint DebugGlyph(int digit, int row) {
   return patterns[k][clamp(row, 0, 6)];
 }
 
-// Draws "Ex" followed by one integer digit and one decimal digit (e.g. E1.5)
-// into the top-left corner using the 5x7 glyphs. Returns white text on a
-// semi-transparent dark chip so it stays readable over any probe image.
+// Draws "E" (t1 global baseline label) followed by the baseline value as one
+// integer digit and one decimal digit (e.g. E1.5, or E8.1 for a large night
+// baseline). This is t1[0] only, NOT the per-pixel auto-exposure result: the
+// real exposure is t1[0] * cb0 curve * pixel luminance. Wide gaps and a
+// prominent dot keep "1.5" from reading as "15".
 float3 DebugExposureOverlay(float2 uv, float exposure) {
-  const float2 chip0 = float2(0.015, 0.015);
-  const float2 chip1 = float2(0.19, 0.06);
+  const float2 chip0 = float2(0.015, 0.012);
+  const float2 chip1 = float2(0.24, 0.06);
   if (uv.x < chip0.x || uv.x > chip1.x || uv.y < chip0.y || uv.y > chip1.y) {
-    return float3(0.0, 0.0, 0.0);  // outside chip: transparent (caller sees through)
+    return float3(0.0, 0.0, 0.0);
   }
   const int whole = clamp((int)exposure, 0, 9);
   const int tenth = clamp((int)((exposure - floor(exposure)) * 10.0 + 0.5), 0, 9);
-  // Glyph cells: "E", digit(whole), '.', digit(tenth).
-  const int glyphs[4] = {11, whole, 10, tenth};  // 11 = 'E' letter
-  const float cell_x = 0.0075;
+  // Cells: 'E', digit(whole), '.', digit(tenth).
+  const int glyphs[4] = {11, whole, 10, tenth};
+  const float cell_x = 0.011;
   const float cell_y = 0.006;
   for (int i = 0; i < 4; ++i) {
-    const float x0 = chip0.x + i * (5.0 * cell_x + 0.005);
+    const float x0 = chip0.x + i * (5.0 * cell_x + 0.009);
     const float x1 = x0 + 5.0 * cell_x;
     if (uv.x < x0 || uv.x >= x1) continue;
     const int col = (int)((uv.x - x0) / cell_x);
@@ -316,15 +317,16 @@ void main(
     o0 = float4(renodx::draw::RenderIntermediatePass(DebugLinearSegments(exposed_range)), 1.0);
     return;
   }
-  // Dark-scene absolute luminance with the exposure scalar overlaid. Values
-  // below 2.0 use a continuous linear gradient so the 0.05-0.5 night bulk keeps
-  // visible separation; values above 2.0 are log-compressed to red/white so
-  // lights do not dominate the palette. The white numeric chip in the top-left
-  // shows the live auto-exposure value (Ex, e.g. E1.5) read from t1.
+  // Dark-scene absolute luminance of the RAW t0 scene, continuous linear
+  // palette. Unlike Mode 46 this does NOT multiply by t1[0] - scaling the whole
+  // frame by one scalar reads like a uniform filter. It matches Source t0 Range
+  // (Mode 10) but with the linear 0-2 palette and log-compressed highlights, so
+  // the 0.05-0.5 night bulk keeps visible gradient and lights reach orange/red.
+  // The top-left chip shows the t1[0] global exposure baseline ONLY; the real
+  // per-pixel exposure is t1[0] * cb0 curve * pixel luminance.
   if (RENODX_DEBUG_MODE > 46.5 && RENODX_DEBUG_MODE < 47.5) {
-    const float3 exposed_scene = scene_linear * exposure;
-    const float exposed_range = max(exposed_scene.r, max(exposed_scene.g, exposed_scene.b));
-    const float3 probe = renodx::draw::RenderIntermediatePass(DebugDarkSceneLinear(exposed_range));
+    const float raw_range = max(source.r, max(source.g, source.b));
+    const float3 probe = renodx::draw::RenderIntermediatePass(DebugDarkSceneLinear(raw_range));
     const float3 readout = DebugExposureOverlay(v1.xy, exposure);
     o0 = float4(probe + readout, 1.0);
     return;
