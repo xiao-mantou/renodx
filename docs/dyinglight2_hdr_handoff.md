@@ -111,3 +111,10 @@ GitHub Actions is the build path; local FXC is unavailable/unreliable. Use `git 
 3. Set DebugMode=0 (normal path). Verify night is visible with lights clearly above the surrounding walls, then tune Game/Peak for the final look.
 4. If walls become too bright (daytime-feel), lower gain rather than Game, since gain is scene calibration and Game is the paper-white reference.
 
+## 2026-08-10 Debug probe upgrades: Dark Scene + exposure readout, Quick Debug Probe
+
+- Legacy DebugMode 47 = `Dark Scene Absolute Luminance + Exposure Readout`. Continuous palette: values 0-2 map strictly linearly (deep blue -> cyan -> green -> yellow -> orange), values >2 are log2-compressed (orange -> red -> white) so lights do not dominate the palette. The displayed value is the auto-exposed scene `max(scene_linear * exposure)`. A white 5x7 glyph chip in the top-left corner renders the live auto-exposure scalar from t1 (e.g. `E1.5`).
+- New Debug-section setting `Quick Debug Probe` (`QuickDebugMode`, index only, own binding so it cannot fight `DebugMode` during preset load). It maps to the useful probes: 1=47 Dark Scene+Exposure, 2=46 Exposed Linear Segments, 3=11 Auto Exposure, 4=10 Source t0 Range, 5=19 Source t0 Chroma, 6=44 Hermite SW8, 7=45 Hermite SW16. Switching it writes `shader_injection.debug_mode` on change.
+- Both probes render through `RenderIntermediatePass` so they survive the game's later composite passes.
+- Diagnostic use: with Dark Scene + Exposure, night bulk should read dark blue/cyan/green with lights at yellow/orange/red; the corner chip confirms exposure ~0.4 day vs ~1.5-2 night for the eventual auto-exposure-driven day/night adaptive gain.
+

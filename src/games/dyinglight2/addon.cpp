@@ -5694,6 +5694,10 @@ renodx::mods::shader::CustomShaders custom_shaders = {
 };
 
 float current_settings_mode = 0;
+// Quick Debug Probe stores its own index; on change it forwards the mapped
+// mode number into debug_mode. Keeping a separate binding avoids two settings
+// writing the same variable during preset load (DebugMode stays canonical).
+float quick_debug_mode = 0;
 float resource_upgrade_test_setting = 0.f;
 
 renodx::utils::settings::Settings settings = {
@@ -6465,6 +6469,47 @@ renodx::utils::settings::Settings settings = {
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
+        .key = "QuickDebugMode",
+        .binding = &quick_debug_mode,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "Quick Debug Probe",
+        .section = "Debug",
+        .tooltip = "Shortcut to the most useful night-HDR probes without scrolling the full Legacy Debug Mode list. Dark Scene Absolute Luminance shows the auto-exposed scene with a linear 0-2 palette, log-compressed highlights, and a live exposure readout in the top-left corner.",
+        .labels = {"Off", "Dark Scene + Exposure", "Exposed Linear Segments", "Auto Exposure t1", "Source t0 Range", "Source t0 Chroma", "Hermite Source White 8", "Hermite Source White 16"},
+        .on_change_value = [](float previous, float current) {
+          const int32_t index = static_cast<int32_t>(current + 0.5f);
+          switch (index) {
+            case 1:
+              shader_injection.debug_mode = 47.f;  // Dark Scene Absolute Luminance + Exposure Readout
+              break;
+            case 2:
+              shader_injection.debug_mode = 46.f;  // Auto-Exposed Scene Linear Segments
+              break;
+            case 3:
+              shader_injection.debug_mode = 11.f;  // Auto Exposure t1
+              break;
+            case 4:
+              shader_injection.debug_mode = 10.f;  // Source t0 Range
+              break;
+            case 5:
+              shader_injection.debug_mode = 19.f;  // Source t0 Chroma
+              break;
+            case 6:
+              shader_injection.debug_mode = 44.f;  // Post-LUT Hermite Source White 8
+              break;
+            case 7:
+              shader_injection.debug_mode = 45.f;  // Post-LUT Hermite Source White 16
+              break;
+            default:
+              shader_injection.debug_mode = 0.f;   // Off
+              break;
+          }
+        },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
         .key = "DebugMode",
         .binding = &shader_injection.debug_mode,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
@@ -6473,7 +6518,7 @@ renodx::utils::settings::Settings settings = {
         .label = "Legacy Debug Mode",
         .section = "Debug",
         .tooltip = "False-color visualization and output probes. Luminance Ladder places four known scene values in the lower-right corner.",
-        .labels = {"Off", "HDR Input Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500-nit red)", "Scene Probe (Peak white)", "Output Luminance Ladder", "Raw Output Ladder", "Late LUT Output Ladder", "Source t0 Range", "Auto Exposure t1", "Bypass Late Gamma (Test)", "LUT Output Constant (500-nit white)", "Gamma Output Constant (500-nit white)", "Final Proxy Constant (500-nit white)", "Gamma Input t0 Range", "Gamma Power cb0", "Stability Probe (4 stages; top bypass, bottom Gamma)", "Source t0 Chroma", "Vanilla SDR Chroma", "RenoDRT Output Chroma", "Vanilla SDR Direct", "RenoDRT Output Direct", "Proxy No Gamut Compression", "Proxy Decode Grid (709/2020 x Linear/sRGB/2.2)", "0x3E Legacy sRGB Output (A/B)", "Post-LUT Blit Constant (6.25x white)", "DLSS Off Grid at 0x3E", "DLSS Off Grid after LUT", "DLSS Off Grid after Gamma", "DLSS Off Grid at Proxy", "DLSS Off Input Semantics (TL linear, TR sRGB decode, BL gamma 2.2, BR half decode)", "DLSS Off 0x268 Partial Decode (TL 0%, TR 25%, BL 50%, BR 75%)", "DLSS Off 0x3E Bridge Grid (TL source, TR vanilla, BL scaled HDR, BR unscaled HDR)", "DLSS Off 0x268 LUT Grid (TL native, TR upgraded, BL stable, BR current)", "FG Final Proxy Source Range (4 quadrants)", "DL2 HDR Expansion Grid (TL baseline, TR no 0.6, BL fixed highlights, BR Peak-driven)", "DL2 Game/Peak Anchor Grid (TL current, TR clip10, BL clip5, BR clip20)", "DL2 Game Separation Grid (TL current, TR anchored, BL split@2, BR split@3)", "Post-LUT Game Low/Mid (exit@2)", "Post-LUT Game Low/Mid (exit@4)", "Post-LUT Game Uniform Control", "Post-LUT Hermite Source White 4", "Post-LUT Hermite Source White 8", "Post-LUT Hermite Source White 16", "Auto-Exposed Scene Linear Segments (night highlight probe)"},
+        .labels = {"Off", "HDR Input Range", "Neutral SDR", "Graded SDR", "RenoDRT Output", "Output Probe (500-nit red)", "Scene Probe (Peak white)", "Output Luminance Ladder", "Raw Output Ladder", "Late LUT Output Ladder", "Source t0 Range", "Auto Exposure t1", "Bypass Late Gamma (Test)", "LUT Output Constant (500-nit white)", "Gamma Output Constant (500-nit white)", "Final Proxy Constant (500-nit white)", "Gamma Input t0 Range", "Gamma Power cb0", "Stability Probe (4 stages; top bypass, bottom Gamma)", "Source t0 Chroma", "Vanilla SDR Chroma", "RenoDRT Output Chroma", "Vanilla SDR Direct", "RenoDRT Output Direct", "Proxy No Gamut Compression", "Proxy Decode Grid (709/2020 x Linear/sRGB/2.2)", "0x3E Legacy sRGB Output (A/B)", "Post-LUT Blit Constant (6.25x white)", "DLSS Off Grid at 0x3E", "DLSS Off Grid after LUT", "DLSS Off Grid after Gamma", "DLSS Off Grid at Proxy", "DLSS Off Input Semantics (TL linear, TR sRGB decode, BL gamma 2.2, BR half decode)", "DLSS Off 0x268 Partial Decode (TL 0%, TR 25%, BL 50%, BR 75%)", "DLSS Off 0x3E Bridge Grid (TL source, TR vanilla, BL scaled HDR, BR unscaled HDR)", "DLSS Off 0x268 LUT Grid (TL native, TR upgraded, BL stable, BR current)", "FG Final Proxy Source Range (4 quadrants)", "DL2 HDR Expansion Grid (TL baseline, TR no 0.6, BL fixed highlights, BR Peak-driven)", "DL2 Game/Peak Anchor Grid (TL current, TR clip10, BL clip5, BR clip20)", "DL2 Game Separation Grid (TL current, TR anchored, BL split@2, BR split@3)", "Post-LUT Game Low/Mid (exit@2)", "Post-LUT Game Low/Mid (exit@4)", "Post-LUT Game Uniform Control", "Post-LUT Hermite Source White 4", "Post-LUT Hermite Source White 8", "Post-LUT Hermite Source White 16", "Auto-Exposed Scene Linear Segments (night highlight probe)", "Dark Scene Absolute Luminance + Exposure Readout"},
         .on_change_value = [](float previous, float current) {
           const int32_t previous_mode = static_cast<int32_t>(previous + 0.5f);
           const int32_t current_mode = static_cast<int32_t>(current + 0.5f);

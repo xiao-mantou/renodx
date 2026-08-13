@@ -43,6 +43,86 @@ float3 DebugLinearSegments(float value) {
   return float3(1.0, 1.0, 1.0);                    // >8 white
 }
 
+// Continuous dark-scene luminance palette. Values below 2.0 are mapped strictly
+// linearly (absolute luminance, not log2), so the 0.05-0.5 band that dominates
+// a night scene keeps a visible dark-blue -> cyan -> green -> yellow gradient.
+// Values above 2.0 are compressed by log2 so scene peaks and lights do not
+// dominate the whole palette, ending at red -> white.
+float3 DebugDarkSceneLinear(float value) {
+  const float v = max(0.0, value);
+  const float3 c0 = float3(0.0, 0.08, 0.45);  // deep blue
+  const float3 c1 = float3(0.0, 0.75, 0.9);   // cyan
+  const float3 c2 = float3(0.1, 1.0, 0.1);    // green
+  const float3 c3 = float3(0.95, 0.9, 0.1);   // yellow
+  const float3 c4 = float3(1.0, 0.45, 0.0);   // orange
+  const float3 c5 = float3(0.95, 0.0, 0.0);   // red
+  const float3 c6 = float3(1.0, 1.0, 1.0);    // white
+  // 0-2 linear, >2 log2-compressed into the 2-8 band. s spans 0..2; the
+  // segment lerps below expect t to reach 2 (not saturate to 1), otherwise
+  // every value >= 2 collapses to a single orange.
+  const float s = v < 2.0
+                      ? v * 0.5                                        // 0 -> 0, 2 -> 1
+                      : 1.0 + log2(v * 0.5) / 3.0;                     // 2 -> 1, 8 -> 2
+  const float t = min(s, 2.0);
+  if (t < 0.25) return lerp(c0, c1, t / 0.25);
+  if (t < 0.5) return lerp(c1, c2, (t - 0.25) / 0.25);
+  if (t < 0.75) return lerp(c2, c3, (t - 0.5) / 0.25);
+  if (t < 1.0) return lerp(c3, c4, (t - 0.75) / 0.25);
+  if (t < 1.5) return lerp(c4, c5, (t - 1.0) / 0.5);
+  return lerp(c5, c6, saturate((t - 1.5) / 0.5));
+}
+
+// 5x7 pixel glyphs (bit k set = column k from the left, 1 = lit).
+// Digit 0-9, then '.' as the last entry.
+uint DebugGlyph(int digit, int row) {
+  // k = 0..9 digits, 10 = decimal point.
+  const int k = clamp(digit, 0, 10);
+  const uint patterns[11][7] = {
+      {14, 17, 17, 17, 17, 17, 14},  // 0
+      {4, 4, 4, 4, 4, 4, 4},         // 1
+      {14, 17, 1, 14, 16, 16, 14},   // 2
+      {14, 17, 1, 14, 1, 17, 14},    // 3
+      {17, 17, 17, 14, 1, 1, 1},     // 4
+      {14, 16, 16, 14, 1, 1, 14},    // 5
+      {14, 16, 16, 14, 17, 17, 14},  // 6
+      {14, 1, 1, 1, 1, 1, 1},        // 7
+      {14, 17, 17, 14, 17, 17, 14},  // 8
+      {14, 17, 17, 14, 1, 1, 14},    // 9
+      {0, 0, 0, 0, 0, 4, 4},         // .
+  };
+  return patterns[k][clamp(row, 0, 6)];
+}
+
+// Draws "Ex" followed by one integer digit and one decimal digit (e.g. E1.5)
+// into the top-left corner using the 5x7 glyphs. Returns white text on a
+// semi-transparent dark chip so it stays readable over any probe image.
+float3 DebugExposureOverlay(float2 uv, float exposure) {
+  const float2 chip0 = float2(0.015, 0.015);
+  const float2 chip1 = float2(0.19, 0.06);
+  if (uv.x < chip0.x || uv.x > chip1.x || uv.y < chip0.y || uv.y > chip1.y) {
+    return float3(0.0, 0.0, 0.0);  // outside chip: transparent (caller sees through)
+  }
+  const int whole = clamp((int)exposure, 0, 9);
+  const int tenth = clamp((int)((exposure - floor(exposure)) * 10.0 + 0.5), 0, 9);
+  // Glyph cells: "E", digit(whole), '.', digit(tenth).
+  const int glyphs[4] = {11, whole, 10, tenth};  // 11 = 'E' letter
+  const float cell_x = 0.0075;
+  const float cell_y = 0.006;
+  for (int i = 0; i < 4; ++i) {
+    const float x0 = chip0.x + i * (5.0 * cell_x + 0.005);
+    const float x1 = x0 + 5.0 * cell_x;
+    if (uv.x < x0 || uv.x >= x1) continue;
+    const int col = (int)((uv.x - x0) / cell_x);
+    const int row = (int)((uv.y - chip0.y) / cell_y);
+    if (row < 0 || row > 6) continue;
+    const bool lit = glyphs[i] == 11
+                         ? (col == 0 || col == 4 || row == 0 || row == 3 || row == 6)
+                         : ((DebugGlyph(glyphs[i], row) >> col) & 1u) != 0u;
+    if (lit) return float3(1.0, 1.0, 1.0);
+  }
+  return float3(0.0, 0.0, 0.0);
+}
+
 // DL2's Linear BT.709 intermediate uses a fixed physical unit of
 // 1.0 = 203 nits. RenoDX ToneMapPass returns values relative to the selected
 // Game Brightness, so convert that relative output back into DL2's fixed unit.
@@ -234,6 +314,19 @@ void main(
     const float3 exposed_scene = scene_linear * exposure;
     const float exposed_range = max(exposed_scene.r, max(exposed_scene.g, exposed_scene.b));
     o0 = float4(renodx::draw::RenderIntermediatePass(DebugLinearSegments(exposed_range)), 1.0);
+    return;
+  }
+  // Dark-scene absolute luminance with the exposure scalar overlaid. Values
+  // below 2.0 use a continuous linear gradient so the 0.05-0.5 night bulk keeps
+  // visible separation; values above 2.0 are log-compressed to red/white so
+  // lights do not dominate the palette. The white numeric chip in the top-left
+  // shows the live auto-exposure value (Ex, e.g. E1.5) read from t1.
+  if (RENODX_DEBUG_MODE > 46.5 && RENODX_DEBUG_MODE < 47.5) {
+    const float3 exposed_scene = scene_linear * exposure;
+    const float exposed_range = max(exposed_scene.r, max(exposed_scene.g, exposed_scene.b));
+    const float3 probe = renodx::draw::RenderIntermediatePass(DebugDarkSceneLinear(exposed_range));
+    const float3 readout = DebugExposureOverlay(v1.xy, exposure);
+    o0 = float4(probe + readout, 1.0);
     return;
   }
   // Normalize out intensity so DLSS modes can be compared for t0 chroma
