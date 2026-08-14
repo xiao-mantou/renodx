@@ -29,6 +29,19 @@ Success evidence after a full game restart:
 
 The seven-parameter ABI correction still produced no `DL2 DLSS FG creation format` callback. Streamline continued allocating all three `sl.dlssg.fake-swapchain-buffer` resources as RGBA8, so the exported-function detour does not control the cached/active creation path and must not be extended further.
 
+## Creation Contract Audit (pending runtime)
+
+Prior logs prove only that the FG-facing proxy query reports RGBA8 and DLSS-G allocates RGBA8 fake buffers. They do **not** prove the engine's original creation request, nor the actual native swapchain/backbuffer format at Streamline creation time.
+
+The dedicated diagnostic interposer now records, without mutation:
+
+1. `ENGINE_REQUEST`: the engine `DXGI_SWAP_CHAIN_DESC1` at the Streamline entry.
+2. `POST_PLUGIN_HOOKS`: the local descriptor after all Streamline plugin before-hooks.
+3. `NATIVE_AFTER_DXGI_CREATE`: native `GetDesc1`, `GetColorSpace1`, and every `GetBuffer()->ID3D12Resource::GetDesc().Format`.
+4. `SET_COLOR_SPACE`: later native color-space changes.
+
+Interpret only the native backbuffer resource formats as actual containers. If they are RGB10 with HDR10/BT.2100 while fake buffers remain RGBA8, the remaining RGBA8 choice is inside the closed DLSS-G plugin. If native resources start RGBA8, a creation/resize boundary remains the only theoretical HDR-FG repair point.
+
 Mode 11 is now rejected as a production fix. The log proves it intercepts Streamline's `RGBA8 -> RGB10 m_pDLFGOutputs` copy but substitutes a separately prepared 0xAD source frame instead of converting Streamline's generated frame. This explains all three visible failures together:
 
 - flash: 11 initial submissions used `bridge_ready=0`, then switched to the replacement path;

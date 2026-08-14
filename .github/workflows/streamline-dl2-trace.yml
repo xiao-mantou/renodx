@@ -48,7 +48,7 @@ jobs:
           New-Item -ItemType Directory -Force artifact | Out-Null
           Copy-Item streamline/_artifacts/sl.interposer/Develop_x64/sl.interposer.dll artifact/
           Set-Content artifact/ARM_TRACE.cmd '@echo off', 'type nul > "%~dp0dl2_streamline_trace.arm"'
-          Set-Content artifact/README.txt 'DL2 diagnostic Streamline 2.9.0 interposer only. Copy ARM_TRACE.cmd beside sl.interposer.dll, then run it after entering the target FG scene; its marker is consumed automatically and records the next 256 Present1 calls. Restore the original DLL after collecting sl.log; keep sl.common.dll and sl.dlss_g.dll unchanged.'
+          Set-Content artifact/README.txt 'DL2 diagnostic Streamline 2.9.0 interposer only. Startup sl.log records the engine request, descriptor after plugin hooks, native swapchain color space, and actual D3D12 backbuffer resource formats. ARM_TRACE.cmd remains optional for the separate 256-Present1 timing trace. Restore the original DLL after collecting sl.log; keep sl.common.dll and sl.dlss_g.dll unchanged.'
 
       - name: Upload diagnostic package
         uses: actions/upload-artifact@v4
