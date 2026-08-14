@@ -1,95 +1,96 @@
-diff --git a/source/core/sl.interposer/dxgi/dxgi.cpp b/source/core/sl.interposer/dxgi/dxgi.cpp
-index 28369e0..7841992 100644
---- a/source/core/sl.interposer/dxgi/dxgi.cpp
-+++ b/source/core/sl.interposer/dxgi/dxgi.cpp
-@@ -22,6 +22,7 @@
+diff --git a/source/core/sl.interposer/dxgi/dxgiFactory.cpp b/source/core/sl.interposer/dxgi/dxgiFactory.cpp
+index 75984e3..cdf781e 100644
+--- a/source/core/sl.interposer/dxgi/dxgiFactory.cpp
++++ b/source/core/sl.interposer/dxgi/dxgiFactory.cpp
+@@ -20,8 +20,9 @@
+ * SOFTWARE.
+ */ 
  
- #include <wrl/client.h>
- #include <d3d11.h>
+-#include <wrl/client.h>
+-#include <d3d11.h>
++#include <wrl/client.h>
++#include <d3d11.h>
 +#include <atomic>
- #include <assert.h>
  
- #include "source/core/sl.interposer/hook.h"
-@@ -52,6 +53,41 @@ static sl::interposer::ExportedFunction hookCreateSwapChainForHwnd("IDXGIFactory
- static sl::interposer::ExportedFunction hookCreateSwapChainForCoreWindow("IDXGIFactory2::CreateSwapChainForCoreWindow");
- static sl::interposer::ExportedFunction hookCreateSwapChainForComposition("IDXGIFactory2::CreateSwapChainForComposition");
+ #include "source/core/sl.interposer/dxgi/DXGIFactory.h"
+ #include "source/core/sl.interposer/dxgi/DXGISwapchain.h"
+@@ -37,7 +38,34 @@ namespace sl
+ namespace interposer
+ {
  
-+static std::atomic<uint32_t> g_dl2SwapchainAuditCount{0};
+-static_assert(offsetof(DXGIFactory, m_base) == 16, "This location must be maintained to keep compatibility with Nsight tools");
++static_assert(offsetof(DXGIFactory, m_base) == 16, "This location must be maintained to keep compatibility with Nsight tools");
 +
-+static void logDL2NativeSwapchain(const char* stage, IDXGISwapChain1* swapchain)
++static std::atomic<uint32_t> g_dl2FactorySwapchainAuditCount{0};
++
++static void logDL2FactoryNativeSwapchain(IDXGISwapChain1* swapchain, UINT d3dVersion)
 +{
-+    const uint32_t index = g_dl2SwapchainAuditCount.fetch_add(1, std::memory_order_relaxed);
++    const uint32_t index = g_dl2FactorySwapchainAuditCount.fetch_add(1, std::memory_order_relaxed);
 +    if (index >= 16 || swapchain == nullptr)
 +        return;
 +
-+    Microsoft::WRL::ComPtr<IDXGISwapChain3> swapchain3;
-+    HRESULT hr = swapchain->QueryInterface(__uuidof(IDXGISwapChain3), &swapchain3);
-+    if (FAILED(hr))
-+    {
-+        SL_LOG_INFO("DL2 SC AUDIT[%u] %s native=0x%p query_sc3_hr=0x%08X", index, stage, swapchain, static_cast<uint32_t>(hr));
-+        return;
-+    }
-+
 +    DXGI_SWAP_CHAIN_DESC1 desc{};
-+    hr = swapchain3->GetDesc1(&desc);
-+    SL_LOG_INFO("DL2 SC AUDIT[%u] %s native=0x%p desc_hr=0x%08X format=%u size=%ux%u buffers=%u flags=0x%X",
-+        index, stage, swapchain3.Get(), static_cast<uint32_t>(hr), static_cast<uint32_t>(desc.Format),
-+        desc.Width, desc.Height, desc.BufferCount, desc.Flags);
++    const HRESULT descHr = swapchain->GetDesc1(&desc);
++    SL_LOG_INFO("DL2 SC AUDIT FACTORY_NATIVE[%u] native=0x%p d3d=%u desc_hr=0x%08X format=%u size=%ux%u buffers=%u flags=0x%X usage=0x%X",
++        index, swapchain, d3dVersion, static_cast<uint32_t>(descHr), static_cast<uint32_t>(desc.Format),
++        desc.Width, desc.Height, desc.BufferCount, desc.Flags, desc.BufferUsage);
 +
-+    if (SUCCEEDED(hr))
++    if (FAILED(descHr) || d3dVersion != 12)
++        return;
++
++    for (UINT buffer = 0; buffer < desc.BufferCount && buffer < 8; ++buffer)
 +    {
-+        for (UINT buffer = 0; buffer < desc.BufferCount && buffer < 8; ++buffer)
-+        {
-+            Microsoft::WRL::ComPtr<ID3D12Resource> resource;
-+            const HRESULT bufferHr = swapchain3->GetBuffer(buffer, IID_PPV_ARGS(&resource));
-+            const DXGI_FORMAT format = SUCCEEDED(bufferHr) ? resource->GetDesc().Format : DXGI_FORMAT_UNKNOWN;
-+            SL_LOG_INFO("DL2 SC AUDIT[%u] %s backbuffer=%u get_hr=0x%08X resource=0x%p format=%u",
-+                index, stage, buffer, static_cast<uint32_t>(bufferHr), resource.Get(), static_cast<uint32_t>(format));
-+        }
++        Microsoft::WRL::ComPtr<ID3D12Resource> resource;
++        const HRESULT bufferHr = swapchain->GetBuffer(buffer, IID_PPV_ARGS(&resource));
++        const DXGI_FORMAT format = SUCCEEDED(bufferHr) ? resource->GetDesc().Format : DXGI_FORMAT_UNKNOWN;
++        SL_LOG_INFO("DL2 SC AUDIT FACTORY_BACKBUFFER[%u] index=%u get_hr=0x%08X resource=0x%p format=%u",
++            index, buffer, static_cast<uint32_t>(bufferHr), resource.Get(), static_cast<uint32_t>(format));
 +    }
 +}
-+
- void loadDXGIModule();
  
+ UINT queryDevice(IUnknown*& device, Microsoft::WRL::ComPtr<IUnknown>& deviceProxy)
+ {
+@@ -364,10 +392,13 @@ HRESULT STDMETHODCALLTYPE DXGIFactory::CreateSwapChainForHwnd(IUnknown* pDevice,
  
-@@ -155,6 +192,9 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForHwnd(IDXGIFactory2* pF
-     }
- 
-     HRESULT hr = S_OK;
-+    SL_LOG_INFO("DL2 SC AUDIT ENGINE_REQUEST format=%u size=%ux%u buffers=%u flags=0x%X usage=0x%X",
+     assert(m_interfaceVersion >= 2);
+     
+-    HRESULT hr = S_OK;
+-    bool skip = false;
+-    {
+-        const auto& hooks = sl::plugin_manager::getInterface()->getBeforeHooks(FunctionHookID::eIDXGIFactory_CreateSwapChainForHwnd);
++    HRESULT hr = S_OK;
++    SL_LOG_INFO("DL2 SC AUDIT FACTORY_ENGINE_REQUEST format=%u size=%ux%u buffers=%u flags=0x%X usage=0x%X",
 +        static_cast<uint32_t>(pDesc->Format), pDesc->Width, pDesc->Height, pDesc->BufferCount,
 +        pDesc->Flags, pDesc->BufferUsage);
-     bool skip = false;
-     {
-         const auto& hooks = sl::plugin_manager::getInterface()->getBeforeHooks(FunctionHookID::eIDXGIFactory_CreateSwapChainForHwnd);
-@@ -168,6 +208,9 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForHwnd(IDXGIFactory2* pF
-             }
++    bool skip = false;
++    {
++        const auto& hooks = sl::plugin_manager::getInterface()->getBeforeHooks(FunctionHookID::eIDXGIFactory_CreateSwapChainForHwnd);
+         for (auto [hook, feature] : hooks)
+         {
+             hr = ((PFunCreateSwapChainForHwndBefore*)hook)((IDXGIFactory2*)m_base, pDevice, hWnd, &desc, pFullscreenDesc, pRestrictToOutput, ppSwapChain, skip);
+@@ -379,7 +410,11 @@ HRESULT STDMETHODCALLTYPE DXGIFactory::CreateSwapChainForHwnd(IUnknown* pDevice,
          }
      }
-+    SL_LOG_INFO("DL2 SC AUDIT POST_PLUGIN_HOOKS format=%u size=%ux%u buffers=%u flags=0x%X usage=0x%X skip=%u",
+ 
+-    if (!skip)
++    SL_LOG_INFO("DL2 SC AUDIT FACTORY_POST_PLUGIN_HOOKS format=%u size=%ux%u buffers=%u flags=0x%X usage=0x%X skip=%u",
 +        static_cast<uint32_t>(desc.Format), desc.Width, desc.Height, desc.BufferCount, desc.Flags,
 +        desc.BufferUsage, skip ? 1 : 0);
- 
-     if (!skip)
++
++    if (!skip)
      {
-@@ -178,6 +221,7 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForHwnd(IDXGIFactory2* pF
-             return hr;
+         hr = ((IDXGIFactory2*)m_base)->CreateSwapChainForHwnd(pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+         if (FAILED(hr))
+@@ -389,8 +424,10 @@ HRESULT STDMETHODCALLTYPE DXGIFactory::CreateSwapChainForHwnd(IUnknown* pDevice,
          }
      }
-+    logDL2NativeSwapchain("NATIVE_AFTER_DXGI_CREATE", *ppSwapChain);
  
-     {
-         const auto& hooks = sl::plugin_manager::getInterface()->getAfterHooks(FunctionHookID::eIDXGIFactory_CreateSwapChainForHwnd);
-diff --git a/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp b/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp
-index 24c48cf..d8c4683 100644
---- a/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp
-+++ b/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp
-@@ -590,6 +590,8 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::CheckColorSpaceSupport(DXGI_COLOR_SPACE
- }
- HRESULT STDMETHODCALLTYPE DXGISwapChain::SetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace)
- {
-+    SL_LOG_INFO("DL2 SC AUDIT SET_COLOR_SPACE native=0x%p color_space=%u",
-+        m_base, static_cast<uint32_t>(ColorSpace));
-     return static_cast<IDXGISwapChain3*>(m_base)->SetColorSpace1(ColorSpace);
- }
- HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers1(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format, UINT SwapChainFlags, const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue)
+-    {
+-        const auto& hooks = sl::plugin_manager::getInterface()->getAfterHooks(FunctionHookID::eIDXGIFactory_CreateSwapChainForHwnd);
++    logDL2FactoryNativeSwapchain(*ppSwapChain, d3dVersion);
++
++    {
++        const auto& hooks = sl::plugin_manager::getInterface()->getAfterHooks(FunctionHookID::eIDXGIFactory_CreateSwapChainForHwnd);
+         for (auto [hook, feature] : hooks) ((PFunCreateSwapChainForHwndAfter*)hook)((IDXGIFactory2*)m_base, pDevice, hWnd, &desc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+     }
+     setupSwapchainProxy(*ppSwapChain, d3dVersion, deviceProxy, desc.BufferUsage);
