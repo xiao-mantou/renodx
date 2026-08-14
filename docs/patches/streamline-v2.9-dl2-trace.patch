@@ -10,7 +10,7 @@ index 28369e0..7841992 100644
  #include <assert.h>
  
  #include "source/core/sl.interposer/hook.h"
-@@ -52,6 +53,42 @@ static sl::interposer::ExportedFunction hookCreateSwapChainForHwnd("IDXGIFactory
+@@ -52,6 +53,41 @@ static sl::interposer::ExportedFunction hookCreateSwapChainForHwnd("IDXGIFactory
  static sl::interposer::ExportedFunction hookCreateSwapChainForCoreWindow("IDXGIFactory2::CreateSwapChainForCoreWindow");
  static sl::interposer::ExportedFunction hookCreateSwapChainForComposition("IDXGIFactory2::CreateSwapChainForComposition");
  
