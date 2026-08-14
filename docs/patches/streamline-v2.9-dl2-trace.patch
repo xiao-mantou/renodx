@@ -126,14 +126,22 @@ index 24c48cf..0000000 100644
          return hr;
      };
      SL_EXCEPTION_HANDLE_START
-@@ -589,6 +632,9 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::SetColorSpace1(DXGI_COLOR_SPACE_TYPE Col
+@@ -587,12 +641,14 @@ UINT STDMETHODCALLTYPE DXGISwapChain::GetCurrentBackBufferIndex()
+ HRESULT STDMETHODCALLTYPE DXGISwapChain::CheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE ColorSpace, UINT* pColorSpaceSupport)
+ {
+     return static_cast<IDXGISwapChain3*>(m_base)->CheckColorSpaceSupport(ColorSpace, pColorSpaceSupport);
+ }
  HRESULT STDMETHODCALLTYPE DXGISwapChain::SetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace)
  {
 +    SL_LOG_INFO("DL2 SC AUDIT SET_COLOR_SPACE native=0x%p color_space=%u",
 +        m_base, static_cast<uint32_t>(ColorSpace));
      return static_cast<IDXGISwapChain3*>(m_base)->SetColorSpace1(ColorSpace);
  }
-diff --git a/source/plugins/sl.common/commonEntry.cpp b/source/plugins/sl.common/commonEntry.cpp
+ HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers1(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format, UINT SwapChainFlags, const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue)
+ {
+     auto resizeBuffers1 = [this](UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format, UINT SwapChainFlags, const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue)->HRESULT
+     {
+ diff --git a/source/plugins/sl.common/commonEntry.cpp b/source/plugins/sl.common/commonEntry.cpp
 index afa3c3d..0000000 100644
 --- a/source/plugins/sl.common/commonEntry.cpp
 +++ b/source/plugins/sl.common/commonEntry.cpp
