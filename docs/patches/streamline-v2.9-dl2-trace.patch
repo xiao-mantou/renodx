@@ -23,7 +23,7 @@ index 28369e0..7841992 100644
 +        return;
 +
 +    Microsoft::WRL::ComPtr<IDXGISwapChain3> swapchain3;
-+    HRESULT hr = swapchain->QueryInterface(__uuidof(IDXGISwapChain3), reinterpret_cast<void**>(&swapchain3));
++    HRESULT hr = swapchain->QueryInterface(__uuidof(IDXGISwapChain3), &swapchain3);
 +    if (FAILED(hr))
 +    {
 +        SL_LOG_INFO("DL2 SC AUDIT[%u] %s native=0x%p query_sc3_hr=0x%08X", index, stage, swapchain, static_cast<uint32_t>(hr));
@@ -32,10 +32,9 @@ index 28369e0..7841992 100644
 +
 +    DXGI_SWAP_CHAIN_DESC1 desc{};
 +    hr = swapchain3->GetDesc1(&desc);
-+    const DXGI_COLOR_SPACE_TYPE colorSpace = swapchain3->GetColorSpace1();
-+    SL_LOG_INFO("DL2 SC AUDIT[%u] %s native=0x%p desc_hr=0x%08X format=%u size=%ux%u buffers=%u flags=0x%X color_space=%u",
++    SL_LOG_INFO("DL2 SC AUDIT[%u] %s native=0x%p desc_hr=0x%08X format=%u size=%ux%u buffers=%u flags=0x%X",
 +        index, stage, swapchain3.Get(), static_cast<uint32_t>(hr), static_cast<uint32_t>(desc.Format),
-+        desc.Width, desc.Height, desc.BufferCount, desc.Flags, static_cast<uint32_t>(colorSpace));
++        desc.Width, desc.Height, desc.BufferCount, desc.Flags);
 +
 +    if (SUCCEEDED(hr))
 +    {

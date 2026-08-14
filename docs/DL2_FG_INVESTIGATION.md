@@ -37,7 +37,7 @@ The dedicated diagnostic interposer now records, without mutation:
 
 1. `ENGINE_REQUEST`: the engine `DXGI_SWAP_CHAIN_DESC1` at the Streamline entry.
 2. `POST_PLUGIN_HOOKS`: the local descriptor after all Streamline plugin before-hooks.
-3. `NATIVE_AFTER_DXGI_CREATE`: native `GetDesc1`, `GetColorSpace1`, and every `GetBuffer()->ID3D12Resource::GetDesc().Format`.
+3. `NATIVE_AFTER_DXGI_CREATE`: native `GetDesc1` and every `GetBuffer()->ID3D12Resource::GetDesc().Format`.
 4. `SET_COLOR_SPACE`: later native color-space changes.
 
 Interpret only the native backbuffer resource formats as actual containers. If they are RGB10 with HDR10/BT.2100 while fake buffers remain RGBA8, the remaining RGBA8 choice is inside the closed DLSS-G plugin. If native resources start RGBA8, a creation/resize boundary remains the only theoretical HDR-FG repair point.
