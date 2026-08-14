@@ -239,29 +239,21 @@ void main(
     out float4 o0 : SV_TARGET0) {
   const float4 source = t0.SampleLevel(s0_s, v1.xy, 0);
   const float exposure = t1.SampleLevel(s0_s, float2(0.0, 0.0), 0).x;
-  // t1[0] is DL2's global auto-exposure baseline: it rises toward ~1.8 in
-  // dark scenes (night, interior corners) and falls toward ~0.1 in bright
-  // daylight, so it is a natural scene-darkness signal with a ~17x span.
-  // Night Scene Gain is scaled by how dark the scene is, so dark scenes lift
-  // while bright scenes stay at gain 1.0 (daytime untouched). It is an input
-  // calibration, not an output lift: wall-vs-light ratios are preserved and
-  // the curve shapes the higher end.
-  const float scene_darkness = smoothstep(0.2, 2.0, exposure);
-  const float adaptive_gain = lerp(1.0, max(RENODX_NIGHT_SCENE_GAIN, 0.01), scene_darkness);
-  const float3 scene_linear = source.rgb * 0.6 * adaptive_gain;
+  // A1 baseline: return to standard RenoDRT input. The 0.6 scene calibration
+  // and Night Scene Gain were DL2-specific experiments with no derivation;
+  // scene_linear is now the raw t0 scene. untonemapped uses the game exposure
+  // directly, without the DL2 highlight-protection chain (that chain is still
+  // computed below only because the diagnostic modes reference it).
+  const float3 scene_linear = source.rgb;
   const float3 game_exposed = scene_linear * exposure;
   const float3 vanilla = ApplyDL2SDRCurve(game_exposed, cb0[0], cb0[1]);
 
-  // Keep DL2's full automatic exposure for shadow and midtone intent. Only
-  // bright raw scene values gradually use a protected exposure, so the
-  // original SDR reference remains intact while HDR headroom survives.
+  // Retained only for the diagnostic modes that reference it. The normal path
+  // uses `scene_linear * exposure` directly below.
   const float exposure_min = min(max(RENODX_AUTO_EXPOSURE_MIN, 0.01),
                                  max(RENODX_AUTO_EXPOSURE_MAX, 0.01));
   const float exposure_max = max(max(RENODX_AUTO_EXPOSURE_MIN, 0.01),
                                  max(RENODX_AUTO_EXPOSURE_MAX, 0.01));
-  // Use a linear blend between unexposed HDR and clamped game exposure.
-  // The previous logarithmic exponent was mathematically continuous, but
-  // visually collapsed most of the slider into its two endpoints in DL2.
   const float retained_exposure = clamp(max(exposure, 0.001), exposure_min, exposure_max);
   const float protected_exposure = lerp(1.0, retained_exposure, saturate(CUSTOM_AUTO_EXPOSURE));
   const float protection_start = min(max(RENODX_HDR_EXPOSURE_PROTECTION_START, 0.0),
@@ -271,7 +263,7 @@ void main(
   const float scene_luminance = renodx::color::y::from::BT709(max(scene_linear, 0.0));
   const float protection = smoothstep(protection_start, protection_end, scene_luminance);
   const float adaptive_exposure = lerp(exposure, protected_exposure, protection);
-  const float3 untonemapped = scene_linear * adaptive_exposure;
+  const float3 untonemapped = scene_linear * exposure;
   const float3 neutral_sdr = renodx::tonemap::renodrt::NeutralSDR(untonemapped);
 
   float3 stage_probe;
@@ -629,14 +621,11 @@ void main(
                                                : 16.0)
       : post_lut_game_probe
           ? ToneMapDL2FixedScene(untonemapped, vanilla, neutral_sdr)
-          // RenoDRT normal path uses the validated Hermite curve (DebugMode
-          // 44 = Source White 8), now driven by the UI Source White control.
-          // The Anchored and Separated candidates stay available in the
-          // diagnostic grids; ACES/None keep their previous curve.
-          : RENODX_TONE_MAP_TYPE == 3.0
-              ? ToneMapDL2FixedHermite(untonemapped, vanilla, neutral_sdr,
-                                       RENODX_RENO_DRT_WHITE_CLIP)
-              : ToneMapDL2Anchored(untonemapped, vanilla, neutral_sdr,
-                                   RENODX_RENO_DRT_WHITE_CLIP);
+          // A1 baseline: RenoDRT normal path uses the standard ToneMapPass so
+          // the RenoDRT Curve / Scaling controls take effect again. The DL2
+          // Hermite candidates remain reachable only through the diagnostic
+          // grids above. Game/Peak follow standard RenoDRT coupling.
+          : ScaleToneMappedScene(
+                renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr));
   o0.a = source.a;
 }

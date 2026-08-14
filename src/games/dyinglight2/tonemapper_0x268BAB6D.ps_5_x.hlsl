@@ -125,19 +125,19 @@ void main(
   float3 stable_grade = native_lut_grade;
 
   if (RENODX_TONE_MAP_TYPE != 0.0) {
-    // The original SDR LUT can vary its luminance as its dynamic constants
-    // update. That variation is harmless in SDR, but becomes visible flicker
-    // when it is added to HDR highlights. Keep full LUT grading below SDR
-    // white, then preserve the stable HDR luminance while transferring only
-    // its chroma and hue above it.
-    upgraded_grade = renodx::tonemap::UpgradeToneMap(input_hdr, input_sdr, o0.rgb, 1.0);
-    stable_grade = renodx::color::correct::Chrominance(input_hdr, o0.rgb);
-    stable_grade = renodx::color::correct::Hue(stable_grade, o0.rgb);
-    const float highlight_lut_blend = smoothstep(1.0, 2.0, renodx::color::y::from::BT709(input_hdr));
+    // The game LUT ends in saturate, so it grades an SDR-domain reference and
+    // would clamp HDR highlights back to 1.0 (the 203-nit white). Instead of
+    // reconstructing highlight color (UpgradeToneMap/Chrominance/Hue rewrite
+    // hue and cause the washed-out look), keep the LUT color correction
+    // entirely and only stretch its luminance back to the HDR scene value.
+    // Chroma/hue therefore come straight from the game LUT, unchanged.
+    const float y_hdr = renodx::color::y::from::BT709(max(input_hdr, 0.0));
+    const float y_lut = renodx::color::y::from::BT709(max(native_lut_grade, 0.0001));
+    const float hdr_ratio = y_hdr / y_lut;
+    upgraded_grade = native_lut_grade * hdr_ratio;
+    stable_grade = upgraded_grade;
 
-    // The downstream Gamma pass and final proxy also consume Linear BT.709.
-    // Keep the reconstructed HDR magnitude in that same domain.
-    o0.rgb = lerp(upgraded_grade, stable_grade, highlight_lut_blend);
+    o0.rgb = upgraded_grade;
   }
 
   if (RENODX_DEBUG_MODE > 34.5 && RENODX_DEBUG_MODE < 35.5) {
@@ -148,12 +148,10 @@ void main(
         : o0.rgb;
   }
 
-  // Apply Game after the world LUT but before the independently matched UI
-  // writers. Modes 40/41 limit the adjustment to low/mid luminance; mode 42
-  // is a whole-frame scaling control. The normal path uses the validated
-  // exit@2 weight: Game changes paper-white and low/mid range only, leaving
-  // the highlight shoulder and cloud peak to Peak Brightness.
-  {
+  // Game is handled by the standard ToneMapPass in 0x3E; the normal path must
+  // not scale again here or Game would be applied twice. Modes 40-42 keep the
+  // post-LUT Game diagnostics only, for A/B against the standard path.
+  if (RENODX_DEBUG_MODE > 39.5 && RENODX_DEBUG_MODE < 45.5) {
     const float game_scale = max(RENODX_DIFFUSE_WHITE_NITS / 203.0, 0.01);
     const float luminance = renodx::color::y::from::BT709(max(o0.rgb, 0.0));
     float game_weight = 1.0 - smoothstep(1.0, 2.0, luminance);

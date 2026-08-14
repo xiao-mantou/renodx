@@ -154,3 +154,65 @@ separates day/night (and by how much) before building the auto-exposure-driven
 adaptive gain. Do not tune Night Scene Gain or the protection curve from the
 glyph readout.
 
+## 2026-08-15 Architecture decision: return to standard RenoDX path (A1/Y)
+
+### Decision
+
+After testing the DL2-specific Hermite curves and the t1[0]-driven Night Scene
+Gain, the user decided to **return to the standard RenoDX tone-mapping path**
+and re-tune color from there. DL2's auto-exposure baseline `t1[0]` was measured
+(day outdoor `0.1077`, dark interior `1.8`), but boosting the scene with a
+uniform gain washed out sunlit highlights, and the RenoDRT Curve / Scaling
+controls had no effect because the DL2 normal path bypassed `ToneMapPass`.
+
+### What changed (branch `codex/dl2-hdr-next`, uncommitted at write time)
+
+- `tonemapper_0x3E36DA5B.ps_5_x.hlsl`
+  - Removed the `0.6` scene calibration and Night Scene Gain from
+    `scene_linear`; it is now `source.rgb`.
+  - Normal path now uses `ScaleToneMappedScene(renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr))`, so RenoDRT Curve / Scaling / Game / Peak controls take effect again. Off still outputs `vanilla`.
+  - The DL2 Hermite/Anchored/Separated/FixedScene helpers remain **only as
+    diagnostic grids** (DebugMode 40-45); they are no longer the normal path.
+  - The exposure-protection chain (`adaptive_exposure`, `protected_exposure`,
+    `protection_start/end`) is still computed only because diagnostic modes
+    reference it; the normal path uses `untonemapped = scene_linear * exposure`.
+- `tonemapper_0x268BAB6D.ps_5_x.hlsl`
+  - Highlight handling changed from `UpgradeToneMap`/`Chrominance`/`Hue`
+    reconstruction (which rewrote highlight hue and caused the washed-out
+    look) to a luminance-preserving restore: `o0.rgb = native_lut_grade *
+    (y_hdr / y_lut)`. Chroma/hue come straight from the game LUT; only
+    luminance is stretched back to the HDR scene value. DebugMode 35 grid
+    still exposes native/upgraded/stable for A/B.
+- `addon.cpp` / `shared.h`
+  - UI sliders that are no longer effective in the normal path are labeled
+    with `(X)` and their tooltips state the reason:
+    - `Night Scene Gain (X)` (0x3E no longer reads it)
+    - `HDR Source White (X)` (only diagnostic Hermite grids use it)
+    - `Highlight Exposure Retention/Minimum/Maximum (X)`
+    - `HDR Protection Start/End (X)`
+  - These are kept, not deleted, pending the paper-white calibration step.
+
+### Key architectural findings (from DL1 comparison)
+
+- DL1 does no scene tonemapper hook; its LUTs do not hard-clamp, so RenoDX TM
+  can run at the very end (gamma). DL2's 0x3E is itself the game tonemapper and
+  hard-clamps, so DL2 cannot fully copy DL1: the TM must stay at 0x3E, and the
+  LUT clamp must be made reversible (record HDR luminance, grade in 0..1, then
+  restore by ratio).
+- There are **two saturates**, and they are not the same:
+  - 0x3E `ApplyDL2SDRCurve` saturate = the true game paper-white (scene 1.0).
+  - 0x268 LUT saturate = only a LUT-coordinate requirement (3D LUT lookup needs
+    0..1); it kills HDR highlights as a side effect, not by defining paper-white.
+- `1.0 = 203 nits` is an unproven assumption (same category as the removed `0.6`).
+  The true paper-white needs a calibration step: measure what scene value the
+  game actually clamps to, then anchor it against a known-brightness reference.
+
+### Next steps
+
+1. Finish UI cleanup (task #3) and build once (task #4).
+2. Paper-white calibration: add a diagnostic showing `scene_linear / 1.0`
+   ratio to find where the game paper-white really lands; anchor 203 against a
+   known-luminance reference.
+3. Decide 0x268 Game exit@2 scaling fate (currently still present; it may be a
+   duplicate of the 0x3E standard Game handling).
+
