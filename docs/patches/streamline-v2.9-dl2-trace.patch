@@ -1,165 +1,5 @@
-diff --git a/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp b/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp
-index 24c48cf..0000000 100644
---- a/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp
-+++ b/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp
-@@ -22,6 +22,7 @@
- 
- #include <wrl/client.h>
- #include <d3d11.h>
-+#include <atomic>
- #include <mutex>
- 
- #include "include/sl_hooks.h"
-@@ -171,6 +172,9 @@ private:
-     bool m_isImportant = false;
- };
- static SwapChainTracker g_swapChainTracker;
-+static std::atomic<uint32_t> g_dl2PresentTraceCount{0};
-+static std::atomic<uint32_t> g_dl2Present1TraceCount{0};
-+static std::atomic<uint32_t> g_dl2ResizeTraceCount{0};
- 
- ULONG   STDMETHODCALLTYPE DXGISwapChain::Release()
- {
-@@ -243,6 +247,13 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present(UINT SyncInterval, UINT Flags)
- {
-     auto present = [this](UINT SyncInterval, UINT Flags)->HRESULT
-     {
-+        const uint32_t traceIndex = g_dl2PresentTraceCount.fetch_add(1, std::memory_order_relaxed);
-+        const bool trace = traceIndex < 128;
-+        if (trace)
-+        {
-+            SL_LOG_INFO("DL2 SL Present[%u] begin sc=0x%p tid=%lu sync=%u flags=0x%X", traceIndex,
-+                m_base, GetCurrentThreadId(), SyncInterval, Flags);
-+        }
-         auto hooksId = FunctionHookID::eIDXGISwapChain_Present;
-         const auto& hooks = sl::plugin_manager::getInterface()->getBeforeHooks(hooksId);
-         bool skip = false;
-@@ -259,6 +270,12 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present(UINT SyncInterval, UINT Flags)
- 
-         if (!skip) hr = m_base->Present(SyncInterval, Flags);
- 
-+        if (trace)
-+        {
-+            SL_LOG_INFO("DL2 SL Present[%u] base_return hr=0x%08X skip=%u", traceIndex,
-+                static_cast<uint32_t>(hr), skip ? 1 : 0);
-+        }
-+
-         if (g_swapChainTracker.notifyAfterPresent(this, skip))
-         {
-             const auto& hooksAfter = sl::plugin_manager::getInterface()->getAfterHooks(hooksId);
-@@ -273,6 +290,11 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present(UINT SyncInterval, UINT Flags)
-                 }
-             }
-         }
-+
-+        if (trace)
-+        {
-+            SL_LOG_INFO("DL2 SL Present[%u] end hr=0x%08X", traceIndex, static_cast<uint32_t>(hr));
-+        }
- 
-         return hr;
-     };
-@@ -383,6 +405,14 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags)
- {
-     auto resizeBuffers = [this](UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags)->HRESULT
-     {
-+        const uint32_t traceIndex = g_dl2ResizeTraceCount.fetch_add(1, std::memory_order_relaxed);
-+        const bool trace = traceIndex < 32;
-+        if (trace)
-+        {
-+            SL_LOG_INFO("DL2 SL Resize[%u] begin sc=0x%p tid=%lu buffers=%u size=%ux%u format=%u flags=0x%X",
-+                traceIndex, m_base, GetCurrentThreadId(), BufferCount, Width, Height,
-+                static_cast<uint32_t>(NewFormat), SwapChainFlags);
-+        }
-         bool Skip = false;
-         HRESULT hr = S_OK;
-         {
-@@ -403,6 +433,12 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags)
-             hr = m_base->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
-         }
- 
-+        if (trace)
-+        {
-+            SL_LOG_INFO("DL2 SL Resize[%u] base_return hr=0x%08X skip=%u", traceIndex,
-+                static_cast<uint32_t>(hr), Skip ? 1 : 0);
-+        }
-+
-         if (FAILED(hr))
-         {
-             SL_LOG_WARN("IDXGISwapChain::ResizeBuffers failed with error code %s", std::system_category().message(hr).c_str());
-@@ -480,6 +516,13 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present1(UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS* pPresentParameters)
- {
-     auto present = [this](UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS* pPresentParameters)->HRESULT
-     {
-+        const uint32_t traceIndex = g_dl2Present1TraceCount.fetch_add(1, std::memory_order_relaxed);
-+        const bool trace = traceIndex < 128;
-+        if (trace)
-+        {
-+            SL_LOG_INFO("DL2 SL Present1[%u] begin sc=0x%p tid=%lu sync=%u flags=0x%X params=%u", traceIndex,
-+                m_base, GetCurrentThreadId(), SyncInterval, PresentFlags, pPresentParameters != nullptr ? 1 : 0);
-+        }
-         auto hooksId = FunctionHookID::eIDXGISwapChain_Present1;
-         const auto& hooks = sl::plugin_manager::getInterface()->getBeforeHooks(hooksId);
-         bool skip = false;
-@@ -499,6 +542,12 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present1(UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS* pPresentParameters)
- 
-         if (!skip)
-         {
-             hr = static_cast<IDXGISwapChain1*>(m_base)->Present1(SyncInterval, PresentFlags, pPresentParameters);
-         }
-+
-+        if (trace)
-+        {
-+            SL_LOG_INFO("DL2 SL Present1[%u] base_return hr=0x%08X skip=%u", traceIndex,
-+                static_cast<uint32_t>(hr), skip ? 1 : 0);
-+        }
- 
-@@ -513,6 +562,11 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present1(UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS* pPresentParameters)
-             }
-         }
-+
-+        if (trace)
-+        {
-+            SL_LOG_INFO("DL2 SL Present1[%u] end hr=0x%08X", traceIndex, static_cast<uint32_t>(hr));
-+        }
- 
-         return hr;
-     };
-     SL_EXCEPTION_HANDLE_START
-@@ -587,12 +641,14 @@ UINT STDMETHODCALLTYPE DXGISwapChain::GetCurrentBackBufferIndex()
- HRESULT STDMETHODCALLTYPE DXGISwapChain::CheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE ColorSpace, UINT* pColorSpaceSupport)
- {
-     return static_cast<IDXGISwapChain3*>(m_base)->CheckColorSpaceSupport(ColorSpace, pColorSpaceSupport);
- }
- HRESULT STDMETHODCALLTYPE DXGISwapChain::SetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace)
- {
-+    SL_LOG_INFO("DL2 SC AUDIT SET_COLOR_SPACE native=0x%p color_space=%u",
-+        m_base, static_cast<uint32_t>(ColorSpace));
-     return static_cast<IDXGISwapChain3*>(m_base)->SetColorSpace1(ColorSpace);
- }
- HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers1(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format, UINT SwapChainFlags, const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue)
- {
-     auto resizeBuffers1 = [this](UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format, UINT SwapChainFlags, const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue)->HRESULT
-     {
- diff --git a/source/plugins/sl.common/commonEntry.cpp b/source/plugins/sl.common/commonEntry.cpp
-index afa3c3d..0000000 100644
---- a/source/plugins/sl.common/commonEntry.cpp
-+++ b/source/plugins/sl.common/commonEntry.cpp
-@@ -180,8 +180,12 @@ void recycleFramePresentEndResourceTags()
- 
-     if (ctx.useResourceTaggingForFrame)
-     {
-+        SL_LOG_INFO("DL2 SL tag recycle begin tid=%lu frame=%llu",
-+            GetCurrentThreadId(), static_cast<unsigned long long>(getCurrentFrame()));
-         auto pResourceTaggingForFrame = dynamic_cast<common::ResourceTaggingForFrame*>(ctx.pBaseResourceTagging.get());
-         assert(pResourceTaggingForFrame != nullptr);
-         pResourceTaggingForFrame->recycleTags();
-+        SL_LOG_INFO("DL2 SL tag recycle end tid=%lu frame=%llu",
-+            GetCurrentThreadId(), static_cast<unsigned long long>(getCurrentFrame()));
-     }
- }
 diff --git a/source/core/sl.interposer/dxgi/dxgi.cpp b/source/core/sl.interposer/dxgi/dxgi.cpp
-index 24c48cf..0000000 100644
+index 28369e0..7841992 100644
 --- a/source/core/sl.interposer/dxgi/dxgi.cpp
 +++ b/source/core/sl.interposer/dxgi/dxgi.cpp
 @@ -22,6 +22,7 @@
@@ -168,7 +8,10 @@ index 24c48cf..0000000 100644
  #include <d3d11.h>
 +#include <atomic>
  #include <assert.h>
-@@ -52,6 +53,39 @@ static sl::interposer::ExportedFunction hookCreateSwapChainForComposition("IDXG
+ 
+ #include "source/core/sl.interposer/hook.h"
+@@ -52,6 +53,42 @@ static sl::interposer::ExportedFunction hookCreateSwapChainForHwnd("IDXGIFactory
+ static sl::interposer::ExportedFunction hookCreateSwapChainForCoreWindow("IDXGIFactory2::CreateSwapChainForCoreWindow");
  static sl::interposer::ExportedFunction hookCreateSwapChainForComposition("IDXGIFactory2::CreateSwapChainForComposition");
  
 +static std::atomic<uint32_t> g_dl2SwapchainAuditCount{0};
@@ -208,7 +51,9 @@ index 24c48cf..0000000 100644
 +}
 +
  void loadDXGIModule();
-@@ -154,6 +188,10 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForHwnd(IDXGIFactory2* pF
+ 
+ 
+@@ -155,6 +192,9 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForHwnd(IDXGIFactory2* pF
      }
  
      HRESULT hr = S_OK;
@@ -217,7 +62,9 @@ index 24c48cf..0000000 100644
 +        pDesc->Flags, pDesc->BufferUsage);
      bool skip = false;
      {
-@@ -169,6 +207,9 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForHwnd(IDXGIFactory2* pF
+         const auto& hooks = sl::plugin_manager::getInterface()->getBeforeHooks(FunctionHookID::eIDXGIFactory_CreateSwapChainForHwnd);
+@@ -168,6 +208,9 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForHwnd(IDXGIFactory2* pF
+             }
          }
      }
 +    SL_LOG_INFO("DL2 SC AUDIT POST_PLUGIN_HOOKS format=%u size=%ux%u buffers=%u flags=0x%X usage=0x%X skip=%u",
@@ -225,11 +72,25 @@ index 24c48cf..0000000 100644
 +        desc.BufferUsage, skip ? 1 : 0);
  
      if (!skip)
-@@ -180,6 +221,7 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForHwnd(IDXGIFactory2* pF
+     {
+@@ -178,6 +221,7 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForHwnd(IDXGIFactory2* pF
              return hr;
          }
      }
 +    logDL2NativeSwapchain("NATIVE_AFTER_DXGI_CREATE", *ppSwapChain);
  
      {
+         const auto& hooks = sl::plugin_manager::getInterface()->getAfterHooks(FunctionHookID::eIDXGIFactory_CreateSwapChainForHwnd);
 diff --git a/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp b/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp
+index 24c48cf..d8c4683 100644
+--- a/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp
++++ b/source/core/sl.interposer/dxgi/dxgiSwapchain.cpp
+@@ -590,6 +590,8 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::CheckColorSpaceSupport(DXGI_COLOR_SPACE
+ }
+ HRESULT STDMETHODCALLTYPE DXGISwapChain::SetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace)
+ {
++    SL_LOG_INFO("DL2 SC AUDIT SET_COLOR_SPACE native=0x%p color_space=%u",
++        m_base, static_cast<uint32_t>(ColorSpace));
+     return static_cast<IDXGISwapChain3*>(m_base)->SetColorSpace1(ColorSpace);
+ }
+ HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers1(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format, UINT SwapChainFlags, const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue)
