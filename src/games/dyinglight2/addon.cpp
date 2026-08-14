@@ -2231,6 +2231,9 @@ std::vector<UpscalerColorWriterObservation> upscaler_color_writer_observations;
 uint64_t upscaler_color_execute_serial = 0u;
 UpscalerInputAuditState upscaler_input_audit_state = {};
 uint64_t upscaler_input_audit_capture_serial = 0u;
+// One-shot guard: the 0x3E audit reports the t1 resource handle but not its
+// content. This flag ensures the deferred t1[0] readback runs once per arming.
+bool t1_baseline_readback_logged = false;
 UpscalerSourceWriterAuditState upscaler_source_writer_audit_state = {};
 uint64_t upscaler_source_writer_audit_capture_serial = 0u;
 std::mutex downstream_draw_capture_mutex;
@@ -4873,6 +4876,64 @@ void RemoveDlssFgNativeExecuteHook() {
   dlss_fg_native_queues.clear();
 }
 
+// Reads the content of the 0x3E t1 texture (a 1x1 auto-exposure baseline) via
+// a deferred copy to a gpu_to_cpu staging texture, then logs the resource
+// format/size plus the raw 32-bit value and its float decode. The on-screen
+// glyph chip truncates at one integer digit, so only this readback is
+// trustworthy for the actual exposure magnitude. One-shot diagnostic only;
+// never runs in the hot path, and it waits idle for the copy so a failure is
+// visible in the log instead of silently producing a wrong number.
+static bool TryLogT1Baseline(reshade::api::command_queue* queue, reshade::api::resource source) {
+  if (queue == nullptr || source.handle == 0u) return false;
+  auto* device = queue->get_device();
+  if (device == nullptr) return false;
+  const auto desc = device->get_resource_desc(source);
+  if (desc.type != reshade::api::resource_type::texture_2d) return false;
+
+  reshade::api::resource staging = {};
+  const reshade::api::resource_desc staging_desc(
+      desc.texture.width, desc.texture.height, desc.texture.depth_or_layers, 1,
+      desc.texture.format, 1, reshade::api::memory_heap::gpu_to_cpu,
+      reshade::api::resource_usage::copy_dest);
+  if (!device->create_resource(staging_desc, nullptr, reshade::api::resource_usage::copy_dest, &staging)) {
+    renodx::utils::log::w("DL2 t1 baseline readback: staging create failed");
+    return false;
+  }
+  auto* cmd_list = device->get_immediate_command_list();
+  if (cmd_list == nullptr) {
+    device->destroy_resource(staging);
+    renodx::utils::log::w("DL2 t1 baseline readback: no immediate command list");
+    return false;
+  }
+  cmd_list->copy_texture_region(source, 0, nullptr, staging, 0, nullptr);
+  queue->flush_immediate_command_list();
+  queue->wait_idle();
+
+  reshade::api::subresource_data data = {};
+  if (!device->map_texture_region(staging, 0, nullptr, reshade::api::map_access::read_only, &data)) {
+    device->destroy_resource(staging);
+    renodx::utils::log::w("DL2 t1 baseline readback: map failed");
+    return false;
+  }
+  uint32_t bits = 0u;
+  float value = 0.f;
+  if (data.data != nullptr) {
+    std::memcpy(&bits, data.data, sizeof(uint32_t));
+    std::memcpy(&value, data.data, sizeof(float));
+  }
+  device->unmap_texture_region(staging, 0);
+  device->destroy_resource(staging);
+
+  std::ostringstream stream;
+  stream << "DL2 t1 baseline readback: resource=0x" << std::hex << source.handle << std::dec
+         << " format=" << static_cast<uint32_t>(desc.texture.format)
+         << " size=" << desc.texture.width << "x" << desc.texture.height
+         << " raw_bits=0x" << std::hex << bits << std::dec
+         << " float=" << value;
+  renodx::utils::log::i(stream.str().c_str());
+  return true;
+}
+
 void OnDownstreamDrawCapturePresent(
     reshade::api::command_queue* queue,
     reshade::api::swapchain* swapchain,
@@ -4947,6 +5008,14 @@ void OnDownstreamDrawCapturePresent(
   std::scoped_lock lock(downstream_draw_capture_mutex);
   if (upscaler_input_audit_state.active) {
     auto& audit = upscaler_input_audit_state;
+    // One-shot t1[0] baseline readback. The audit stores the t1 resource
+    // handle from the first 0x3E draw; log its actual content (raw bits +
+    // decoded float) so the glyph readout can be verified and the day/night
+    // magnitude question answered with a real number.
+    if (!t1_baseline_readback_logged && audit.count >= 1u) {
+      t1_baseline_readback_logged = true;
+      TryLogT1Baseline(queue, reshade::api::resource{audit.entries[0].exposure.resource});
+    }
     ++audit.presents;
     // DLSS-G can interleave generated Presents with real rendering. Complete
     // on four actual 0x3E draws, with a bounded timeout for a genuine miss.
@@ -6417,7 +6486,7 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture 0x3E Inputs and Curve (4 Draws)",
         .section = "Debug",
-        .tooltip = "One-shot: records four Tonemapper draws (waiting up to 32 Presents), including t0 scene source, t1 auto-exposure source, and b0 SDR-curve binding. Where the game's constant upload is cached, it also prints the five curve floats referenced by the original shader. No texture readback, resource mutation, or timing change.",
+        .tooltip = "One-shot: records four Tonemapper draws (waiting up to 32 Presents), including t0 scene source, t1 auto-exposure source, and b0 SDR-curve binding. Where the game's constant upload is cached, it also prints the five curve floats referenced by the original shader. The first captured t1 texture is also copied back and its raw bits + float are logged once. No resource mutation or timing change outside this one-shot readback.",
         .on_click = []() {
           std::scoped_lock lock(downstream_draw_capture_mutex);
           const uint64_t capture_id = ++upscaler_input_audit_capture_serial;
@@ -6427,6 +6496,7 @@ renodx::utils::settings::Settings settings = {
               .start_generation = generation,
               .active = true,
           };
+          t1_baseline_readback_logged = false;
           downstream_capture_t0_views.clear();
           upscaler_input_cb0_ranges.clear();
           std::ostringstream stream;

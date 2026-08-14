@@ -118,3 +118,39 @@ GitHub Actions is the build path; local FXC is unavailable/unreliable. Use `git 
 - Both probes render through `RenderIntermediatePass` so they survive the game's later composite passes.
 - Diagnostic use: with Dark Scene + Exposure, night bulk should read dark blue/cyan/green with lights at yellow/orange/red; the corner chip confirms exposure ~0.4 day vs ~1.5-2 night for the eventual auto-exposure-driven day/night adaptive gain.
 
+## 2026-08-10 t1 baseline readback and exposure-magnitude correction
+
+### The glyph chip is not trustworthy for magnitude
+
+The on-screen glyph renders one integer + one decimal digit and clamps the
+integer to 0-9. A real value >= 10 therefore prints as `9.x`, and the `E`
+label next to the first digit can be misread as a digit: the user read the
+night `E8.0`/`E8.1` glyphs as "80"/"81", and day sky also read as `E8.0`.
+The value does change with the scene (consistent with auto-exposure), but its
+magnitude cannot be read off the glyph.
+
+### Corrected 0x3E exposure understanding
+
+- `t1` is a `1x1` `R32_FLOAT` texture; the shader reads `t1.SampleLevel((0,0)).x` as a single global baseline. Same frame, every pixel gets the same value, so "sky 80 vs ground 81" was a frame-to-frame change, not per-pixel.
+- `cb0` (values `[2.27, 0.17, 1.69, 0.8, 0.14]`) is the fixed SDR tonemap curve constants (`ApplyDL2SDRCurve`), identical day/night. It is not the per-pixel auto-exposure.
+- The `0x3E Inputs and Curve` audit confirms the same t1 resource and same cb0 values across captures; only the t1 content (invisible to the audit) varies.
+
+### New: t1[0] readback in the 0x3E audit
+
+`Capture 0x3E Inputs and Curve (4 Draws)` now performs a one-shot deferred
+readback of the first captured t1 texture: copies to a `gpu_to_cpu` staging
+texture via the immediate command list, `flush_immediate_command_list` +
+`wait_idle`, maps, and logs `format`, `size`, `raw_bits`, and the decoded
+`float`. Guarded by `t1_baseline_readback_logged` (reset on each arming),
+runs only when `audit.count >= 1`, and never in the hot path. The glyph chip
+remains but is documented as a rough visual; the readback line
+`DL2 t1 baseline readback: ... float=...` is authoritative.
+
+### Next: capture day and night readbacks
+
+Click the audit button once in a bright day scene and once at night; compare
+the `DL2 t1 baseline readback` `float=` values. That determines whether t1[0]
+separates day/night (and by how much) before building the auto-exposure-driven
+adaptive gain. Do not tune Night Scene Gain or the protection curve from the
+glyph readout.
+

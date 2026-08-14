@@ -92,11 +92,12 @@ uint DebugGlyph(int digit, int row) {
   return patterns[k][clamp(row, 0, 6)];
 }
 
-// Draws "E" (t1 global baseline label) followed by the baseline value as one
-// integer digit and one decimal digit (e.g. E1.5, or E8.1 for a large night
-// baseline). This is t1[0] only, NOT the per-pixel auto-exposure result: the
-// real exposure is t1[0] * cb0 curve * pixel luminance. Wide gaps and a
-// prominent dot keep "1.5" from reading as "15".
+// Draws "E" (t1 global exposure baseline label) followed by the baseline as
+// one integer digit and one decimal digit (e.g. E1.5). This is t1[0] ONLY and
+// is a rough visual: the authoritative value is the t1 readback logged by the
+// 0x3E Inputs and Curve audit. The wide gap after E keeps "E 8 . 1" from
+// reading as "81", and a value >= 10 would show as 9.x because only one digit
+// is rendered.
 float3 DebugExposureOverlay(float2 uv, float exposure) {
   const float2 chip0 = float2(0.015, 0.012);
   const float2 chip1 = float2(0.24, 0.06);
@@ -110,7 +111,7 @@ float3 DebugExposureOverlay(float2 uv, float exposure) {
   const float cell_x = 0.011;
   const float cell_y = 0.006;
   for (int i = 0; i < 4; ++i) {
-    const float x0 = chip0.x + i * (5.0 * cell_x + 0.009);
+    const float x0 = chip0.x + i * (5.0 * cell_x + 0.014);
     const float x1 = x0 + 5.0 * cell_x;
     if (uv.x < x0 || uv.x >= x1) continue;
     const int col = (int)((uv.x - x0) / cell_x);
