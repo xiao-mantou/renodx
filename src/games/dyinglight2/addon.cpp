@@ -4899,7 +4899,7 @@ static bool TryLogT1Baseline(reshade::api::command_queue* queue, reshade::api::r
     renodx::utils::log::w("DL2 t1 baseline readback: staging create failed");
     return false;
   }
-  auto* cmd_list = device->get_immediate_command_list();
+  auto* cmd_list = queue->get_immediate_command_list();
   if (cmd_list == nullptr) {
     device->destroy_resource(staging);
     renodx::utils::log::w("DL2 t1 baseline readback: no immediate command list");
