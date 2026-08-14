@@ -5826,10 +5826,10 @@ renodx::utils::settings::Settings settings = {
     new renodx::utils::settings::Setting{
         .key = "NightSceneGain",
         .binding = &shader_injection.night_scene_gain,
-        .default_value = 1.f,
+        .default_value = 2.f,
         .label = "Night Scene Gain",
         .section = "Tone Mapping",
-        .tooltip = "Scales the linear scene before tone mapping. DL2's raw night scene sits below the 203-nit reference (most pixels under 0.5, lights 1-8), and the Hermite curve only shapes values above its knee near scene 1.0. Raising this moves night detail into the curve's visible range while lights ride up toward Peak. Tune while Legacy Debug Mode 46 is active, then return to Off.",
+        .tooltip = "Maximum scene-gain applied in dark scenes. It scales linearly with DL2's auto-exposure baseline t1[0]: bright scenes (t1[0] ~0.1, daylight) stay at 1.0, fully dark scenes (t1[0] >=2.0, night/interior) reach this value. This is an input calibration so wall-vs-light ratios are preserved. Raise only if dark scenes still look too flat after the curve.",
         .min = 0.1f,
         .max = 10.f,
         .is_visible = []() { return current_settings_mode >= 1; },

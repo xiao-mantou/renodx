@@ -239,13 +239,16 @@ void main(
     out float4 o0 : SV_TARGET0) {
   const float4 source = t0.SampleLevel(s0_s, v1.xy, 0);
   const float exposure = t1.SampleLevel(s0_s, float2(0.0, 0.0), 0).x;
-  // DL2's raw scene sits far below the 203-nit reference at night (Mode 10/46
-  // show most pixels under 0.5 while lights reach 1-8). The Hermite knee is
-  // near scene 1.06, so everything below that passes through unshaped. The
-  // Night Scene Gain scales the input so night detail enters the curve's
-  // visible range; it is a linear calibration, not an output-side lift, so
-  // wall-vs-light ratios are preserved while the curve shapes the higher end.
-  const float3 scene_linear = source.rgb * 0.6 * max(RENODX_NIGHT_SCENE_GAIN, 0.01);
+  // t1[0] is DL2's global auto-exposure baseline: it rises toward ~1.8 in
+  // dark scenes (night, interior corners) and falls toward ~0.1 in bright
+  // daylight, so it is a natural scene-darkness signal with a ~17x span.
+  // Night Scene Gain is scaled by how dark the scene is, so dark scenes lift
+  // while bright scenes stay at gain 1.0 (daytime untouched). It is an input
+  // calibration, not an output lift: wall-vs-light ratios are preserved and
+  // the curve shapes the higher end.
+  const float scene_darkness = smoothstep(0.2, 2.0, exposure);
+  const float adaptive_gain = lerp(1.0, max(RENODX_NIGHT_SCENE_GAIN, 0.01), scene_darkness);
+  const float3 scene_linear = source.rgb * 0.6 * adaptive_gain;
   const float3 game_exposed = scene_linear * exposure;
   const float3 vanilla = ApplyDL2SDRCurve(game_exposed, cb0[0], cb0[1]);
 
