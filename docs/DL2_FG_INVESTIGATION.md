@@ -4,11 +4,14 @@ Short working log for the DLSS Frame Generation path. Keep HDR/UI/DLSS SR histor
 
 ## Current Chain
 
-`0xAD source -> RenoDX prepared HDR tray -> Streamline DLSS-G -> fake swapchain buffers -> RGB10 real backbuffers -> RenoDX final proxy`
+`native DL2 RGBA8 swapchain -> Streamline DLSS-G RGBA8 fake buffers -> display path`
 
-The real swapchain resources are RGB10 (`DXGI_FORMAT_R10G10B10A2_UNORM`, 24), while the DLSS-G-facing swapchain reports RGBA8 (`DXGI_FORMAT_R8G8B8A8_UNORM`, 28). Streamline consequently allocates three `sl.dlssg.fake-swapchain-buffer` resources as RGBA8.
+The former claim that the native backbuffers were RGB10 was not directly measured and is superseded below.
 
 ## Proven Results
+
+- 2026-08-14 native-only Streamline v2.9 diagnostic: the common `setupSwapchainProxy` point reports the game native swapchain as `DXGI_FORMAT 28` at 1920x1080 with three backbuffers; all three actual `ID3D12Resource::GetDesc().Format` values are also `28` (`R8G8B8A8_UNORM`). DLSS-G then creates its 2560x1440 four-buffer fake swapchain and three `sl.dlssg.fake-swapchain-buffer` resources in the same RGBA8 format. This proves the native FG contract is SDR/RGBA8 before DLSS-G, not HDR/RGB10 relabeled by the plugin.
+- Consequence: do not resume RGB10/PQ bridge, fake-buffer replacement, native-interface wrapper, or timing/wait experiments as an HDR-FG fix. They cannot make DLSS-G generate a native HDR frame from this verified SDR contract without altering the game/closed plugin creation behavior.
 
 - Present timing is complete: each 0xAD submission reaches the immediately following DLSS-G `Present1`; `skip=1` and `hr=0` are stable.
 - 2x FG cadence is visible as two ReShade Presents per source frame.
