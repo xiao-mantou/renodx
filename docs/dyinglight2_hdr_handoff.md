@@ -216,3 +216,63 @@ controls had no effect because the DL2 normal path bypassed `ToneMapPass`.
 3. Decide 0x268 Game exit@2 scaling fate (currently still present; it may be a
    duplicate of the 0x3E standard Game handling).
 
+## 2026-08-15 Later: paper-white anchor investigation (key conclusions)
+
+Long discussion resolved what anchors the HDR paper white. Recorded so the
+thread is not lost.
+
+### Data-flow vocabulary (keep precise)
+
+```
+raw (scene_linear, unexposed)
+  x exposure (auto)  ->  untonemapped (uTM) = raw * exposure
+  uTM -> ApplyDL2SDRCurve (vanilla, 0..1)   [SDR reference, clamps at 1.0]
+  uTM -> ToneMapPass (HDR, 0..peak)         [RenoDRT]
+```
+
+- **Two different "1.0"s**: vanilla's 1.0 (SDR display white, output of
+  `ApplyDL2SDRCurve`) vs ToneMapPass output 1.0 (HDR paper white). Do not
+  conflate.
+- `uTM = 1.275` is the input at which `ApplyDL2SDRCurve` outputs 1.0 (solved
+  from cb0 = [2.27, 0.17, 1.69, 0.8, 0.14]: `(a x + b)x / ((c x + d)x + e) = 1`
+  => `x = (0.63 + sqrt(0.7217)) / 1.16 ~= 1.275`). It is the SDR display ceiling
+  (white wall), NOT the HDR paper white.
+- The 0x268 LUT clamps at coordinate 1.0 (white corner). uTM 1.275 reaches
+  that corner; anything above is saturate-clamped to white (SDR loses highlight
+  steps there). This is the correct "highlight boundary" in uTM.
+
+### Correct anchor model (RenoDRT, code-verified)
+
+```
+src/shaders/tonemap/reno_drt.hlsl:
+  reference_white = 100.f        // reference white nits
+  mid_gray_value  = 0.18f        // scene 18% gray
+  mid_gray_nits   = 10.f         // output gray nits
+  peak = nits_peak / reference_white
+```
+
+- RenoDRT's paper white / peak are derived from the **mid-gray anchor**
+  (0.18 scene -> 10 nits; reference white = 100 nits). It is **independent of
+  any SDR reference point**. "SDR reference white as paper white" was
+  investigated and rejected; the framework does not use SDR values.
+- DL2's `diffuse_white_nits` (Game slider, default 203) is the *user paper
+  white*; RenoDRT's internal reference white (100) is separate.
+- `ScaleToneMappedScene` converts ToneMapPass output (relative to Game) back to
+  DL2's fixed 203 unit: `color * (Game / 203)`.
+
+### Open question for DL2
+
+- Whether RenoDRT's mid-gray anchor (0.18 scene) lands correctly in DL2 depends
+  on the uTM (raw * exposure) value domain, which is not calibrated yet. The
+  real test: measure what uTM value is DL2's scene mid-gray, and what nits it
+  produces. This is the paper-white calibration.
+- Previous "0.6 calibration" and "203 nits" are both unproven assumptions
+  (same category). Do not treat either as authoritative without measurement.
+
+### Next concrete step (measurement)
+
+Add a diagnostic that shows, for a scene, how `uTM` maps to RenoDRT's anchors:
+display false-color of `uTM` relative to `mid_gray` (0.18) and relative to the
+paper-white boundary (1.275). Then measure a known-mid-gray scene to anchor the
+value domain.
+
