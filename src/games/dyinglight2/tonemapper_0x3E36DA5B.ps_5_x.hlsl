@@ -621,11 +621,12 @@ void main(
                                                : 16.0)
       : post_lut_game_probe
           ? ToneMapDL2FixedScene(untonemapped, vanilla, neutral_sdr)
-          // A1 baseline: RenoDRT normal path uses the standard ToneMapPass so
-          // the RenoDRT Curve / Scaling controls take effect again. The DL2
-          // Hermite candidates remain reachable only through the diagnostic
-          // grids above. Game/Peak follow standard RenoDRT coupling.
-          : ScaleToneMappedScene(
-                renodx::draw::ToneMapPass(untonemapped, vanilla, neutral_sdr));
+          // Plan B (Silksong pattern): 0x3E outputs the untonemapped linear HDR
+          // so the 0x268 LUT pass can run the full bridge (max-channel compress
+          // into the game LUT, reconstruct, then three-argument ToneMapPass).
+          // This lets 0x268's ToneMapPass receive the raw HDR and own the
+          // Game/Peak rolloff, matching the SKILL reference. The vanilla SDR
+          // path above is preserved for Off.
+          : untonemapped;
   o0.a = source.a;
 }

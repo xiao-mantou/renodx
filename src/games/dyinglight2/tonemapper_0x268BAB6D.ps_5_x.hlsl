@@ -78,27 +78,49 @@ void main(
     const float strengths[4] = {0.0, 0.25, 0.5, 0.75};
     input_hdr = lerp(input_hdr, renodx::color::srgb::DecodeSafe(input_hdr), strengths[quadrant]);
   }
-  const float3 input_sdr = saturate(input_hdr);
+  // Plan B (0xA7F77A42 pattern): build a neutral SDR reference from the HDR
+  // signal instead of hard-clipping it, so the vanilla LUT and its
+  // smoothstep/contrast/saturation chain operate on a bounded 0..1 neutral
+  // reference. The HDR magnitude survives in `input_hdr` and is restored by
+  // the three-argument ToneMapPass below. This is the Silksong-style branch:
+  // neutral_sdr -> LUT -> graded_color, while untonemapped -> RenoDRT.
+  const float3 neutral_sdr = renodx::tonemap::renodrt::NeutralSDR(input_hdr);
   if (RENODX_TONE_MAP_TYPE != 0.0) {
-    r1.xyz = input_sdr;
+    r1.xyz = neutral_sdr;
   }
 
-  r2.xyz = log2(abs(r1.xyz));
-  r2.xyz = float3(0.416666657, 0.416666657, 0.416666657) * r2.xyz;
-  r2.xyz = exp2(r2.xyz);
-  r2.xyz = r2.xyz * float3(1.05499995, 1.05499995, 1.05499995) + float3(-0.0549999997, -0.0549999997, -0.0549999997);
-  r3.xyz = float3(12.9200001, 12.9200001, 12.9200001) * r1.xyz;
-  r1.xyz = cmp(float3(0.00313080009, 0.00313080009, 0.00313080009) >= r1.xyz);
-  r1.xyz = r1.xyz ? r3.xyz : r2.xyz;
-  r1.xyz = r1.xyz * float3(0.96875, 0.96875, 0.96875) + float3(0.015625, 0.015625, 0.015625);
-  r1.xyz = t1.SampleLevel(s1_s, r1.xyz, 0).xyz;
-  r2.xyz = r1.xyz * float3(0.947867274, 0.947867274, 0.947867274) + float3(0.0521326996, 0.0521326996, 0.0521326996);
-  r2.xyz = log2(abs(r2.xyz));
-  r2.xyz = float3(2.4000001, 2.4000001, 2.4000001) * r2.xyz;
-  r2.xyz = exp2(r2.xyz);
-  r3.xyz = float3(0.0773993805, 0.0773993805, 0.0773993805) * r1.xyz;
-  r1.xyz = cmp(float3(0.0404499993, 0.0404499993, 0.0404499993) >= r1.xyz);
-  r1.xyz = r1.xyz ? r3.xyz : r2.xyz;
+  float3 lut_result;
+  if (RENODX_TONE_MAP_TYPE == 0.f) {
+    // Vanilla LUT path: original sRGB-encoded 3D LUT sample.
+    r2.xyz = log2(abs(r1.xyz));
+    r2.xyz = float3(0.416666657, 0.416666657, 0.416666657) * r2.xyz;
+    r2.xyz = exp2(r2.xyz);
+    r2.xyz = r2.xyz * float3(1.05499995, 1.05499995, 1.05499995) + float3(-0.0549999997, -0.0549999997, -0.0549999997);
+    r3.xyz = float3(12.9200001, 12.9200001, 12.9200001) * r1.xyz;
+    r1.xyz = cmp(float3(0.00313080009, 0.00313080009, 0.00313080009) >= r1.xyz);
+    r1.xyz = r1.xyz ? r3.xyz : r2.xyz;
+    r1.xyz = r1.xyz * float3(0.96875, 0.96875, 0.96875) + float3(0.015625, 0.015625, 0.015625);
+    r1.xyz = t1.SampleLevel(s1_s, r1.xyz, 0).xyz;
+    r2.xyz = r1.xyz * float3(0.947867274, 0.947867274, 0.947867274) + float3(0.0521326996, 0.0521326996, 0.0521326996);
+    r2.xyz = log2(abs(r2.xyz));
+    r2.xyz = float3(2.4000001, 2.4000001, 2.4000001) * r2.xyz;
+    r2.xyz = exp2(r2.xyz);
+    r3.xyz = float3(0.0773993805, 0.0773993805, 0.0773993805) * r1.xyz;
+    r1.xyz = cmp(float3(0.0404499993, 0.0404499993, 0.0404499993) >= r1.xyz);
+    lut_result = r1.xyz ? r3.xyz : r2.xyz;
+  } else {
+    // HDR path: keep the LUT result in the SDR/LUT domain (0..1). neutral_sdr
+    // is already bounded, so encode it into the LUT's sRGB domain and sample.
+    // Do NOT restore >1 here: graded_sdr stays 0..1 so the vanilla
+    // smoothstep/contrast/saturation chain is safe. HDR highlights are
+    // recovered from untonemapped by the three-argument ToneMapPass below.
+    float3 neutral_gamma = renodx::color::srgb::EncodeSafe(neutral_sdr);
+    neutral_gamma = neutral_gamma * float3(0.96875, 0.96875, 0.96875) + float3(0.015625, 0.015625, 0.015625);
+    float3 lut_sampled = t1.SampleLevel(s1_s, neutral_gamma, 0).xyz;
+    lut_sampled = lut_sampled * float3(0.947867274, 0.947867274, 0.947867274) + float3(0.0521326996, 0.0521326996, 0.0521326996);
+    lut_result = renodx::color::srgb::DecodeSafe(lut_sampled);
+  }
+  r1.xyz = lut_result;
   r0.xyz = r1.xyz * r0.xyz;
   r0.w = dot(r0.xyz, float3(0.212599993, 0.715200007, 0.0722000003));
   r0.w = max(9.99999975e-005, r0.w);
@@ -125,19 +147,17 @@ void main(
   float3 stable_grade = native_lut_grade;
 
   if (RENODX_TONE_MAP_TYPE != 0.0) {
-    // The game LUT ends in saturate, so it grades an SDR-domain reference and
-    // would clamp HDR highlights back to 1.0 (the 203-nit white). Instead of
-    // reconstructing highlight color (UpgradeToneMap/Chrominance/Hue rewrite
-    // hue and cause the washed-out look), keep the LUT color correction
-    // entirely and only stretch its luminance back to the HDR scene value.
-    // Chroma/hue therefore come straight from the game LUT, unchanged.
-    const float y_hdr = renodx::color::y::from::BT709(max(input_hdr, 0.0));
-    const float y_lut = renodx::color::y::from::BT709(max(native_lut_grade, 0.0001));
-    const float hdr_ratio = y_hdr / y_lut;
-    upgraded_grade = native_lut_grade * hdr_ratio;
-    stable_grade = upgraded_grade;
+    // Plan B (0xA7F77A42 pattern): the native LUT/color-grade chain (color
+    // temp, LUT sample, luminance balance, smoothstep contrast, saturation)
+    // produced `native_lut_grade` from the neutral_sdr reference. Feed that
+    // as graded_color through the three-argument ToneMapPass so RenoDRT
+    // preserves the HDR magnitude from `input_hdr` while keeping the LUT
+    // grading. This replaces the old hdr_ratio luminance restore, which only
+    // stretched brightness without recovering the clipped hue/saturation.
+    upgraded_grade = native_lut_grade;
+    stable_grade = native_lut_grade;
 
-    o0.rgb = upgraded_grade;
+    o0.rgb = renodx::draw::ToneMapPass(input_hdr, upgraded_grade, neutral_sdr);
   }
 
   if (RENODX_DEBUG_MODE > 34.5 && RENODX_DEBUG_MODE < 35.5) {
