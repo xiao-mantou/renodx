@@ -135,6 +135,40 @@ float3 ScaleToneMappedScene(float3 color) {
   return color * (RENODX_DIFFUSE_WHITE_NITS / 203.0);
 }
 
+// Renders a small integer/decimal label at (origin_x, origin_y) using the
+// 5x7 glyphs, so diagnostics can annotate each ladder bar with its input value.
+// Returns white if this pixel is part of the label, black otherwise.
+float3 DebugRenderLabel(float2 uv, float origin_x, float origin_y, float value, float cell = 0.012f) {
+  // Format value up to one decimal: e.g. 0.18 -> "0.18", 32 -> "32".
+  const int whole = clamp((int)value, 0, 99);
+  const int tenth = clamp((int)((value - floor(value)) * 10.0 + 0.5), 0, 9);
+  const int hundredth = value < 1.0
+                            ? clamp((int)((value - floor(value)) * 100.0 + 0.5) % 10, 0, 9)
+                            : -1;
+  // Characters: tens, ones, ('.', tenth, hundredth if <1).
+  int chars[6] = {-1, -1, -1, -1, -1, -1};
+  int count = 0;
+  if (whole >= 10) {
+    chars[count++] = whole / 10;
+  }
+  chars[count++] = whole % 10;
+  if (value < 1.0) {
+    chars[count++] = 10;  // decimal point
+    chars[count++] = tenth;
+    if (hundredth >= 0) chars[count++] = hundredth;
+  }
+  for (int i = 0; i < count; ++i) {
+    const float x0 = origin_x + i * (5.0 * cell + 0.008);
+    const float x1 = x0 + 5.0 * cell;
+    if (uv.x < x0 || uv.x >= x1) continue;
+    const int col = (int)((uv.x - x0) / cell);
+    const int row = (int)((uv.y - origin_y) / (cell * 1.4f));
+    if (row < 0 || row > 6) continue;
+    if (((DebugGlyph(chars[i], row) >> col) & 1u) != 0u) return float3(1.0, 1.0, 1.0);
+  }
+  return float3(0.0, 0.0, 0.0);
+}
+
 // DL2-specific diagnostic curve. The source scene is anchored to 203 nits,
 // so Game Brightness must change the gray output without moving the input
 // value that reaches Peak Brightness. The generic three-argument path uses
@@ -273,23 +307,32 @@ void main(
   }
 
   // ToneMapPass input->output response ladder. Injects known untonemapped
-  // scene values (0.18 through 32) into the standard ToneMapPass and displays
-  // each result, so the full input->output nit curve can be read directly
-  // from one frame. With Game=203, a healthy curve is monotonic: low inputs
-  // map near identity (0.18 -> ~203, 1 -> ~203) and higher inputs rise toward
-  // Peak. If the curve flattens early, the tone curve or Peak wiring is wrong.
+  // scene values (0.18 through 32) into the standard single-argument
+  // ToneMapPass and renders each result as an opaque bar, so the full
+  // input->output nit curve can be read from one frame without scene
+  // interference. The bar color is the raw ToneMapPass result; the label above
+  // each bar shows the injected input value. A healthy curve is monotonic with
+  // the high bars reaching toward Peak.
   if (RENODX_DEBUG_MODE > 47.5 && RENODX_DEBUG_MODE < 48.5) {
     const float levels[8] = {0.18, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0};
-    uint index = 0u;
-    if (v1.x > 0.05 && v1.x < 0.95) {
-      index = min((uint)((v1.x - 0.05) * 10.0), 7u);
+    // Opaque black background so the scene cannot leak through and skew the
+    // luminance readback.
+    o0 = float4(0.0, 0.0, 0.0, 1.0);
+    if (v1.x >= 0.06 && v1.x <= 0.94 && v1.y >= 0.35 && v1.y <= 0.75) {
+      const uint index = min((uint)((v1.x - 0.06) / 0.88 * 8.0), 7u);
+      const float3 test_input = levels[index].xxx;
+      // Single-argument ToneMapPass: pure input->output curve, no graded/
+      // neutral reconstruction that would depend on the real scene.
+      const float3 test_output = renodx::draw::ToneMapPass(test_input);
+      o0.rgb = test_output;
+    } else {
+      // Label row above the bars shows each input value.
+      const float label_y = 0.26;
+      for (int i = 0; i < 8; ++i) {
+        const float bar_left = 0.06 + (float)i / 8.0 * 0.88;
+        o0.rgb += DebugRenderLabel(v1.xy, bar_left + 0.01, label_y, levels[i]);
+      }
     }
-    const float3 test_input = levels[index].xxx;
-    // Raw output (no RenderIntermediatePass sRGB encode) so the readback
-    // matches the actual ToneMapPass value instead of an encoded intermediate.
-    o0.rgb = ScaleToneMappedScene(
-        renodx::draw::ToneMapPass(test_input, vanilla, neutral_sdr));
-    o0.a = 1.0;
     return;
   }
 
