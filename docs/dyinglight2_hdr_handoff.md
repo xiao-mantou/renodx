@@ -291,16 +291,23 @@ value domain.
   swapchain caused `upgrade_index=-1` (no FP16 clone) and the 203-nit clamp.
   Fixing the render resolution to match re-enabled the FP16 upgrade.
 
-### Why the sun changed from ~800 to ~1800 (not a code fix)
+### Why the sun changed from ~800 to ~1800 (probable: Peak/Game ratio, not plan B)
 
-- Plan B (`2b76415`) moved the HDR tonemap from `0x3E` (single
-  `ScaleToneMappedScene(ToneMapPass)`) to `0x268` (three-argument
-  `ToneMapPass(input_hdr, upgraded_grade, neutral_sdr)`), so the highlight
-  rolloff is now fully applied in 0x268.
-- The sun brightness also depends on `Peak/Game`: with Game=500,
-  `Peak/Game = 4000/500 = 8` -> sun ~800; with Game=203, `Peak/Game =
-  4000/203 ~= 19.7` -> sun ~1800. Raising Game lowers `Peak/Game` and thus
-  darkens highlights; this is standard RenoDRT behavior, not a regression.
+The sun brightness depends on `Peak/Game`: with Game=500,
+`Peak/Game = 4000/500 = 8` -> sun ~800; with Game=203, `Peak/Game =
+4000/203 ~= 19.7` -> sun ~1800. Raising Game lowers `Peak/Game` and thus
+darkens highlights; this is standard RenoDRT behavior, not a regression.
+
+The 800 measurement was taken on a build that already contained plan B
+(`2b76415`), so `2b76415` itself cannot be the cause of the 800->1800
+change. The difference is almost certainly the Game setting (500 vs 203),
+not a code commit.
+
+**Deferred verification (do not assume):** re-test build `2b76415` with
+`Game=500`, `Peak=4000` and confirm the sun reproduces ~800. If it does,
+the Game/PK ratio is confirmed as the cause. If it does not, the cause is
+still unexplained and needs investigation.
+
 
 ### Paper white and mid-gray both remain to be calibrated
 
