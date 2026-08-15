@@ -285,9 +285,10 @@ void main(
       index = min((uint)((v1.x - 0.05) * 10.0), 7u);
     }
     const float3 test_input = levels[index].xxx;
-    const float3 test_output = ScaleToneMappedScene(
+    // Raw output (no RenderIntermediatePass sRGB encode) so the readback
+    // matches the actual ToneMapPass value instead of an encoded intermediate.
+    o0.rgb = ScaleToneMappedScene(
         renodx::draw::ToneMapPass(test_input, vanilla, neutral_sdr));
-    o0.rgb = renodx::draw::RenderIntermediatePass(test_output);
     o0.a = 1.0;
     return;
   }
