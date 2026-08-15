@@ -272,6 +272,26 @@ void main(
     return;
   }
 
+  // ToneMapPass input->output response ladder. Injects known untonemapped
+  // scene values (0.18 through 32) into the standard ToneMapPass and displays
+  // each result, so the full input->output nit curve can be read directly
+  // from one frame. With Game=203, a healthy curve is monotonic: low inputs
+  // map near identity (0.18 -> ~203, 1 -> ~203) and higher inputs rise toward
+  // Peak. If the curve flattens early, the tone curve or Peak wiring is wrong.
+  if (RENODX_DEBUG_MODE > 47.5 && RENODX_DEBUG_MODE < 48.5) {
+    const float levels[8] = {0.18, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0};
+    uint index = 0u;
+    if (v1.x > 0.05 && v1.x < 0.95) {
+      index = min((uint)((v1.x - 0.05) * 10.0), 7u);
+    }
+    const float3 test_input = levels[index].xxx;
+    const float3 test_output = ScaleToneMappedScene(
+        renodx::draw::ToneMapPass(test_input, vanilla, neutral_sdr));
+    o0.rgb = renodx::draw::RenderIntermediatePass(test_output);
+    o0.a = 1.0;
+    return;
+  }
+
   // Mode 5 belongs to the swapchain proxy. Let the scene pass through so it
   // can prove whether the final HDR output path is actually being executed.
   if (RENODX_DEBUG_MODE > 0.5 && RENODX_DEBUG_MODE < 4.5) {
