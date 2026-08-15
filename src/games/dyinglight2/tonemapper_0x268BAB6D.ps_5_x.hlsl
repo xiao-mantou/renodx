@@ -109,14 +109,17 @@ void main(
     r1.xyz = cmp(float3(0.0404499993, 0.0404499993, 0.0404499993) >= r1.xyz);
     lut_result = r1.xyz ? r3.xyz : r2.xyz;
   } else {
-    // HDR path: keep the LUT result in the SDR/LUT domain (0..1). neutral_sdr
-    // is already bounded, so encode it into the LUT's sRGB domain and sample.
-    // Do NOT restore >1 here: graded_sdr stays 0..1 so the vanilla
+    // HDR path: keep the LUT result in the SDR/LUT domain (0..1). NeutralSDR
+    // desaturates its input and washed out the grade; use max-channel division
+    // instead so chroma survives into the LUT while values stay bounded. Do
+    // NOT restore >1 here: graded_sdr stays 0..1 so the vanilla
     // smoothstep/contrast/saturation chain is safe. HDR highlights are
     // recovered from untonemapped by the three-argument ToneMapPass below.
-    float3 neutral_gamma = renodx::color::srgb::EncodeSafe(neutral_sdr);
-    neutral_gamma = neutral_gamma * float3(0.96875, 0.96875, 0.96875) + float3(0.015625, 0.015625, 0.015625);
-    float3 lut_sampled = t1.SampleLevel(s1_s, neutral_gamma, 0).xyz;
+    const float max_channel = max(max(input_hdr.r, max(input_hdr.g, input_hdr.b)), 1.f);
+    float3 lut_input = input_hdr / max_channel;
+    float3 lut_gamma = renodx::color::srgb::EncodeSafe(lut_input);
+    lut_gamma = lut_gamma * float3(0.96875, 0.96875, 0.96875) + float3(0.015625, 0.015625, 0.015625);
+    float3 lut_sampled = t1.SampleLevel(s1_s, lut_gamma, 0).xyz;
     lut_sampled = lut_sampled * float3(0.947867274, 0.947867274, 0.947867274) + float3(0.0521326996, 0.0521326996, 0.0521326996);
     lut_result = renodx::color::srgb::DecodeSafe(lut_sampled);
   }

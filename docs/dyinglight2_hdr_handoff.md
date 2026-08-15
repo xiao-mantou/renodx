@@ -321,4 +321,46 @@ still unexplained and needs investigation.
 - These are precision refinements, not bug fixes; the current HDR is working
   (sun ~1800, highlights preserved, curve/Peak controls effective).
 
+## 2026-08-16 Washed-out LUT grade: NeutralSDR input -> max-channel
+
+### Symptom
+
+DebugMode 35 (0x268 LUT grid): TL/TR/BL (all variants of `native_lut_grade`)
+look washed out (desaturated) compared to the original SDR, more so than BR
+(the current ToneMapPass output). The whole frame is slightly desaturated, not
+just highlights, though mild. The user also reported that Off/Vanilla mode has a
+slight "filterless" feel vs the true original SDR.
+
+### Root cause
+
+The HDR-path LUT input used `NeutralSDR(input_hdr)`. RenoDRT's `NeutralSDR` is
+deliberately neutral/desaturating, so sampling the game LUT with a
+desaturated input produced a washed-out grade. TL/TR/BL being identical
+confirmed the loss happens at the LUT sample input, before the ToneMapPass.
+
+### Fix (applied, uncommitted at write time)
+
+`tonemapper_0x268BAB6D.ps_5_x.hlsl` HDR-path LUT sample now divides by
+max-channel before encoding into the LUT domain:
+
+```hlsl
+const float max_channel = max(max(input_hdr.r, max(input_hdr.g, input_hdr.b)), 1.f);
+float3 lut_input = input_hdr / max_channel;
+float3 lut_gamma = srgb::EncodeSafe(lut_input);
+```
+
+This preserves chroma through the LUT (max-channel division keeps RGB ratios)
+while keeping values bounded in 0..1 so the vanilla smoothstep/contrast/
+saturation chain stays safe. `neutral_sdr` is still computed and passed to the
+three-argument `ToneMapPass` as the neutral reference. Matches the
+Silksong/Wobbly max-channel bridge in the SKILL.
+
+### Verify
+
+Rebuild and check DebugMode 35: TL/TR/BL should now keep more saturation and
+match the original SDR grade more closely. Confirm the whole frame (not just
+highlights) no longer looks washed out, and that HDR highlights still reach
+~1800 sun / Peak.
+
+
 
