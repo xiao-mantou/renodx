@@ -276,3 +276,42 @@ display false-color of `uTM` relative to `mid_gray` (0.18) and relative to the
 paper-white boundary (1.275). Then measure a known-mid-gray scene to anchor the
 value domain.
 
+## 2026-08-15 Plan B verified: sun highlight now correct
+
+### Verified facts (user-measured, Game=203, Peak=4000, DLSS Off chain)
+
+- Mode 48 (ToneMapPass response ladder, single-arg, opaque bars) with
+  Daniele curve: inputs 0.18/0.5/1/2/4/8/16/32 map to outputs
+  38/105/200/360/614/958/1335/1666 nit. Monotonic, Daniele's m2 asymptote
+  (~8.2x) is the high-input ceiling, not Peak.
+- Neutral default curve (Daniele): sun center ~1800 nit. Curves Reinhard/
+  Hermite/Neutwo reached nearer Peak at high inputs (Neutwo 4.0 input -> 820
+  vs Daniele 614), so high-rolloff differs by curve.
+- Resource resolution must match the swapchain: the 1440 render vs 1600
+  swapchain caused `upgrade_index=-1` (no FP16 clone) and the 203-nit clamp.
+  Fixing the render resolution to match re-enabled the FP16 upgrade.
+
+### Why the sun changed from ~800 to ~1800 (not a code fix)
+
+- Plan B (`2b76415`) moved the HDR tonemap from `0x3E` (single
+  `ScaleToneMappedScene(ToneMapPass)`) to `0x268` (three-argument
+  `ToneMapPass(input_hdr, upgraded_grade, neutral_sdr)`), so the highlight
+  rolloff is now fully applied in 0x268.
+- The sun brightness also depends on `Peak/Game`: with Game=500,
+  `Peak/Game = 4000/500 = 8` -> sun ~800; with Game=203, `Peak/Game =
+  4000/203 ~= 19.7` -> sun ~1800. Raising Game lowers `Peak/Game` and thus
+  darkens highlights; this is standard RenoDRT behavior, not a regression.
+
+### Paper white and mid-gray both remain to be calibrated
+
+- `203 nits` is still an unproven assumption (proxy hardcodes
+  `RENODX_GRAPHICS_WHITE_NITS = 203`). It should be aligned to DL2's real
+  paper white via a known-luminance measurement.
+- RenoDRT's mid-gray anchor (`0.18 scene -> 10 nits`) is hardcoded. It assumes
+  `uTM = raw * exposure` is a standard scene domain, but the exposure multiply
+  may shift the value domain so that `uTM 0.18` is not DL2's true mid-gray.
+  This must be calibrated: measure what `uTM` value is DL2's scene mid-gray.
+- These are precision refinements, not bug fixes; the current HDR is working
+  (sun ~1800, highlights preserved, curve/Peak controls effective).
+
+
