@@ -31,6 +31,31 @@ input_hdr (untonemapped, 0x3E 输出, HDR >1)
 2. HDR 高光仍正常 (~1800 太阳)
 3. 观察: 原生亮度平衡 (line 130-138) 在压缩后 neutral_sdr 下行为是否正常
 
+### 35 实测 (74e2d98)
+
+- 天空: TL(0..1 native) 灰暗, BR(ToneMapPass) 明亮层次强 -> ToneMapPass 用 input_hdr 重建正确
+- 地面: 四象限区别不大 -> 地面 max<=1, sdr_scale~1, 压缩无副作用 (保色度验证)
+- 待确认: BR 相对原版 SDR 天空是否仍褪色 (决定褪色在 LUT 输入还是原生调色链/TM 之后)
+
+## 关键发现 (2026-08-16): 0.6 是游戏原生常数
+
+dump 目录 `E:\...\renodx-dev\dump\0x3E36DA5B.ps_5_0.hlsl` 是游戏原生反汇编:
+
+```hlsl
+r0.x = t1.Sample(0,0).x                       // exposure
+r1.xyz = t0.Sample(v1).xyz                    // source
+r0.xyz = r1.xyz * r0.xxx                       // source * exposure
+r0.xyz = float3(0.6,0.6,0.6) * r0.xyz          // <-- 0.6 游戏原生!
+... ApplyDL2SDRCurve ...
+```
+
+**0.6 是 DL2 原生 0x3E 的常数,不是 RenoDX 假设。** 移除它导致 scene 放大 1.67x -> 过曝/雾感/不生动(用户实测: 原版 SDR 生动, 我们抬白雾感).
+
+**必须恢复**: `scene_linear = source.rgb * 0.6` (0x3E), 使 vanilla 和 untonemapped 都恢复校准.
+
+
+
+
 ### 已验证事实 (勿改)
 
 - 203 nit = proxy 硬编码假设, 未校准 (Game=203 时 ToneMapPass 输出相对=203单位)

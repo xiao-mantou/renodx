@@ -275,10 +275,13 @@ void main(
   const float exposure = t1.SampleLevel(s0_s, float2(0.0, 0.0), 0).x;
   // A1 baseline: return to standard RenoDRT input. The 0.6 scene calibration
   // and Night Scene Gain were DL2-specific experiments with no derivation;
-  // scene_linear is now the raw t0 scene. untonemapped uses the game exposure
+  // scene_linear applies DL2's native 0.6 calibration: the original 0x3E
+  // disassembly does `source * exposure * 0.6` before its SDR curve (dump
+  // 0x3E36DA5B.ps_5_0.hlsl). Removing it scaled the scene 1.67x and caused
+  // the washed-out/overexposed look. untonemapped uses the game exposure
   // directly, without the DL2 highlight-protection chain (that chain is still
   // computed below only because the diagnostic modes reference it).
-  const float3 scene_linear = source.rgb;
+  const float3 scene_linear = source.rgb * 0.6;
   const float3 game_exposed = scene_linear * exposure;
   const float3 vanilla = ApplyDL2SDRCurve(game_exposed, cb0[0], cb0[1]);
 
