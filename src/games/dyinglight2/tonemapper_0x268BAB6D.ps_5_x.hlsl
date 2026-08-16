@@ -125,12 +125,16 @@ void main(
     lut_result = r1.xyz ? r3.xyz : r2.xyz;
   } else {
     // HDR path: keep the LUT result in the SDR/LUT domain (0..1). The LUT is
-    // sampled with neutral_sdr so ToneMapPass receives neutral_sdr and
-    // graded_sdr as the same reference-space before/after relationship
-    // (neutral_sdr -> LUT -> graded_sdr). Do NOT restore >1 here: graded_sdr
-    // stays 0..1 so the vanilla smoothstep/contrast/saturation chain is safe.
-    // HDR highlights are recovered from untonemapped by the ToneMapPass below.
-    float3 lut_gamma = renodx::color::srgb::EncodeSafe(neutral_sdr);
+    // sampled with the same hand-written sRGB encode as the Vanilla path, so
+    // HDR's LUT sample coordinates match vanilla exactly. Using Renodx
+    // srgb::EncodeSafe here produced slightly different coordinates, which
+    // shifted the LUT grade and washed out low/mid colors. Highlights are
+    // recovered by the ToneMapPass below.
+    float3 lut_gamma;
+    float3 lut_gamma_lin = neutral_sdr * float3(12.9200001, 12.9200001, 12.9200001);
+    float3 lut_gamma_srgb = exp2(float3(0.416666657, 0.416666657, 0.416666657) * log2(abs(neutral_sdr)));
+    lut_gamma_srgb = lut_gamma_srgb * float3(1.05499995, 1.05499995, 1.05499995) + float3(-0.0549999997, -0.0549999997, -0.0549999997);
+    lut_gamma = cmp(float3(0.00313080009, 0.00313080009, 0.00313080009) >= neutral_sdr) ? lut_gamma_lin : lut_gamma_srgb;
     lut_gamma = lut_gamma * float3(0.96875, 0.96875, 0.96875) + float3(0.015625, 0.015625, 0.015625);
     float3 lut_sampled = t1.SampleLevel(s1_s, lut_gamma, 0).xyz;
     lut_sampled = lut_sampled * float3(0.947867274, 0.947867274, 0.947867274) + float3(0.0521326996, 0.0521326996, 0.0521326996);
