@@ -99,7 +99,14 @@ void main(
   // This is the SKILL "analytic vanilla tonemap" neutral_sdr option; input_hdr
   // in the HDR path is untonemapped = scene_linear * exposure, so the curve
   // output is identical to vanilla.
-  const float3 neutral_sdr = ApplyDL2SDRCurve(input_hdr, cb0[0], cb0[1]);
+  // NOTE: 0x268's own cb0 does NOT hold the curve coefficients. Its layout is
+  // vignette thresholds/gate (cb0[0].x/y/z), smoothstep contrast weight
+  // (cb0[0].w), saturation (cb0[1].x) and color temp (cb0[1].y). The SDR curve
+  // lives only in 0x3E's cbuffer, so reproduce it with the constants captured
+  // by the 0x3E Inputs and Curve audit (verified stable day/night).
+  const float4 sdr_curve0 = float4(2.27, 0.17, 1.69, 0.8);
+  const float4 sdr_curve1 = float4(0.14, 0.0, 0.0, 0.0);
+  const float3 neutral_sdr = ApplyDL2SDRCurve(input_hdr, sdr_curve0, sdr_curve1);
   if (RENODX_TONE_MAP_TYPE != 0.0) {
     r1.xyz = neutral_sdr;
   }

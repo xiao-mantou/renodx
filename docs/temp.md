@@ -27,9 +27,7 @@
 - **0.6 同时进 vanilla 和 untonemapped**(都从 scene_linear 派生)✓
 - **ToneMapPass 用 Peak/Game 相对比值, 0.6 被曲线归一化**: 所以 vanilla 明显受 0.6 影响, RenoDRT 变化不大(0.6 效果被 ToneMapPass 消化)
 
-## 当前问题 (核心)
-
-**RenoDRT vs 原版 SDR 差距不小** (用户反馈):
+## 当前问题 (核心)**RenoDRT vs 原版 SDR 差距不小** (用户反馈):
 - 建筑物部分: 颜色扁平偏淡
 - 深色"阴影"层次少, 像蒙了 fog 滤镜
 - 高光部分暂不看(那是 HDR 扩展, 正常)
@@ -155,6 +153,26 @@ input    NeutralSDR   比值
 **方向**:
 - A. 0x268 自己算 vanilla 曲线 (像 0xA7F77A42), LUT 用 vanilla, HDR 用 untonemapped
 - B. 0x3E 同时输出 vanilla 和 untonemapped (0x268 都用)
+
+### 2026-08-17 决定性发现: 0x268 的 neutral_sdr 曲线系数用错了 cb0
+
+**问题**: 0x268 写 `ApplyDL2SDRCurve(input_hdr, cb0[0], cb0[1])`, 但 0x268 的 cb0 布局和 0x3E **完全不同**:
+- 0x3E 的 cb0 = SDR 曲线系数 (a,b,c,d,e) = `[2.27, 0.17, 1.69, 0.8, 0.14]` (audit 抓取, 全天候稳定)
+- 0x268 的 cb0 = 渐晕阈值/门控 (cb0[0].xyz) + smoothstep 对比度权重 (cb0[0].w) + 饱和度 (cb0[1].x) + 色温 (cb0[1].y)
+
+所以 neutral_sdr 把渐晕阈值当 a/b、门控当 c、对比度当 d、饱和度当 e → **不是 vanilla** → HDR LUT 采样位置偏离原版 → fog。这是 6997664 (sRGB 编码匹配) 之后仍然残留的 fog 根源。
+
+**修复 (已改)**: 0x268 硬编码 audit 常量:
+```hlsl
+const float4 sdr_curve0 = float4(2.27, 0.17, 1.69, 0.8);
+const float4 sdr_curve1 = float4(0.14, 0.0, 0.0, 0.0);
+const float3 neutral_sdr = ApplyDL2SDRCurve(input_hdr, sdr_curve0, sdr_curve1);
+```
+验证: x=1.275 → ≈1.0 (纸白), x=1.0 → 0.928, 与交接文档已知行为一致。
+
+**配合 6997664 后 HDR LUT 输入应完全 = vanilla**: neutral_sdr=vanilla (输入值一致) + 手写 sRGB 编码 (坐标一致) → LUT 采样一致 → native_lut_grade 一致 → 低/中调 fog 应消失。
+
+**待验证**: 用户测试 DebugMode 35 的 TL (HDR 正常路径) vs vanilla 模式应一致。
 
 
 
