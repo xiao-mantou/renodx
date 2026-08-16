@@ -136,6 +136,27 @@ input    NeutralSDR   比值
 
 **1.0 是否是 DL2 Paper White 未证明**: 不能因它是 0-1 边界就认定. 本实验只验证 <=1 identity 是否消除 fog.
 
+### 2026-08-17 根本发现: 0x268 input_hdr 域不一致 (方案 B 架构问题)
+
+**min 实验失败**: neutral_sdr=min(input_hdr,1.0) 没消除 fog. 这否定了 "NeutralSDR 压缩 <=1" 是唯一原因.
+
+**真正根因**: 0x3E 输出两种模式不同:
+- vanilla 模式: 输出 `vanilla` (SDR 曲线结果, 0..1)
+- HDR 模式: 输出 `untonemapped` (线性 HDR, 含 0.6+曝光, >1)
+
+所以 0x268 的 input_hdr:
+- vanilla: = vanilla (SDR 曲线结果)
+- HDR: = untonemapped (线性曝光值)
+
+**即使 min(input_hdr,1.0), HDR 的 LUT 输入仍是线性曝光值, vanilla 是 SDR 曲线结果 -> 域不同 -> LUT 调色不一致 -> fog**
+
+**0xA7F77A42 无此问题**: 它自己采样 t0 并自己算 vanilla 曲线 (line 59-75), 不依赖 0x3E 输出.
+
+**方向**:
+- A. 0x268 自己算 vanilla 曲线 (像 0xA7F77A42), LUT 用 vanilla, HDR 用 untonemapped
+- B. 0x3E 同时输出 vanilla 和 untonemapped (0x268 都用)
+
+
 
 
 

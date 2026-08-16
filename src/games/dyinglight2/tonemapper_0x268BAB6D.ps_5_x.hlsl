@@ -11,6 +11,16 @@ cbuffer cb0 : register(b0) {
 
 #define cmp -
 
+// DL2's SDR curve, same as 0x3E. In the HDR path input_hdr equals the
+// untonemapped scene (scene_linear * exposure), so applying this gives exactly
+// the vanilla SDR curve output. Using it as the LUT input makes HDR's LUT
+// grade match vanilla's, which fixes the washed-out low/mid region.
+float3 ApplyDL2SDRCurve(float3 color, float4 curve0, float4 curve1) {
+  const float3 a = curve0.xxx * color + curve0.yyy;
+  const float3 b = curve0.zzz * color + curve0.www;
+  return saturate((a * color) / (b * color + curve1.xxx));
+}
+
 void main(
     float4 v0 : SV_POSITION0,
     float4 v1 : TEXCOORD0,
@@ -84,12 +94,12 @@ void main(
   // reference. The HDR magnitude survives in `input_hdr` and is restored by
   // the three-argument ToneMapPass below. This is the Silksong-style branch:
   // neutral_sdr -> LUT -> graded_color, while untonemapped -> RenoDRT.
-  // TEMPORARY EXPERIMENT (not final): neutral_sdr = min(input_hdr, 1.0).
-  // Verifies whether the fog comes purely from NeutralSDR compressing the
-  // <=1 reference region. Below 1.0 this is identity (matches vanilla LUT
-  // input); above 1.0 it clamps to 1.0 (deliberately crude, to isolate the
-  // <=1 hypothesis). If fog disappears, design a real >1 roll-off next.
-  const float3 neutral_sdr = min(input_hdr, 1.0);
+  // Use DL2's full vanilla SDR curve (with saturate) as the LUT input so HDR's
+  // LUT grade matches vanilla's exactly, fixing the washed-out low/mid region.
+  // This is the SKILL "analytic vanilla tonemap" neutral_sdr option; input_hdr
+  // in the HDR path is untonemapped = scene_linear * exposure, so the curve
+  // output is identical to vanilla.
+  const float3 neutral_sdr = ApplyDL2SDRCurve(input_hdr, cb0[0], cb0[1]);
   if (RENODX_TONE_MAP_TYPE != 0.0) {
     r1.xyz = neutral_sdr;
   }
