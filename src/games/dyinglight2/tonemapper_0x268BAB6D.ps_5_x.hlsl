@@ -84,7 +84,13 @@ void main(
   // reference. The HDR magnitude survives in `input_hdr` and is restored by
   // the three-argument ToneMapPass below. This is the Silksong-style branch:
   // neutral_sdr -> LUT -> graded_color, while untonemapped -> RenoDRT.
-  const float3 neutral_sdr = renodx::tonemap::renodrt::NeutralSDR(input_hdr);
+  // Build the neutral SDR reference with max-channel compression so chroma
+  // survives into the LUT (R:G:B ratios preserved) while values stay in the
+  // 0..1 LUT domain. ComputeMaxChannelScale returns Neutwo(max)/max with a
+  // safe max==0 guard; the same scale reconstructs the graded back to HDR
+  // after the native color chain below.
+  const float sdr_scale = renodx::tonemap::neutwo::ComputeMaxChannelScale(input_hdr);
+  const float3 neutral_sdr = input_hdr * sdr_scale;
   if (RENODX_TONE_MAP_TYPE != 0.0) {
     r1.xyz = neutral_sdr;
   }
@@ -150,13 +156,13 @@ void main(
   if (RENODX_TONE_MAP_TYPE != 0.0) {
     // Plan B (0xA7F77A42 pattern): the native LUT/color-grade chain (color
     // temp, LUT sample, luminance balance, smoothstep contrast, saturation)
-    // produced `native_lut_grade` from the neutral_sdr reference. Feed that
-    // as graded_color through the three-argument ToneMapPass so RenoDRT
-    // preserves the HDR magnitude from `input_hdr` while keeping the LUT
-    // grading. This replaces the old hdr_ratio luminance restore, which only
-    // stretched brightness without recovering the clipped hue/saturation.
-    upgraded_grade = native_lut_grade;
-    stable_grade = native_lut_grade;
+    // produced `native_lut_grade` from the neutral_sdr reference. Reconstruct
+    // the graded back to the HDR domain by the same max-channel scale used to
+    // compress it, so ToneMapPass receives graded_sdr and neutral_sdr in the
+    // correct reference-space before/after relationship while keeping the
+    // vanilla color chain safe on the 0..1 graded.
+    upgraded_grade = native_lut_grade / max(sdr_scale, 0.001);
+    stable_grade = upgraded_grade;
 
     o0.rgb = renodx::draw::ToneMapPass(input_hdr, upgraded_grade, neutral_sdr);
   }
