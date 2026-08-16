@@ -11,6 +11,17 @@ cbuffer cb0 : register(b0) {
 
 #define cmp -
 
+// DL2's SDR curve, analytic form WITHOUT the final saturate. The vanilla
+// output clamps to 0..1 (clipping HDR highlights), so using it directly as
+// neutral_sdr would lose range. This keeps the same curve shape as the native
+// tonemapper but stays linear above 1.0, matching the "analytic vanilla
+// tonemap" neutral_sdr option in the SKILL.
+float3 ApplyDL2CurveNoClip(float3 color, float4 curve0, float4 curve1) {
+  const float3 a = curve0.xxx * color + curve0.yyy;
+  const float3 b = curve0.zzz * color + curve0.www;
+  return (a * color) / (b * color + curve1.xxx);
+}
+
 void main(
     float4 v0 : SV_POSITION0,
     float4 v1 : TEXCOORD0,
@@ -84,11 +95,10 @@ void main(
   // reference. The HDR magnitude survives in `input_hdr` and is restored by
   // the three-argument ToneMapPass below. This is the Silksong-style branch:
   // neutral_sdr -> LUT -> graded_color, while untonemapped -> RenoDRT.
-  // Use RenoDRT NeutralSDR as the neutral reference (0xA7F77A42 pattern).
-  // Earlier desaturation was caused by the missing 0.6 scene calibration in
-  // 0x3E, which is now restored, so the reference NeutralSDR is sufficient
-  // here; max-channel compression is not needed.
-  const float3 neutral_sdr = renodx::tonemap::renodrt::NeutralSDR(input_hdr);
+  // Use DL2's own analytic SDR curve (no saturate) as the neutral reference
+  // instead of RenoDRT NeutralSDR, so the LUT input matches DL2's native tone
+  // and the reference-space relationship is preserved without clipping.
+  const float3 neutral_sdr = ApplyDL2CurveNoClip(input_hdr, cb0[0], cb0[1]);
   if (RENODX_TONE_MAP_TYPE != 0.0) {
     r1.xyz = neutral_sdr;
   }
