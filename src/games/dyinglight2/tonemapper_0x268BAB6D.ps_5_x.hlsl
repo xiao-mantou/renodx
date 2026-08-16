@@ -84,11 +84,12 @@ void main(
   // reference. The HDR magnitude survives in `input_hdr` and is restored by
   // the three-argument ToneMapPass below. This is the Silksong-style branch:
   // neutral_sdr -> LUT -> graded_color, while untonemapped -> RenoDRT.
-  // Use RenoDRT NeutralSDR as the neutral reference (0xA7F77A42 pattern).
-  // Earlier desaturation was caused by the missing 0.6 scene calibration in
-  // 0x3E, which is now restored, so the reference NeutralSDR is sufficient
-  // here; max-channel compression is not needed.
-  const float3 neutral_sdr = renodx::tonemap::renodrt::NeutralSDR(input_hdr);
+  // TEMPORARY EXPERIMENT (not final): neutral_sdr = min(input_hdr, 1.0).
+  // Verifies whether the fog comes purely from NeutralSDR compressing the
+  // <=1 reference region. Below 1.0 this is identity (matches vanilla LUT
+  // input); above 1.0 it clamps to 1.0 (deliberately crude, to isolate the
+  // <=1 hypothesis). If fog disappears, design a real >1 roll-off next.
+  const float3 neutral_sdr = min(input_hdr, 1.0);
   if (RENODX_TONE_MAP_TYPE != 0.0) {
     r1.xyz = neutral_sdr;
   }

@@ -85,6 +85,60 @@
 
 **不动**: max-channel / Reconstruct (已回退), 只改 neutral_sdr 来源.
 
+### 2026-08-16 稳定基线 (5cb6a27)
+
+- **已回退到 48fe4d2**: NeutralSDR + 0.6 (用户确认 addon 手动下载正常)
+- **ApplyDL2CurveNoClip 实验失败**: 输出 >1 破坏 LUT bridge (log2/sRGB/LUT), 太阳中心黑 + 203 限制. 已回退.
+- **教训**: 换 neutral_sdr 实现前, 必须确认和 LUT bridge 值域契合 (>1 会破坏)
+- **当前稳定**: 0x3E=0.6, 0x268=NeutralSDR + 三参数 ToneMapPass, 无 max-channel/Reconstruct
+
+### 用户需求 (关键, 当前目标)
+
+- **HDR 低亮度/中调必须接近 vanilla**, 不能有重 fog 感
+- 高光部分可不同 (HDR 扩展正常)
+- 现在 HDR vs vanilla 低亮度差异大 (fog 感重), 不可接受
+- 目标: "至少 SDR 亮度部分和 vanilla 差不多"
+
+**待查**: 
+- NeutralSDR 对低亮度(0..1)的行为: 是否在低亮度也偏离 input_hdr, 导致 LUT 调色和 vanilla 不同
+- HDR 路径 native_lut_grade 是否应 = vanilla 的低亮度 (只扩展高光)
+
+### 2026-08-16 NeutralSDR 低亮度行为 (决定性)
+
+**模拟 NeutralSDR(Daniele n=100, mid_gray 0.18->18) 输出**:
+```
+input    NeutralSDR   比值
+0.18     0.180       1.00   <- 中灰对齐
+0.5      0.379       0.76   压暗
+1.0      0.551       0.55   压暗近半
+2.0      0.712       0.36
+8.0      0.912       0.11
+```
+
+**根因**: NeutralSDR 的 Daniele 曲线把 0.18 以上压缩. 
+- Vanilla LUT 输入 = input_hdr (1.0 时是 1.0)
+- HDR LUT 输入 = NeutralSDR (1.0 时只有 0.55)
+- 同像素 LUT 采样位置不同 -> 调色不同 -> 中调/低亮度偏移 -> fog
+
+**fog 感 = NeutralSDR 压缩了 DL2 的中高调** (它的 mid_gray 锚点 0.18 和 DL2 值域不匹配)
+
+**解法方向**: 需要 "低亮度≈identity(和 vanilla 一致)、高亮度才 roll-off" 的 neutral proxy (SKILL 允许 smooth clamp / proven vanilla bounded signal). ApplyDL2CurveNoClip 失败(>1 破坏 LUT), 需设计低亮度保原值、高亮度压缩的曲线.
+
+### 临时实验 (uncommitted): neutral_sdr = min(input_hdr, 1.0)
+
+**目的**: 一次只验证一个假设 - fog 是否单纯来自 NeutralSDR 对 <=1 区域的压缩.
+- <=1: identity (和 vanilla LUT 输入一致) -> 若 fog 消失, 证明根因
+- >1: clamp 到 1.0 (故意粗暴, 只隔离 <=1 假设)
+
+**注意**: 这是临时实验, 不是最终方案. 
+- 若 fog 明显消失 -> 设计真正的 >1 smooth roll-off (低亮度 identity + 高亮度压缩)
+- 若 fog 仍在 -> NeutralSDR 不是唯一原因, 需查别处
+
+**1.0 是否是 DL2 Paper White 未证明**: 不能因它是 0-1 边界就认定. 本实验只验证 <=1 identity 是否消除 fog.
+
+
+
+
 
 
 
