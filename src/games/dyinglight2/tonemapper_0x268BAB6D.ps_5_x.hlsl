@@ -193,6 +193,27 @@ void main(
         : o0.rgb;
   }
 
+  // LUT-input probe (mode 59). A/B across ToneMapType to find why the renodrt
+  // LUT grade differs from vanilla:
+  //   TL = the value that actually feeds the game LUT
+  //        (neutral_sdr in HDR, input_hdr == vanilla in Off)
+  //   TR = native_lut_grade (the same value DebugMode 35 shows as TL)
+  //   BL = neutral_sdr (mode-invariant reference, identical in both modes)
+  //   BR = current normal output
+  // If TL(HDR) == BL and TL(Off) == BL, the LUT input is identical and the
+  // residual grade difference must come from elsewhere. If TL(HDR) != BL the
+  // neutral_sdr/vanilla relationship is broken despite the matched constants.
+  if (RENODX_DEBUG_MODE > 58.5 && RENODX_DEBUG_MODE < 59.5) {
+    const float3 effective_lut_input = RENODX_TONE_MAP_TYPE == 0.0 ? input_hdr : neutral_sdr;
+    const uint quadrant = (v1.x >= 0.5 ? 1u : 0u) + (v1.y >= 0.5 ? 2u : 0u);
+    o0.rgb = quadrant == 0u ? effective_lut_input
+        : quadrant == 1u ? native_lut_grade
+        : quadrant == 2u ? neutral_sdr
+        : o0.rgb;
+    o0.a = 1.0;
+    return;
+  }
+
   // Game is handled by the standard ToneMapPass in 0x3E; the normal path must
   // not scale again here or Game would be applied twice. Modes 40-42 keep the
   // post-LUT Game diagnostics only, for A/B against the standard path.
