@@ -362,5 +362,39 @@ match the original SDR grade more closely. Confirm the whole frame (not just
 highlights) no longer looks washed out, and that HDR highlights still reach
 ~1800 sun / Peak.
 
+### Correction: max-channel input was wrong - reverted to neutral_sdr
+
+The max-channel change was reverted. It broke the required data relationship
+for the three-argument ToneMapPass: `neutral_sdr -> LUT -> graded_sdr` must be
+the same reference-space before/after relationship (a pixel's color change
+between neutral SDR and the LUT-graded SDR). Feeding `input_hdr / max_channel`
+as the LUT input made `neutral_sdr` and `graded_sdr` live in different
+reference spaces, which explains the ground/sky inconsistency.
+
+`0xA7F77A42` (the reference) samples the LUT with `neutral_sdr`:
+
+```hlsl
+neutral_sdr = NeutralSDR(r2)
+if (AUTO_EXPOSURE != 1) r2 = neutral_sdr   // LUT input = neutral_sdr
+r1 = lut::Sample(..., r2)                  // graded_sdr
+ToneMapPass(untonemapped, r1, neutral_sdr)
+```
+
+The washed-out look is therefore likely rooted in `NeutralSDR` itself or in
+the `neutral_sdr -> LUT -> graded_sdr` construction, NOT in a max-channel
+choice. Next step: inspect `NeutralSDR()` (saturation=1, dechroma=0 should
+preserve chroma) and the LUT-domain reconstruction to find where chroma is
+lost, then build a proper chroma-preserving SDR baseline (Wobbly Life style
+gamut compression) while keeping `neutral_sdr -> LUT -> graded_sdr` intact.
+
+### Do not
+
+- Do not swap LUT input to `input_hdr / max_channel` (breaks neutral/graded
+  reference-space relationship).
+- Do not blend inputs by luminance thresholds (0.5-1.5 was arbitrary).
+- Prefer fixing the `neutral_sdr`/`graded_sdr` construction over band-aid
+  input swaps.
+
+
 
 
