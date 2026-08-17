@@ -331,12 +331,18 @@ void main(
     const float v_b = max(probe_tm.r, max(probe_tm.g, probe_tm.b));
     o0.rgb = 0.0;
     if (abs(v1.x - 0.5) < 0.002 || abs(v1.y - 0.5) < 0.002) o0.rgb += float3(1.0, 1.0, 1.0);
+    // Raw value pixels for the 'Capture 0x268 Center Probe' readback button
+    // (read pre-gamma from this pass's RTV): I, N, L, B at fixed UVs.
+    if (all(abs(v1.xy - float2(0.30, 0.58)) < float2(0.0015, 0.0015))) o0.rgb = v_in.xxx;
+    if (all(abs(v1.xy - float2(0.30, 0.66)) < float2(0.0015, 0.0015))) o0.rgb = v_n.xxx;
+    if (all(abs(v1.xy - float2(0.30, 0.74)) < float2(0.0015, 0.0015))) o0.rgb = v_l.xxx;
+    if (all(abs(v1.xy - float2(0.30, 0.82)) < float2(0.0015, 0.0015))) o0.rgb = v_b.xxx;
     // Four values stacked vertically, top to bottom: I, N, L, B.
     const float label_x = 0.44;
-    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.58, v_in, 0.008);
-    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.66, v_n, 0.008);
-    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.74, v_l, 0.008);
-    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.82, v_b, 0.008);
+    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.58, v_in, 0.006);
+    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.66, v_n, 0.006);
+    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.74, v_l, 0.006);
+    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.82, v_b, 0.006);
     o0.a = 1.0;
     return;
   }

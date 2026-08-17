@@ -4934,6 +4934,140 @@ static bool TryLogT1Baseline(reshade::api::command_queue* queue, reshade::api::r
   return true;
 }
 
+struct CenterProbeCaptureState {
+  bool captured = false;
+  bool logged = false;
+  reshade::api::resource resource = {};
+  reshade::api::format view_format = reshade::api::format::unknown;
+};
+static std::atomic<float> center_probe_capture{0.f};
+static CenterProbeCaptureState center_probe_state = {};
+static std::mutex center_probe_mutex;
+
+static inline float HalfToFloat(uint16_t half) {
+  const uint32_t sign = (static_cast<uint32_t>(half) & 0x8000u) << 16u;
+  uint32_t exponent = (static_cast<uint32_t>(half) >> 10u) & 0x1Fu;
+  const uint32_t mantissa = static_cast<uint32_t>(half) & 0x3FFu;
+  uint32_t bits = 0u;
+  if (exponent == 0u) {
+    if (mantissa == 0u) {
+      bits = sign;
+    } else {
+      exponent = 113u;
+      uint32_t m = mantissa;
+      while ((m & 0x400u) == 0u) {
+        m <<= 1u;
+        --exponent;
+      }
+      m &= 0x3FFu;
+      bits = sign | (exponent << 23u) | (m << 13u);
+    }
+  } else if (exponent == 0x1Fu) {
+    bits = sign | 0x7F800000u | (mantissa << 13u);
+  } else {
+    bits = sign | ((exponent + 112u) << 23u) | (mantissa << 13u);
+  }
+  float result = 0.f;
+  std::memcpy(&result, &bits, sizeof(float));
+  return result;
+}
+
+// DebugMode 60 readback: the shader writes the I/N/L/B values at four fixed
+// pixels of the 0x268 RTV (pre-gamma). The button arms the capture, the 0x268
+// draw records the RTV, and the next Present copies it to a staging texture
+// and logs the four decoded floats.
+static bool TryLogCenterProbe(reshade::api::command_queue* queue, const CenterProbeCaptureState& state) {
+  if (queue == nullptr || state.resource.handle == 0u) return false;
+  auto* device = queue->get_device();
+  if (device == nullptr) return false;
+  const auto desc = device->get_resource_desc(state.resource);
+  if (desc.type != reshade::api::resource_type::texture_2d) return false;
+
+  reshade::api::resource staging = {};
+  const reshade::api::resource_desc staging_desc(
+      desc.texture.width, desc.texture.height, desc.texture.depth_or_layers, 1,
+      desc.texture.format, 1, reshade::api::memory_heap::gpu_to_cpu,
+      reshade::api::resource_usage::copy_dest);
+  if (!device->create_resource(staging_desc, nullptr, reshade::api::resource_usage::copy_dest, &staging)) {
+    renodx::utils::log::w("DL2 center probe readback: staging create failed");
+    return false;
+  }
+  auto* cmd_list = queue->get_immediate_command_list();
+  if (cmd_list == nullptr) {
+    device->destroy_resource(staging);
+    renodx::utils::log::w("DL2 center probe readback: no immediate command list");
+    return false;
+  }
+  cmd_list->copy_texture_region(state.resource, 0, nullptr, staging, 0, nullptr);
+  queue->flush_immediate_command_list();
+  queue->wait_idle();
+
+  reshade::api::subresource_data data = {};
+  if (!device->map_texture_region(staging, 0, nullptr, reshade::api::map_access::read_only, &data)) {
+    device->destroy_resource(staging);
+    renodx::utils::log::w("DL2 center probe readback: map failed");
+    return false;
+  }
+
+  const float uvs[4][2] = {{0.30f, 0.58f}, {0.30f, 0.66f}, {0.30f, 0.74f}, {0.30f, 0.82f}};
+  const char* names[4] = {"I", "N", "L", "B"};
+  float values[4] = {0.f, 0.f, 0.f, 0.f};
+  if (data.data != nullptr) {
+    const bool is_16bit_float = state.view_format == reshade::api::format::r16g16b16a16_float
+        || state.view_format == reshade::api::format::r16g16b16a16_typeless;
+    const uint32_t bytes_per_pixel = is_16bit_float ? 8u : 4u;
+    for (uint32_t index = 0u; index < 4u; ++index) {
+      const uint32_t px = static_cast<uint32_t>(uvs[index][0] * static_cast<float>(desc.texture.width));
+      const uint32_t py = static_cast<uint32_t>(uvs[index][1] * static_cast<float>(desc.texture.height));
+      const auto* pixel = static_cast<const uint8_t*>(data.data)
+          + static_cast<size_t>(py) * data.row_pitch + static_cast<size_t>(px) * bytes_per_pixel;
+      if (is_16bit_float) {
+        uint16_t half = 0u;
+        std::memcpy(&half, pixel, sizeof(uint16_t));
+        values[index] = HalfToFloat(half);
+      } else {
+        values[index] = static_cast<float>(pixel[0]) / 255.f;
+      }
+    }
+  }
+  device->unmap_texture_region(staging, 0);
+  device->destroy_resource(staging);
+
+  std::ostringstream stream;
+  stream << "DL2 center probe readback: resource=0x" << std::hex << state.resource.handle << std::dec
+         << " view_format=" << static_cast<uint32_t>(state.view_format)
+         << " size=" << desc.texture.width << "x" << desc.texture.height;
+  for (uint32_t index = 0u; index < 4u; ++index) {
+    stream << " " << names[index] << "=" << values[index];
+  }
+  renodx::utils::log::i(stream.str().c_str());
+  return true;
+}
+
+// Runs after descriptor_override::OnTargetDraw so the active RTV is the one the
+// 0x268 draw actually writes (possibly the FP16 clone).
+static void Capture268CenterProbeResource(reshade::api::command_list* cmd_list) {
+  if (center_probe_capture.load(std::memory_order_acquire) == 0.f) return;
+  if (cmd_list == nullptr) return;
+  std::scoped_lock lock(center_probe_mutex);
+  if (center_probe_state.captured) return;
+  auto* device = cmd_list->get_device();
+  if (device == nullptr) return;
+  const auto rtvs = renodx::utils::swapchain::GetRenderTargets(cmd_list);
+  if (rtvs.empty() || rtvs[0].handle == 0u) return;
+  const auto resource = device->get_resource_from_view(rtvs[0]);
+  if (resource.handle == 0u) return;
+  center_probe_state.resource = resource;
+  center_probe_state.view_format = device->get_resource_view_desc(rtvs[0]).format;
+  center_probe_state.captured = true;
+}
+
+inline constexpr auto On268CenterProbeCapture = []<typename Context>(Context& context)
+    -> renodx::utils::command_action::CallbackResult<Context> {
+  Capture268CenterProbeResource(context.cmd_list);
+  return {};
+};
+
 void OnDownstreamDrawCapturePresent(
     reshade::api::command_queue* queue,
     reshade::api::swapchain* swapchain,
@@ -4973,6 +5107,17 @@ void OnDownstreamDrawCapturePresent(
     s << ", swap_chain_use_hdr10=" << swap_chain_use_hdr10;
     s << ")";
     reshade::log::message(reshade::log::level::info, s.str().c_str());
+  }
+
+  // DebugMode 60 readback: one-shot log of the I/N/L/B values captured from the
+  // 0x268 RTV (pre-gamma) at the first Present after the draw.
+  if (center_probe_capture.load(std::memory_order_acquire) != 0.f) {
+    std::scoped_lock lock(center_probe_mutex);
+    if (center_probe_state.captured && !center_probe_state.logged) {
+      center_probe_state.logged = true;
+      TryLogCenterProbe(queue, center_probe_state);
+      center_probe_capture.store(0.f, std::memory_order_release);
+    }
   }
 
   {
@@ -6629,6 +6774,19 @@ renodx::utils::settings::Settings settings = {
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture 0x268 Center Probe",
+        .section = "Debug",
+        .tooltip = "One-shot: logs the DebugMode 60 I/N/L/B values (input_hdr / neutral_sdr / native_lut_grade / ToneMapPass output) written at four fixed pixels of the 0x268 RTV, read back pre-gamma after the next Present. Aim the crosshair at the pixel to measure, keep DebugMode=60, then click.",
+        .on_click = []() {
+          std::scoped_lock lock(center_probe_mutex);
+          center_probe_state = {};
+          center_probe_capture.store(1.f, std::memory_order_release);
+          renodx::utils::log::i("DL2 0x268 center probe capture armed.");
+          return false; },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
         .key = "ClampSwapchainOutput",
         .binding = &shader_injection.clamp_swapchain_output,
         .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
@@ -6791,6 +6949,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
            .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
       renodx::utils::command_action::Register(
           renodx::games::dyinglight2::descriptor_override::OnTargetDraw,
+          {.shader_hash = 0x268BAB6Du,
+           .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+      renodx::utils::command_action::Register(
+          On268CenterProbeCapture,
           {.shader_hash = 0x268BAB6Du,
            .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
       renodx::utils::command_action::Register(
