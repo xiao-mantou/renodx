@@ -331,11 +331,12 @@ void main(
     const float v_b = max(probe_tm.r, max(probe_tm.g, probe_tm.b));
     o0.rgb = 0.0;
     if (abs(v1.x - 0.5) < 0.002 || abs(v1.y - 0.5) < 0.002) o0.rgb += float3(1.0, 1.0, 1.0);
-    const float label_y = 0.56;
-    o0.rgb += DebugRenderLabel(v1.xy, 0.16, label_y, v_in, 0.010);
-    o0.rgb += DebugRenderLabel(v1.xy, 0.31, label_y, v_n, 0.010);
-    o0.rgb += DebugRenderLabel(v1.xy, 0.46, label_y, v_l, 0.010);
-    o0.rgb += DebugRenderLabel(v1.xy, 0.61, label_y, v_b, 0.010);
+    // Four values stacked vertically, top to bottom: I, N, L, B.
+    const float label_x = 0.44;
+    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.58, v_in, 0.008);
+    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.66, v_n, 0.008);
+    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.74, v_l, 0.008);
+    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.82, v_b, 0.008);
     o0.a = 1.0;
     return;
   }
