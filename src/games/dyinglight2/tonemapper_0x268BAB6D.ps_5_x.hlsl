@@ -338,7 +338,11 @@ void main(
     const float v_in = max(probe_hdr.r, max(probe_hdr.g, probe_hdr.b));
     const float v_n = max(probe_neutral.r, max(probe_neutral.g, probe_neutral.b));
     const float v_l = max(probe_grade.r, max(probe_grade.g, probe_grade.b));
-    const float v_b = max(probe_tm.r, max(probe_tm.g, probe_tm.b));
+    // B = the extended-vanilla final output (the same lerp the normal path
+    // applies), so the readback verifies whether the low/mid equals vanilla.
+    const float probe_blend = smoothstep(1.0, 1.275, v_in);
+    const float3 probe_final = lerp(probe_grade, probe_tm, probe_blend.xxx);
+    const float v_b = max(probe_final.r, max(probe_final.g, probe_final.b));
     o0.rgb = 0.0;
     if (abs(v1.x - 0.5) < 0.002 || abs(v1.y - 0.5) < 0.002) o0.rgb += float3(1.0, 1.0, 1.0);
     // Raw value pixels for the 'Capture 0x268 Center Probe' readback button
