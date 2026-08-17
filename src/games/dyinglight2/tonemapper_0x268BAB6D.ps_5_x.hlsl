@@ -21,6 +21,58 @@ float3 ApplyDL2SDRCurve(float3 color, float4 curve0, float4 curve1) {
   return saturate((a * color) / (b * color + curve1.xxx));
 }
 
+// 5x7 pixel glyphs (bit k set = column k from the left, 1 = lit).
+// Index 0-9 = digits, 10 = decimal point.
+uint DebugGlyph(int digit, int row) {
+  const int k = clamp(digit, 0, 10);
+  const uint patterns[11][7] = {
+      {14, 17, 17, 17, 17, 17, 14},  // 0
+      {4, 4, 4, 4, 4, 4, 4},         // 1
+      {14, 17, 1, 14, 16, 16, 14},   // 2
+      {14, 17, 1, 14, 1, 17, 14},    // 3
+      {17, 17, 17, 14, 1, 1, 1},     // 4
+      {14, 16, 16, 14, 1, 1, 14},    // 5
+      {14, 16, 16, 14, 17, 17, 14},  // 6
+      {14, 1, 1, 1, 1, 1, 1},        // 7
+      {14, 17, 17, 14, 17, 17, 14},  // 8
+      {14, 17, 17, 14, 1, 1, 14},    // 9
+      {0, 0, 0, 0, 0, 4, 4},         // .
+  };
+  return patterns[k][clamp(row, 0, 6)];
+}
+
+// Renders a small integer/decimal label at (origin_x, origin_y) using the
+// 5x7 glyphs, so diagnostics can annotate measured values. Returns white if
+// this pixel is part of the label, black otherwise.
+float3 DebugRenderLabel(float2 uv, float origin_x, float origin_y, float value, float cell = 0.012f) {
+  const int whole = clamp((int)value, 0, 99);
+  const int tenth = clamp((int)((value - floor(value)) * 10.0 + 0.5), 0, 9);
+  const int hundredth = value < 1.0
+                            ? clamp((int)((value - floor(value)) * 100.0 + 0.5) % 10, 0, 9)
+                            : -1;
+  int chars[6] = {-1, -1, -1, -1, -1, -1};
+  int count = 0;
+  if (whole >= 10) {
+    chars[count++] = whole / 10;
+  }
+  chars[count++] = whole % 10;
+  if (value < 1.0) {
+    chars[count++] = 10;  // decimal point
+    chars[count++] = tenth;
+    if (hundredth >= 0) chars[count++] = hundredth;
+  }
+  for (int i = 0; i < count; ++i) {
+    const float x0 = origin_x + i * (5.0 * cell + 0.008);
+    const float x1 = x0 + 5.0 * cell;
+    if (uv.x < x0 || uv.x >= x1) continue;
+    const int col = (int)((uv.x - x0) / cell);
+    const int row = (int)((uv.y - origin_y) / (cell * 1.4f));
+    if (row < 0 || row > 6) continue;
+    if (((DebugGlyph(chars[i], row) >> col) & 1u) != 0u) return float3(1.0, 1.0, 1.0);
+  }
+  return float3(0.0, 0.0, 0.0);
+}
+
 // Linear segmented false color, same palette as 0x3E's DebugLinearSegments.
 // Uniform bands in the displayed value (not log2) so dark, mid and bright
 // ranges are all readable in one frame: <0.01 near black, 0.01-0.25 deep blue,
@@ -234,6 +286,56 @@ void main(
       o0.rgb = DebugLinearSegments(max(value.r, max(value.g, value.b)));
     }
     // BR quadrant keeps the real output as-is.
+    o0.a = 1.0;
+    return;
+  }
+
+  // Numeric probe (mode 60): samples input_hdr / neutral_sdr / native_lut_grade
+  // / ToneMapPass output at the screen-center pixel and renders the values as
+  // glyph digits under a center crosshair. Mode 59's false-color bands are too
+  // coarse to compare exact values across ToneMapType toggles; this gives exact
+  // numbers for one point. 0x3E forces untonemapped for this mode too (same
+  // lut_input_probe range). The vignette is skipped (center pixel, off).
+  if (RENODX_DEBUG_MODE > 59.5 && RENODX_DEBUG_MODE < 60.5) {
+    const float2 probe_uv = float2(0.5, 0.5);
+    const float4 probe_src = t0.SampleLevel(s0_s, probe_uv, 0);
+    const float3 probe_hdr = max(probe_src.rgb, 0.0);
+    const float3 probe_neutral = ApplyDL2SDRCurve(probe_hdr, sdr_curve0, sdr_curve1);
+    float3 lut_gamma;
+    float3 lut_gamma_lin = probe_neutral * float3(12.9200001, 12.9200001, 12.9200001);
+    float3 lut_gamma_srgb = exp2(float3(0.416666657, 0.416666657, 0.416666657) * log2(abs(probe_neutral)));
+    lut_gamma_srgb = lut_gamma_srgb * float3(1.05499995, 1.05499995, 1.05499995) + float3(-0.0549999997, -0.0549999997, -0.0549999997);
+    lut_gamma = cmp(float3(0.00313080009, 0.00313080009, 0.00313080009) >= probe_neutral) ? lut_gamma_lin : lut_gamma_srgb;
+    lut_gamma = lut_gamma * float3(0.96875, 0.96875, 0.96875) + float3(0.015625, 0.015625, 0.015625);
+    float3 probe_lut = t1.SampleLevel(s1_s, lut_gamma, 0).xyz;
+    probe_lut = probe_lut * float3(0.947867274, 0.947867274, 0.947867274) + float3(0.0521326996, 0.0521326996, 0.0521326996);
+    probe_lut = renodx::color::srgb::DecodeSafe(probe_lut);
+    float3 temp_adjusted = probe_lut * r0.xyz;
+    float temp_luma = dot(temp_adjusted, float3(0.212599993, 0.715200007, 0.0722000003));
+    temp_luma = max(9.99999975e-005, temp_luma);
+    float lut_luma = dot(probe_lut, float3(0.212599993, 0.715200007, 0.0722000003));
+    temp_adjusted = temp_adjusted * (lut_luma / temp_luma);
+    float3 probe_grade = (cb0[1].y != 6500.000000) ? temp_adjusted : probe_lut;
+    float3 smooth = saturate(probe_grade);
+    float3 smooth2 = smooth * float3(-2, -2, -2) + float3(3, 3, 3);
+    smooth = smooth * smooth;
+    smooth = smooth2 * smooth + -probe_grade;
+    probe_grade = cb0[0].www * smooth + probe_grade;
+    float grade_luma = saturate(dot(float3(0.212500006, 0.715399981, 0.0720999986), probe_grade));
+    probe_grade = probe_grade + -grade_luma;
+    probe_grade = cb0[1].xxx * probe_grade + grade_luma;
+    const float3 probe_tm = renodx::draw::ToneMapPass(probe_hdr, probe_grade, probe_neutral);
+    const float v_in = max(probe_hdr.r, max(probe_hdr.g, probe_hdr.b));
+    const float v_n = max(probe_neutral.r, max(probe_neutral.g, probe_neutral.b));
+    const float v_l = max(probe_grade.r, max(probe_grade.g, probe_grade.b));
+    const float v_b = max(probe_tm.r, max(probe_tm.g, probe_tm.b));
+    o0.rgb = 0.0;
+    if (abs(v1.x - 0.5) < 0.002 || abs(v1.y - 0.5) < 0.002) o0.rgb += float3(1.0, 1.0, 1.0);
+    const float label_y = 0.56;
+    o0.rgb += DebugRenderLabel(v1.xy, 0.16, label_y, v_in, 0.010);
+    o0.rgb += DebugRenderLabel(v1.xy, 0.31, label_y, v_n, 0.010);
+    o0.rgb += DebugRenderLabel(v1.xy, 0.46, label_y, v_l, 0.010);
+    o0.rgb += DebugRenderLabel(v1.xy, 0.61, label_y, v_b, 0.010);
     o0.a = 1.0;
     return;
   }
