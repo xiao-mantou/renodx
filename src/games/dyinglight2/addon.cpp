@@ -5057,8 +5057,19 @@ static void Capture268CenterProbeResource(reshade::api::command_list* cmd_list) 
   if (rtvs.empty() || rtvs[0].handle == 0u) return;
   const auto resource = device->get_resource_from_view(rtvs[0]);
   if (resource.handle == 0u) return;
-  center_probe_state.resource = resource;
-  center_probe_state.view_format = device->get_resource_view_desc(rtvs[0]).format;
+  // The draw writes to the effective (FP16 clone) target after the descriptor
+  // override rewrites the RTV; the original 8-bit resource still holds the
+  // previous scene content, so read the clone instead.
+  reshade::api::resource effective = resource;
+  reshade::api::format effective_format = device->get_resource_view_desc(rtvs[0]).format;
+  renodx::utils::resource::GetResourceInfo(resource, [&](const renodx::utils::resource::ResourceInfo& info) {
+    if (info.clone_enabled && info.clone.handle != 0u) {
+      effective = reshade::api::resource{info.clone.handle};
+      if (info.clone_target != nullptr) effective_format = info.clone_target->new_format;
+    }
+  });
+  center_probe_state.resource = effective;
+  center_probe_state.view_format = effective_format;
   center_probe_state.captured = true;
 }
 
