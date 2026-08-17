@@ -251,7 +251,17 @@ void main(
     upgraded_grade = native_lut_grade;
     stable_grade = native_lut_grade;
 
-    o0.rgb = renodx::draw::ToneMapPass(input_hdr, upgraded_grade, neutral_sdr);
+    // Extended-vanilla: ToneMapPass alone flattens the low/mid range because
+    // UpgradeToneMap re-scales the vanilla grade to the raw scene luminance
+    // (crushing the LUT shadow lift back to near-black). Below paper white the
+    // output keeps native_lut_grade exactly (the vanilla mode output), then
+    // blends into the ToneMapPass HDR reconstruction so highlights still
+    // extend to Peak. Experiment parameters: transition 1.0 -> 1.275 scene
+    // units (paper white where the vanilla curve reaches 1.0).
+    const float3 hdr_output = renodx::draw::ToneMapPass(input_hdr, upgraded_grade, neutral_sdr);
+    const float max_ch = max(input_hdr.r, max(input_hdr.g, input_hdr.b));
+    const float blend = smoothstep(1.0, 1.275, max_ch);
+    o0.rgb = lerp(native_lut_grade, hdr_output, blend);
   }
 
   if (RENODX_DEBUG_MODE > 34.5 && RENODX_DEBUG_MODE < 35.5) {
