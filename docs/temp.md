@@ -193,6 +193,16 @@ const float3 neutral_sdr = ApplyDL2SDRCurve(input_hdr, sdr_curve0, sdr_curve1);
 
 **测试法**: 不动相机, 切 HDR/vanilla, TL/TR/BL 必须逐像素一致 (变了=曝光漂移或 0x268 收到的不是 untonemapped)。TL vs TR 看曲线是否作用在收到的输入上; TR 对照真实 vanilla 画面确认 neutral_sdr==vanilla。
 
+### 2026-08-17 关键 bug: DebugMode 59 下拉项下标错位 (4daf28e 修复)
+
+**现象**: mode 59 一直"全屏白无分界", 即使伪彩版 (ccfc8ef) 也一样。
+
+**根因**: `settings.hpp` 的 labels 是 `labels.at(value_as_int)` —— **label 下标 = 设置值**。DebugMode labels 数组 0-48 之后直接跟 "59. LUT Input Probe", 没有 49-58 的占位 → "59..." 实际在下标 49, 选中后写值=**49**, shader 的 `probe59` (`>58.5 && <59.5`) 永远不匹配 → mode 59 走正常渲染 → 白天全白无分界。
+
+**修复**: 数组补 49-58 共 10 个空串占位, "59. LUT Input Probe" 落到下标 59 → 值 59 正确触发。
+
+**教训**: 给 labels 数组加新项时, 若编号不连续, 必须用空串占位补齐, 否则下标=值 映射会把实际值错位。
+
 ## 构建/测试命令
 
 - 构建: push 触发 Actions
