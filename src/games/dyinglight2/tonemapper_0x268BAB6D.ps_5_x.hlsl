@@ -21,6 +21,22 @@ float3 ApplyDL2SDRCurve(float3 color, float4 curve0, float4 curve1) {
   return saturate((a * color) / (b * color + curve1.xxx));
 }
 
+// Linear segmented false color, same palette as 0x3E's DebugLinearSegments.
+// Uniform bands in the displayed value (not log2) so dark, mid and bright
+// ranges are all readable in one frame: <0.01 near black, 0.01-0.25 deep blue,
+// 0.25-0.5 cyan, 0.5-1 green, 1-2 yellow, 2-4 orange, 4-8 red, >8 white.
+float3 DebugLinearSegments(float value) {
+  const float v = max(0.0, value);
+  if (v < 0.01) return float3(0.05, 0.05, 0.1);
+  if (v < 0.25) return float3(0.1, 0.1, 1.0);
+  if (v < 0.5) return float3(0.0, 0.8, 1.0);
+  if (v < 1.0) return float3(0.0, 1.0, 0.0);
+  if (v < 2.0) return float3(1.0, 1.0, 0.0);
+  if (v < 4.0) return float3(1.0, 0.55, 0.0);
+  if (v < 8.0) return float3(1.0, 0.0, 0.0);
+  return float3(1.0, 1.0, 1.0);
+}
+
 void main(
     float4 v0 : SV_POSITION0,
     float4 v1 : TEXCOORD0,
@@ -201,19 +217,23 @@ void main(
   //   TR = neutral_sdr (curve(untonemapped) == vanilla, the HDR LUT input)
   //   BL = native_lut_grade (LUT grading of the vanilla reference)
   //   BR = current normal output (ToneMapPass in HDR, LUT grade in Off)
+  // TL/TR/BL are false-colored with the linear segmented palette (per-max-
+  // channel) so values are readable even in a bright scene: TL raw stays
+  // yellow/orange/red in the sun while TR/BL vanilla-domain saturate green.
   // Toggling ToneMapType must not change TL/TR/BL at all; if it does, either
   // the auto exposure drifted or 0x268 received something other than
-  // untonemapped. TL vs TR shows whether the curve is applied to the received
-  // input, and TR can be compared against the real vanilla picture to confirm
-  // neutral_sdr == vanilla. The old design showed BL = neutral_sdr, but in the
-  // Off mode input_hdr was already the SDR output so neutral_sdr double-curved
-  // and was NOT mode-invariant; forcing untonemapped through 0x3E fixes that.
+  // untonemapped. The old design showed BL = neutral_sdr, but in the Off mode
+  // input_hdr was already the SDR output so neutral_sdr double-curved and was
+  // NOT mode-invariant; forcing untonemapped through 0x3E fixes that.
   if (probe59) {
     const uint quadrant = (v1.x >= 0.5 ? 1u : 0u) + (v1.y >= 0.5 ? 2u : 0u);
-    o0.rgb = quadrant == 0u ? input_hdr
-        : quadrant == 1u ? neutral_sdr
-        : quadrant == 2u ? native_lut_grade
-        : o0.rgb;
+    if (quadrant < 3u) {
+      const float3 value = quadrant == 0u ? input_hdr
+          : quadrant == 1u ? neutral_sdr
+          : native_lut_grade;
+      o0.rgb = DebugLinearSegments(max(value.r, max(value.g, value.b)));
+    }
+    // BR quadrant keeps the real output as-is.
     o0.a = 1.0;
     return;
   }
