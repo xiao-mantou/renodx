@@ -5009,14 +5009,14 @@ static bool TryLogCenterProbe(reshade::api::command_queue* queue, const CenterPr
     return false;
   }
 
-  const float uvs[5][2] = {{0.30f, 0.58f}, {0.30f, 0.66f}, {0.30f, 0.74f}, {0.30f, 0.82f}, {0.5f, 0.5f}};
-  const char* names[5] = {"I", "N", "L", "B", "C"};
-  float values[5] = {0.f, 0.f, 0.f, 0.f, 0.f};
+  const float uvs[4][2] = {{0.30f, 0.58f}, {0.30f, 0.66f}, {0.30f, 0.74f}, {0.30f, 0.82f}};
+  const char* names[4] = {"I", "N", "L", "B"};
+  float values[4] = {0.f, 0.f, 0.f, 0.f};
   if (data.data != nullptr) {
     const bool is_16bit_float = state.view_format == reshade::api::format::r16g16b16a16_float
         || state.view_format == reshade::api::format::r16g16b16a16_typeless;
     const uint32_t bytes_per_pixel = is_16bit_float ? 8u : 4u;
-    for (uint32_t index = 0u; index < 5u; ++index) {
+    for (uint32_t index = 0u; index < 4u; ++index) {
       const uint32_t px = static_cast<uint32_t>(uvs[index][0] * static_cast<float>(desc.texture.width));
       const uint32_t py = static_cast<uint32_t>(uvs[index][1] * static_cast<float>(desc.texture.height));
       const auto* pixel = static_cast<const uint8_t*>(data.data)
@@ -5037,7 +5037,7 @@ static bool TryLogCenterProbe(reshade::api::command_queue* queue, const CenterPr
   stream << "DL2 center probe readback: resource=0x" << std::hex << state.resource.handle << std::dec
          << " view_format=" << static_cast<uint32_t>(state.view_format)
          << " size=" << desc.texture.width << "x" << desc.texture.height;
-  for (uint32_t index = 0u; index < 5u; ++index) {
+  for (uint32_t index = 0u; index < 4u; ++index) {
     stream << " " << names[index] << "=" << values[index];
   }
   renodx::utils::log::i(stream.str().c_str());
