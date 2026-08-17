@@ -203,6 +203,18 @@ const float3 neutral_sdr = ApplyDL2SDRCurve(input_hdr, sdr_curve0, sdr_curve1);
 
 **教训**: 给 labels 数组加新项时, 若编号不连续, 必须用空串占位补齐, 否则下标=值 映射会把实际值错位。
 
+### 2026-08-17 WhiteClip 恒等曲线 bug (BR 扁平根因)
+
+**现象**: RenoDRT 输出扁平/无明暗对比, BR(ToneMapPass 输出) 比 BL(native_lut_grade) 更扁。
+
+**根因**: `ToneMapWhiteClip` 默认 8, 而 `peak = Peak/Game = 4000/203 = 19.7`。reno_drt.hlsl 调用 `Neutwo(y, peak, max(white_clip, peak))` → max(8,19.7)=19.7=peak → **Neutwo(x, peak, peak) = x 恒等** → tone 曲线完全不塑形 → BR = 原始重建场景线性值 ×203。
+
+**重要修正**: 该 slider 的旧 tooltip/(X) 标注 "标准路径不读" 是**错的**。代码链确认: `shared.h RENODX_RENO_DRT_WHITE_CLIP(100行) → draw.hlsl BuildConfig(252) → ToneMapPass(631) → tonemap.hlsl ApplyRenoDRT(474) → reno_drt.hlsl Neutwo(325)`。
+
+**修复 (待提交)**: 默认值 8→100 (RenoDRT 标准默认, 其他游戏 DL1/Hades/HK 均为 UI 滑块默认 100), 标签 "HDR Source White (X)" → "White Clip", tooltip 修正, OnPresetOff 8→100。
+
+**注意**: 数学验证 WhiteClip=100 时曲线在 x<8 仍接近恒等 (0.3→0.300, 8→7.43), 只影响 >1600nit 输入的高光滚降。中低段扁平可能还需处理 UpgradeToneMap 重建/曲线形状 (extended-vanilla 方向, SKILL line 141 Situational)。
+
 ## 构建/测试命令
 
 - 构建: push 触发 Actions
