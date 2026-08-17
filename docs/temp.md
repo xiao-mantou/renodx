@@ -174,12 +174,24 @@ const float3 neutral_sdr = ApplyDL2SDRCurve(input_hdr, sdr_curve0, sdr_curve1);
 
 **待验证**: 用户测试 DebugMode 35 的 TL (HDR 正常路径) vs vanilla 模式应一致。
 
+### 2026-08-17 DebugMode 59 探针修复 (BL 模式不变性缺陷)
 
+**原探针问题**: mode 59 的 BL 象限标注为 "neutral_sdr (mode-invariant reference)", 但实际**不是模式不变的**:
+- 两种模式下 input_hdr 含义不同: Off 时 0x3E 输出 vanilla(SDR 曲线结果), HDR 时输出 untonemapped(线性)
+- 所以 Off 下 neutral_sdr = curve(vanilla) 二次压曲线(偏暗), HDR 下 neutral_sdr = curve(untonemapped) = vanilla(单次)
+- 亮天空: BL(Off)≈curve(1.0)=0.928 vs BL(HDR)≈1.0 → 用户看到 "切换只有亮度区别 + 全屏白"
 
+**修复 (待提交)**:
+1. 0x3E mode 59: 两种 ToneMapType 都输出 untonemapped (绕过 vanilla 分支)
+2. 0x268 mode 59: 强制 r1=neutral_sdr (即使 Off), 让 LUT 采样/调色链从同一 neutral_sdr 出 native_lut_grade
+3. 新四象限 (TL/TR/BL 模式不变, BR 才是模式相关):
+   - TL = input_hdr (0x268 实际收到的原始 untonemapped, 接线检查)
+   - TR = neutral_sdr (= vanilla, HDR 的 LUT 输入)
+   - BL = native_lut_grade (vanilla 参考的 LUT 调色结果)
+   - BR = 当前正常输出 (HDR=ToneMapPass, Off=LUT grade)
+4. addon.cpp 59 标签更新: "TL raw input, TR vanilla, BL LUT grade, BR current"
 
-
-
-
+**测试法**: 不动相机, 切 HDR/vanilla, TL/TR/BL 必须逐像素一致 (变了=曝光漂移或 0x268 收到的不是 untonemapped)。TL vs TR 看曲线是否作用在收到的输入上; TR 对照真实 vanilla 画面确认 neutral_sdr==vanilla。
 
 ## 构建/测试命令
 

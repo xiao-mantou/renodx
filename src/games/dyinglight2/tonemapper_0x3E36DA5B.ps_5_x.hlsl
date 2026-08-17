@@ -681,7 +681,7 @@ void main(
     return;
   }
 
-  o0.rgb = RENODX_TONE_MAP_TYPE == 0.0
+  o0.rgb = (RENODX_TONE_MAP_TYPE == 0.0 && !lut_input_probe)
       ? vanilla
       : RENODX_DEBUG_MODE > 42.5 && RENODX_DEBUG_MODE < 45.5
           ? ToneMapDL2FixedHermite(
@@ -696,7 +696,8 @@ void main(
           // into the game LUT, reconstruct, then three-argument ToneMapPass).
           // This lets 0x268's ToneMapPass receive the raw HDR and own the
           // Game/Peak rolloff, matching the SKILL reference. The vanilla SDR
-          // path above is preserved for Off.
+          // path above is preserved for Off. Mode 59 forces untonemapped in
+          // both modes so the 0x268 LUT-input probe gets a mode-invariant input.
           : untonemapped;
   o0.a = source.a;
 }

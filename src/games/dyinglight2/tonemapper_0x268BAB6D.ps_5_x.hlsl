@@ -83,6 +83,7 @@ void main(
   // as the legacy sRGB-shaped intermediate or HDR values will be remapped a
   // second time before the LUT bridge.
   float3 input_hdr = max(r1.xyz, 0.0);
+  const bool probe59 = RENODX_DEBUG_MODE > 58.5 && RENODX_DEBUG_MODE < 59.5;
   if (RENODX_DEBUG_MODE > 32.5 && RENODX_DEBUG_MODE < 33.5) {
     const uint quadrant = (v1.x >= 0.5 ? 1u : 0u) + (v1.y >= 0.5 ? 2u : 0u);
     const float strengths[4] = {0.0, 0.25, 0.5, 0.75};
@@ -107,7 +108,7 @@ void main(
   const float4 sdr_curve0 = float4(2.27, 0.17, 1.69, 0.8);
   const float4 sdr_curve1 = float4(0.14, 0.0, 0.0, 0.0);
   const float3 neutral_sdr = ApplyDL2SDRCurve(input_hdr, sdr_curve0, sdr_curve1);
-  if (RENODX_TONE_MAP_TYPE != 0.0) {
+  if (RENODX_TONE_MAP_TYPE != 0.0 || probe59) {
     r1.xyz = neutral_sdr;
   }
 
@@ -193,22 +194,25 @@ void main(
         : o0.rgb;
   }
 
-  // LUT-input probe (mode 59). A/B across ToneMapType to find why the renodrt
-  // LUT grade differs from vanilla:
-  //   TL = the value that actually feeds the game LUT
-  //        (neutral_sdr in HDR, input_hdr == vanilla in Off)
-  //   TR = native_lut_grade (the same value DebugMode 35 shows as TL)
-  //   BL = neutral_sdr (mode-invariant reference, identical in both modes)
-  //   BR = current normal output
-  // If TL(HDR) == BL and TL(Off) == BL, the LUT input is identical and the
-  // residual grade difference must come from elsewhere. If TL(HDR) != BL the
-  // neutral_sdr/vanilla relationship is broken despite the matched constants.
-  if (RENODX_DEBUG_MODE > 58.5 && RENODX_DEBUG_MODE < 59.5) {
-    const float3 effective_lut_input = RENODX_TONE_MAP_TYPE == 0.0 ? input_hdr : neutral_sdr;
+  // LUT-input probe (mode 59). Mode 59 forces 0x3E to output untonemapped in
+  // BOTH tone map types, so 0x268 receives the same linear scene and every
+  // quadrant except BR is mode-invariant:
+  //   TL = input_hdr (raw untonemapped this pass actually received)
+  //   TR = neutral_sdr (curve(untonemapped) == vanilla, the HDR LUT input)
+  //   BL = native_lut_grade (LUT grading of the vanilla reference)
+  //   BR = current normal output (ToneMapPass in HDR, LUT grade in Off)
+  // Toggling ToneMapType must not change TL/TR/BL at all; if it does, either
+  // the auto exposure drifted or 0x268 received something other than
+  // untonemapped. TL vs TR shows whether the curve is applied to the received
+  // input, and TR can be compared against the real vanilla picture to confirm
+  // neutral_sdr == vanilla. The old design showed BL = neutral_sdr, but in the
+  // Off mode input_hdr was already the SDR output so neutral_sdr double-curved
+  // and was NOT mode-invariant; forcing untonemapped through 0x3E fixes that.
+  if (probe59) {
     const uint quadrant = (v1.x >= 0.5 ? 1u : 0u) + (v1.y >= 0.5 ? 2u : 0u);
-    o0.rgb = quadrant == 0u ? effective_lut_input
-        : quadrant == 1u ? native_lut_grade
-        : quadrant == 2u ? neutral_sdr
+    o0.rgb = quadrant == 0u ? input_hdr
+        : quadrant == 1u ? neutral_sdr
+        : quadrant == 2u ? native_lut_grade
         : o0.rgb;
     o0.a = 1.0;
     return;
