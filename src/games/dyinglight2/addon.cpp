@@ -6992,7 +6992,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // HDR output DLSS Frame Generation supports; scRGB stays available as a
       // no-FG fallback. Scene resources keep their FP16 clones either way.
       {
-        int32_t format_choice = 0;
+        int32_t format_choice = 1;
         reshade::get_config_value(nullptr, renodx::utils::settings::global_name.c_str(), "SwapChainFormat", format_choice);
         swap_chain_format_setting = static_cast<float>(format_choice);
         const bool use_hdr10 = (format_choice == 0);
