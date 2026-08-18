@@ -401,13 +401,17 @@ gamut compression) while keeping `neutral_sdr -> LUT -> graded_sdr` intact.
   binding, not the `ToneMapPass` formula and not the disabled 0x268 center
   readback.
 - The diagnostic build keeps 0x268 `OnTargetDraw` (HDR t0 clone) but changes
-  0xAD from `OnTargetDraw` to `OnTargetOutputDraw`. AD still receives the
-  active output-RTV rewrite, but no replacement t0 table is bound.
-- The expected result is a stable `DebugMode=0`, `ToneMapType=3` launch; the
-  AD input may fall back to the native resource and therefore can return to a
-  203-nit ceiling. Do not interpret that result as a RenoDRT math verdict.
+  0xAD from `OnTargetDraw` to `OnTargetOutputDraw`. The subsequent runtime log
+  still reported `rewrite=1`, proving that AD's output-RTV rewrite remained
+  active. That run also used HDR10 and emitted repeated FG present identities,
+  so it was not a valid pure-Off crash test.
+- The next isolation removes the AD command-action registration entirely:
+  `0xAD085E81` remains audit-only, with both t0 and output-RTV rewriting
+  disabled. A stable `DebugMode=0`, `ToneMapType=3` launch under the explicit
+  pure-Off configuration is then the first valid crash result. Its AD input
+  falls back to the native resource and may return to a 203-nit ceiling; do not
+  interpret that as a RenoDRT math verdict.
 - The `Capture 0x268 Center Probe` button remains readback-disabled because
   its staging/readback path is unsafe. The button currently logs only.
-
 
 

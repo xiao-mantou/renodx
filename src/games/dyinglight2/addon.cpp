@@ -6952,12 +6952,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           On268CenterProbeCapture,
           {.shader_hash = 0x268BAB6Du,
            .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
-      renodx::utils::command_action::Register(
-          // AD t0 clone binding is disabled while the targeted descriptor-table
-          // path is isolated; this bind is the confirmed crash boundary.
-          renodx::games::dyinglight2::descriptor_override::OnTargetOutputDraw,
-          {.shader_hash = 0xAD085E81u,
-           .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+      // AD is audit-only while its clone/output rewrite crash boundary is
+      // isolated. The native AD input and RTV must remain untouched.
+      renodx::utils::log::i("DL2 AD targeted output rewrite: disabled (audit-only)");
       renodx::utils::log::i("DL2 build: ", renodx::build_info::kBuildVersion);
       renodx::utils::log::i("DL2 scoped clone diagnostic: output-audit-v1");
       reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
