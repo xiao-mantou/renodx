@@ -6779,9 +6779,6 @@ renodx::utils::settings::Settings settings = {
         .section = "Debug",
         .tooltip = "One-shot: logs the DebugMode 60 I/N/L/B values (input_hdr / neutral_sdr / native_lut_grade / ToneMapPass output) written at four fixed pixels of the 0x268 RTV, read back pre-gamma after the next Present. Aim the crosshair at the pixel to measure, keep DebugMode=60, then click.",
         .on_click = []() {
-          std::scoped_lock lock(center_probe_mutex);
-          center_probe_state = {};
-          center_probe_capture.store(1.f, std::memory_order_release);
           renodx::utils::log::i("DL2 0x268 center probe capture armed.");
           return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
@@ -6956,7 +6953,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           {.shader_hash = 0x268BAB6Du,
            .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
       renodx::utils::command_action::Register(
-          renodx::games::dyinglight2::descriptor_override::OnTargetDraw,
+          // AD t0 clone binding is disabled while the targeted descriptor-table
+          // path is isolated; this bind is the confirmed crash boundary.
+          renodx::games::dyinglight2::descriptor_override::OnTargetOutputDraw,
           {.shader_hash = 0xAD085E81u,
            .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
       renodx::utils::log::i("DL2 build: ", renodx::build_info::kBuildVersion);

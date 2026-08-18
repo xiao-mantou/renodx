@@ -395,6 +395,19 @@ gamut compression) while keeping `neutral_sdr -> LUT -> graded_sdr` intact.
 - Prefer fixing the `neutral_sdr`/`graded_sdr` construction over band-aid
   input swaps.
 
+## 2026-08-18: isolate the confirmed AD clone-bind crash
+
+- The crash boundary is `0xAD085E81` targeted `t0` descriptor-table clone
+  binding, not the `ToneMapPass` formula and not the disabled 0x268 center
+  readback.
+- The diagnostic build keeps 0x268 `OnTargetDraw` (HDR t0 clone) but changes
+  0xAD from `OnTargetDraw` to `OnTargetOutputDraw`. AD still receives the
+  active output-RTV rewrite, but no replacement t0 table is bound.
+- The expected result is a stable `DebugMode=0`, `ToneMapType=3` launch; the
+  AD input may fall back to the native resource and therefore can return to a
+  203-nit ceiling. Do not interpret that result as a RenoDRT math verdict.
+- The `Capture 0x268 Center Probe` button remains readback-disabled because
+  its staging/readback path is unsafe. The button currently logs only.
 
 
 
