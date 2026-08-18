@@ -6994,6 +6994,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // lifetime contract is independently verified.
       renodx::utils::log::w(
           "DL2 DLSS FG: custom swapchain destroy callback disabled for crash isolation.");
+      // Descriptor clone tables have a separate lifetime from the DLSS-G
+      // bridge. Reset their cache on resize without freeing tables until
+      // device teardown, so stale post-resize bindings cannot be reused.
+      reshade::register_event<reshade::addon_event::destroy_swapchain>(
+          renodx::games::dyinglight2::descriptor_override::OnDestroySwapchain);
       reshade::register_event<reshade::addon_event::destroy_device>(OnDestroyDl2Device);
       reshade::register_event<reshade::addon_event::destroy_device>(
           renodx::games::dyinglight2::descriptor_override::OnDestroyDevice);
@@ -7201,6 +7206,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::init_command_queue>(RegisterDlssFgNativeQueue);
       reshade::unregister_event<reshade::addon_event::destroy_command_queue>(UnregisterDlssFgNativeQueue);
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
+      reshade::unregister_event<reshade::addon_event::destroy_swapchain>(
+          renodx::games::dyinglight2::descriptor_override::OnDestroySwapchain);
       reshade::unregister_event<reshade::addon_event::destroy_device>(OnDestroyDl2Device);
       reshade::unregister_event<reshade::addon_event::destroy_device>(
           renodx::games::dyinglight2::descriptor_override::OnDestroyDevice);

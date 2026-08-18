@@ -8,6 +8,7 @@
 #include <shared_mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include <include/reshade.hpp>
 
@@ -58,6 +59,7 @@ struct RestoreBinding {
 
 inline std::mutex table_mutex;
 inline std::unordered_map<TableKey, reshade::api::descriptor_table, TableKeyHash> clone_tables;
+inline std::unordered_map<reshade::api::device*, std::vector<reshade::api::descriptor_table>> retired_tables;
 inline thread_local RestoreBinding pending_restore = {};
 inline std::atomic_uint32_t success_log_count = 0u;
 inline std::atomic_uint32_t skip_log_count = 0u;
@@ -391,6 +393,38 @@ inline void OnDestroyDevice(reshade::api::device* device) {
     }
     if (it->second.handle != 0u) device->free_descriptor_table(it->second);
     it = clone_tables.erase(it);
+  }
+  if (const auto retired = retired_tables.find(device); retired != retired_tables.end()) {
+    for (const auto table : retired->second) {
+      if (table.handle != 0u) device->free_descriptor_table(table);
+    }
+    retired_tables.erase(retired);
+  }
+}
+
+inline void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) {
+  if (swapchain == nullptr) return;
+  auto* device = swapchain->get_device();
+  if (device == nullptr) return;
+
+  std::scoped_lock lock(table_mutex);
+  size_t retired_count = 0u;
+  for (auto it = clone_tables.begin(); it != clone_tables.end();) {
+    if (it->first.device != device) {
+      ++it;
+      continue;
+    }
+    if (it->second.handle != 0u) {
+      retired_tables[device].push_back(it->second);
+      ++retired_count;
+    }
+    it = clone_tables.erase(it);
+  }
+  if (retired_count != 0u) {
+    renodx::utils::log::i(
+        "DL2 descriptor clone tables reset on swapchain ",
+        resize ? "resize" : "destroy",
+        ": retired=", retired_count);
   }
 }
 
