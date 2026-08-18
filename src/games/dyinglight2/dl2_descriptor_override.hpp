@@ -24,6 +24,10 @@
 
 namespace renodx::games::dyinglight2::descriptor_override {
 
+// Crash-isolation A/B: keep the clone implementation available for later
+// testing, but do not install either target draw hook by default.
+inline constexpr bool kEnableTargetOverrides = false;
+
 struct TableKey {
   reshade::api::device* device = nullptr;
   uint64_t layout = 0u;
@@ -420,12 +424,10 @@ inline void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) 
     }
     it = clone_tables.erase(it);
   }
-  if (retired_count != 0u) {
-    renodx::utils::log::i(
-        "DL2 descriptor clone tables reset on swapchain ",
-        resize ? "resize" : "destroy",
-        ": retired=", retired_count);
-  }
+  renodx::utils::log::i(
+      "DL2 descriptor clone tables reset on swapchain ",
+      resize ? "resize" : "destroy",
+      ": retired=", retired_count);
 }
 
 }  // namespace renodx::games::dyinglight2::descriptor_override

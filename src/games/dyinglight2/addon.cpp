@@ -6957,14 +6957,20 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           OnGammaDrawAudit,
           {.shader_hash = 0xAD085E81u,
            .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
-      renodx::utils::command_action::Register(
-          renodx::games::dyinglight2::descriptor_override::OnTargetOutputDraw,
-          {.shader_hash = 0x3E36DA5Bu,
-           .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
-      renodx::utils::command_action::Register(
-          renodx::games::dyinglight2::descriptor_override::OnTargetDraw,
-          {.shader_hash = 0x268BAB6Du,
-           .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+      if constexpr (renodx::games::dyinglight2::descriptor_override::kEnableTargetOverrides) {
+        renodx::utils::command_action::Register(
+            renodx::games::dyinglight2::descriptor_override::OnTargetOutputDraw,
+            {.shader_hash = 0x3E36DA5Bu,
+             .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+        renodx::utils::command_action::Register(
+            renodx::games::dyinglight2::descriptor_override::OnTargetDraw,
+            {.shader_hash = 0x268BAB6Du,
+             .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+      }
+      renodx::utils::log::i(
+          "DL2 targeted descriptor override: ",
+          renodx::games::dyinglight2::descriptor_override::kEnableTargetOverrides ? "enabled" : "disabled",
+          " for crash A/B");
       renodx::utils::command_action::Register(
           On268CenterProbeCapture,
           {.shader_hash = 0x268BAB6Du,
@@ -7184,10 +7190,12 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     case DLL_PROCESS_DETACH:
       renodx::utils::command_action::Unregister(OnDownstreamDrawCapture);
       renodx::utils::command_action::Unregister(OnGammaDrawAudit);
-      renodx::utils::command_action::Unregister(
-          renodx::games::dyinglight2::descriptor_override::OnTargetOutputDraw);
-      renodx::utils::command_action::Unregister(
-          renodx::games::dyinglight2::descriptor_override::OnTargetDraw);
+      if constexpr (renodx::games::dyinglight2::descriptor_override::kEnableTargetOverrides) {
+        renodx::utils::command_action::Unregister(
+            renodx::games::dyinglight2::descriptor_override::OnTargetOutputDraw);
+        renodx::utils::command_action::Unregister(
+            renodx::games::dyinglight2::descriptor_override::OnTargetDraw);
+      }
       reshade::unregister_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
       reshade::unregister_event<reshade::addon_event::barrier>(OnDlssFgBackbufferBarrier);
       reshade::unregister_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
