@@ -46,6 +46,18 @@ With DLSS SR Off, `0x3E Legacy sRGB Output (A/B)` made the image visibly washed 
 
 Changing DLSS mode while already in gameplay caused an immediate crash. Treat runtime DLSS mode switching as unsafe until resource lifetime handling is fixed. This likely shares the settings-save resize boundary: the upscaler output resource changes while FP16 clone views and replacement descriptor tables still refer to the previous generation.
 
+### 2026-08-18: resize cleanup fence bug
+
+The post-restart log reproduced the crash boundary without any AD clone/output rewrite:
+every `ResizeBuffers` reached `DL2 DLSS FG: resize wait result=no_fence`, followed by the
+normal swapchain destroy/create sequence. `OnDestroySwapchain` previously destroyed all
+DL2 FG bridge passes for every result except `timeout` and `set_event_failed`, so
+`no_fence` incorrectly entered destruction. A missing Streamline fence is an unknown
+GPU-lifetime state, not an idle guarantee. Resize cleanup now destroys bridge resources
+only for `already_complete` or `wait_completed`; `no_fence`, timeout, and event failure
+are deferred until a safe device teardown. This is a lifetime-only fix and does not
+change tone mapping, resource-upgrade masks, AD behavior, or swapchain format.
+
 ## 2026-08-02 Resource Upgrade Isolation
 
 The startup resource matrix established the following boundary:

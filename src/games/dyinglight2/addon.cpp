@@ -502,6 +502,20 @@ void RetainDlssFgResource(uint64_t handle) {
   dlss_fg_retained_resources.push_back(std::move(retained));
 }
 
+void OnDestroyDl2Device(reshade::api::device* device) {
+  if (device == nullptr) return;
+  renodx::utils::log::i("DL2 DLSS FG: device teardown cleanup begin.");
+  DestroyDlssFgBridgePasses(device);
+  {
+    std::scoped_lock lock(dlss_fg_fence_mutex);
+    if (dlss_fg_inputs_fence != nullptr) dlss_fg_inputs_fence->Release();
+    dlss_fg_inputs_fence = nullptr;
+    dlss_fg_inputs_fence_value = 0u;
+    dlss_fg_retained_resources.clear();
+  }
+  renodx::utils::log::i("DL2 DLSS FG: device teardown cleanup complete.");
+}
+
 sl::Result HookedSlDLSSGGetState(
     const sl::ViewportHandle& viewport,
     sl::DLSSGState& state,
@@ -1901,12 +1915,15 @@ void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) {
                << " state_updated=" << (state_updated ? "yes" : "no")
                << " target=" << target << " completed_before=" << completed;
   renodx::utils::log::i(wait_message.str().c_str());
-  if (wait_result == DlssFgWaitResult::timeout || wait_result == DlssFgWaitResult::set_event_failed) {
-    // Keep native resources alive if DLSS-G stopped progressing during focus
-    // loss. This avoids destroying an object still referenced by FG.
+  if (wait_result != DlssFgWaitResult::already_complete
+      && wait_result != DlssFgWaitResult::wait_completed) {
+    // A missing fence is not proof that the GPU is idle. Keep bridge resources
+    // alive until device teardown rather than destroying one Streamline may
+    // still reference during ResizeBuffers.
     RetainDlssFgResource(dlss_fg_latest_color_original.load(std::memory_order_relaxed));
     RetainDlssFgResource(dlss_fg_latest_color_clone.load(std::memory_order_relaxed));
-    renodx::utils::log::w("DL2 DLSS FG: retained tagged resources after fence wait failure.");
+    renodx::utils::log::w(
+        "DL2 DLSS FG: resize cleanup deferred; no completed input fence.");
   } else {
     DestroyDlssFgBridgePasses(device);
   }
@@ -6975,6 +6992,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // Registered before mods::swapchain::Use below so the DLSS-G input
       // fence is observed before proxy clones are released during resize.
       reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
+      reshade::register_event<reshade::addon_event::destroy_device>(OnDestroyDl2Device);
       reshade::register_event<reshade::addon_event::destroy_device>(
           renodx::games::dyinglight2::descriptor_override::OnDestroyDevice);
 
@@ -7182,6 +7200,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::destroy_command_queue>(UnregisterDlssFgNativeQueue);
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
       reshade::unregister_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
+      reshade::unregister_event<reshade::addon_event::destroy_device>(OnDestroyDl2Device);
       reshade::unregister_event<reshade::addon_event::destroy_device>(
           renodx::games::dyinglight2::descriptor_override::OnDestroyDevice);
       RemoveDlssFgNativeExecuteHook();
