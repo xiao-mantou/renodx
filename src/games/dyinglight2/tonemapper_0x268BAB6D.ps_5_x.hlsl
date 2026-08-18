@@ -243,25 +243,14 @@ void main(
   float3 stable_grade = native_lut_grade;
 
   if (RENODX_TONE_MAP_TYPE != 0.0) {
-    // Plan B (0xA7F77A42 pattern): the native LUT/color-grade chain (color
-    // temp, LUT sample, luminance balance, smoothstep contrast, saturation)
-    // produced `native_lut_grade` from the neutral_sdr reference. Feed it as
-    // graded_color through the three-argument ToneMapPass so RenoDRT preserves
-    // the HDR magnitude from `input_hdr` while keeping the LUT grading.
+    // Plan B (0xA7F77A42 / Silksong pattern): native LUT/color-grade chain
+    // produced `native_lut_grade` from neutral_sdr. Final HDR output is only
+    // ToneMapPass(untonemapped, graded, neutral_sdr). 0x3E supplies
+    // untonemapped; this pass owns the single ToneMapPass. No second TM, no
+    // lerp back to native_lut_grade on the normal path.
     upgraded_grade = native_lut_grade;
     stable_grade = native_lut_grade;
-
-    // Extended-vanilla: ToneMapPass alone flattens the low/mid range because
-    // UpgradeToneMap re-scales the vanilla grade to the raw scene luminance
-    // (crushing the LUT shadow lift back to near-black). Below paper white the
-    // output keeps native_lut_grade exactly (the vanilla mode output), then
-    // blends into the ToneMapPass HDR reconstruction so highlights still
-    // extend to Peak. Experiment parameters: transition 1.0 -> 1.275 scene
-    // units (paper white where the vanilla curve reaches 1.0).
-    const float3 hdr_output = renodx::draw::ToneMapPass(input_hdr, upgraded_grade, neutral_sdr);
-    const float max_ch = max(input_hdr.r, max(input_hdr.g, input_hdr.b));
-    const float blend = smoothstep(1.0, 1.275, max_ch);
-    o0.rgb = lerp(native_lut_grade, hdr_output, blend);
+    o0.rgb = renodx::draw::ToneMapPass(input_hdr, upgraded_grade, neutral_sdr);
   }
 
   if (RENODX_DEBUG_MODE > 34.5 && RENODX_DEBUG_MODE < 35.5) {
@@ -338,10 +327,8 @@ void main(
     const float v_in = max(probe_hdr.r, max(probe_hdr.g, probe_hdr.b));
     const float v_n = max(probe_neutral.r, max(probe_neutral.g, probe_neutral.b));
     const float v_l = max(probe_grade.r, max(probe_grade.g, probe_grade.b));
-    // B = the extended-vanilla final output (the same lerp the normal path
-    // applies), so the readback verifies whether the low/mid equals vanilla.
-    const float probe_blend = smoothstep(1.0, 1.275, v_in);
-    const float3 probe_final = lerp(probe_grade, probe_tm, probe_blend.xxx);
+    // B = same as normal-path final: pure ToneMapPass output.
+    const float3 probe_final = probe_tm;
     const float v_b = max(probe_final.r, max(probe_final.g, probe_final.b));
     o0.rgb = 0.0;
     if (abs(v1.x - 0.5) < 0.002 || abs(v1.y - 0.5) < 0.002) o0.rgb += float3(1.0, 1.0, 1.0);
@@ -361,8 +348,8 @@ void main(
     return;
   }
 
-  // Game is handled by the standard ToneMapPass in 0x3E; the normal path must
-  // not scale again here or Game would be applied twice. Modes 40-42 keep the
+  // Game/Peak are handled by ToneMapPass above on the HDR normal path. Do not
+  // scale again here or Game would be applied twice. Modes 40-42 keep the
   // post-LUT Game diagnostics only, for A/B against the standard path.
   if (RENODX_DEBUG_MODE > 39.5 && RENODX_DEBUG_MODE < 45.5) {
     const float game_scale = max(RENODX_DIFFUSE_WHITE_NITS / 203.0, 0.01);
