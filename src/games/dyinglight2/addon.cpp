@@ -6989,9 +6989,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::register_event<reshade::addon_event::unmap_buffer_region>(OnUpscalerUnmapBufferRegion);
       reshade::register_event<reshade::addon_event::reset_command_list>(OnDlssFgResetCommandList);
       reshade::register_event<reshade::addon_event::execute_command_list>(OnDlssFgExecuteCommandList);
-      // Registered before mods::swapchain::Use below so the DLSS-G input
-      // fence is observed before proxy clones are released during resize.
-      reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
+      // Disabled during crash isolation. The callback touches DLSS-G state
+      // from the swapchain destruction path, which is unsafe until its
+      // lifetime contract is independently verified.
+      renodx::utils::log::w(
+          "DL2 DLSS FG: custom swapchain destroy callback disabled for crash isolation.");
       reshade::register_event<reshade::addon_event::destroy_device>(OnDestroyDl2Device);
       reshade::register_event<reshade::addon_event::destroy_device>(
           renodx::games::dyinglight2::descriptor_override::OnDestroyDevice);
@@ -7199,7 +7201,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::init_command_queue>(RegisterDlssFgNativeQueue);
       reshade::unregister_event<reshade::addon_event::destroy_command_queue>(UnregisterDlssFgNativeQueue);
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
-      reshade::unregister_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
       reshade::unregister_event<reshade::addon_event::destroy_device>(OnDestroyDl2Device);
       reshade::unregister_event<reshade::addon_event::destroy_device>(
           renodx::games::dyinglight2::descriptor_override::OnDestroyDevice);
