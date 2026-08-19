@@ -125,6 +125,9 @@ bool dlss_fg_waiting_for_streamline_logged = false;
 // Crash-isolation A/B: leave HDR/resource paths unchanged while disabling
 // addon-owned Streamline and frame-generation hooks.
 inline constexpr bool kEnableDl2FgHooks = false;
+// Crash-isolation A/B: leave swapchain/HDR/resource upgrades active while
+// disabling RenoDX shader and pipeline-layout hooks.
+inline constexpr bool kEnableDl2ShaderHooks = false;
 bool dlss_fg_tag_clone_logged = false;
 bool dlss_fg_color_tag_suppression_logged = false;
 std::atomic_int32_t dlss_fg_aux_tag_mode_logged = -1;
@@ -6991,8 +6994,14 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           "DL2 Streamline/FG hooks: ",
           kEnableDl2FgHooks ? "enabled" : "disabled",
           " for crash A/B");
+      renodx::utils::log::i(
+          "DL2 shader hooks: ",
+          kEnableDl2ShaderHooks ? "enabled" : "disabled",
+          " for crash A/B");
       reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
-      reshade::register_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
+      if constexpr (kEnableDl2ShaderHooks) {
+        reshade::register_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
+      }
       if constexpr (kEnableDl2FgHooks) {
         reshade::register_event<reshade::addon_event::init_command_queue>(RegisterDlssFgNativeQueue);
         reshade::register_event<reshade::addon_event::destroy_command_queue>(UnregisterDlssFgNativeQueue);
@@ -7224,7 +7233,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         reshade::unregister_event<reshade::addon_event::barrier>(OnDlssFgBackbufferBarrier);
       }
       reshade::unregister_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
-      reshade::unregister_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
+      if constexpr (kEnableDl2ShaderHooks) {
+        reshade::unregister_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
+      }
       reshade::unregister_event<reshade::addon_event::init_swapchain>(OnTypelessAuditInitSwapchain);
       reshade::unregister_event<reshade::addon_event::init_resource>(OnTypelessAuditInitResource);
       reshade::unregister_event<reshade::addon_event::destroy_resource>(OnTypelessAuditDestroyResource);
@@ -7261,7 +7272,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
   renodx::mods::swapchain::Use(fdw_reason, &shader_injection);
-  renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
+  if constexpr (kEnableDl2ShaderHooks) {
+    renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
+  }
 
   // Register after the swapchain proxy so the one-shot capture includes any
   // proxy copy/resolve work issued from its own Present callback.
