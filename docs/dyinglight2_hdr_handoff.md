@@ -414,4 +414,19 @@ gamut compression) while keeping `neutral_sdr -> LUT -> graded_sdr` intact.
 - The `Capture 0x268 Center Probe` button remains readback-disabled because
   its staging/readback path is unsafe. The button currently logs only.
 
+## 2026-08-19: unsafe center-probe readback confirmed
 
+Build `c059dbc` armed the center probe and immediately logged all-zero I/N/L/B,
+followed by repeated `DXGI_ERROR_DEVICE_REMOVED` with removal reason
+`DXGI_ERROR_DEVICE_HUNG`. The cause was a full-frame copy of the active
+2560x1600 FP16 RTV from the Present callback without an explicit resource
+state transition.
+
+The diagnostic path was changed to copy only the four DebugMode 60 pixels into
+a deferred `4x1` FP16 `gpu_to_cpu` staging resource. It requires the source to
+advertise `render_target` usage, transitions
+`render_target -> copy_source -> render_target`, signals a D3D12 fence, and
+maps only after that fence completes. It leaves all tone mapping,
+LUT, RenoDRT, Game, and Peak code untouched. A source without an explicit
+render-target usage is skipped rather than guessed. This is diagnostic-only;
+do not interpret a missing readback as a rendering result.

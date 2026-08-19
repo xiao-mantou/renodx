@@ -4985,6 +4985,8 @@ struct CenterProbeCaptureState {
   reshade::api::resource resource = {};
   reshade::api::resource staging = {};
   reshade::api::format view_format = reshade::api::format::unknown;
+  Microsoft::WRL::ComPtr<ID3D12Fence> copy_fence;
+  uint64_t copy_fence_value = 0u;
 };
 static std::atomic<float> center_probe_capture{0.f};
 static CenterProbeCaptureState center_probe_state = {};
@@ -5026,18 +5028,25 @@ static inline float CenterProbeLuminance(const float rgb[3]) {
   return 0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2];
 }
 
-// Submit the copy without waiting. The matching map occurs on the next
-// Present, keeping startup, resize, and the 0x268 draw callback non-blocking.
+// Submit four pixel copies without waiting. A D3D12 fence gates the later map,
+// keeping startup, resize, and the 0x268 draw callback non-blocking.
 static bool BeginCenterProbeReadback(reshade::api::command_queue* queue, CenterProbeCaptureState& state) {
   if (queue == nullptr || state.resource.handle == 0u || state.copy_submitted) return false;
   auto* device = queue->get_device();
   if (device == nullptr) return false;
+  if (device->get_api() != reshade::api::device_api::d3d12) {
+    renodx::utils::log::w("DL2 center probe skipped: fence synchronization requires D3D12");
+    state.logged = true;
+    return false;
+  }
   const auto desc = device->get_resource_desc(state.resource);
   const bool fp16_view = state.view_format == reshade::api::format::r16g16b16a16_float
                          || state.view_format == reshade::api::format::r16g16b16a16_typeless;
   const bool fp16_resource = desc.texture.format == reshade::api::format::r16g16b16a16_float
                              || desc.texture.format == reshade::api::format::r16g16b16a16_typeless;
-  if (desc.type != reshade::api::resource_type::texture_2d || !fp16_view || !fp16_resource) {
+  const bool render_target = (desc.usage & reshade::api::resource_usage::render_target) != 0;
+  if (desc.type != reshade::api::resource_type::texture_2d || !fp16_view || !fp16_resource
+      || !render_target) {
     renodx::utils::log::w("DL2 center probe skipped: target is not an FP16 linear RTV");
     state.logged = true;
     return false;
@@ -5045,7 +5054,7 @@ static bool BeginCenterProbeReadback(reshade::api::command_queue* queue, CenterP
 
   reshade::api::resource staging = {};
   const reshade::api::resource_desc staging_desc(
-      desc.texture.width, desc.texture.height, desc.texture.depth_or_layers, 1,
+      4u, 1u, 1u, 1,
       reshade::api::format::r16g16b16a16_float, 1, reshade::api::memory_heap::gpu_to_cpu,
       reshade::api::resource_usage::copy_dest);
   if (!device->create_resource(staging_desc, nullptr, reshade::api::resource_usage::copy_dest, &staging)) {
@@ -5058,8 +5067,44 @@ static bool BeginCenterProbeReadback(reshade::api::command_queue* queue, CenterP
     renodx::utils::log::w("DL2 center probe readback: no immediate command list");
     return false;
   }
-  cmd_list->copy_texture_region(state.resource, 0, nullptr, staging, 0, nullptr);
+  const uint32_t source_width = std::max(1u, desc.texture.width);
+  const uint32_t source_height = std::max(1u, desc.texture.height);
+  const float probe_uvs[4][2] = {
+      {0.30f, 0.58f}, {0.30f, 0.66f}, {0.30f, 0.74f}, {0.30f, 0.82f}};
+  const reshade::api::resource_usage source_old = reshade::api::resource_usage::render_target;
+  const reshade::api::resource_usage source_new = reshade::api::resource_usage::copy_source;
+  cmd_list->barrier(state.resource, source_old, source_new);
+  for (uint32_t index = 0u; index < 4u; ++index) {
+    const uint32_t x = std::min(
+        source_width - 1u, static_cast<uint32_t>(probe_uvs[index][0] * source_width));
+    const uint32_t y = std::min(
+        source_height - 1u, static_cast<uint32_t>(probe_uvs[index][1] * source_height));
+    const reshade::api::subresource_box source_box = {x, y, 0u, x + 1u, y + 1u, 1u};
+    const reshade::api::subresource_box dest_box = {index, 0u, 0u, index + 1u, 1u, 1u};
+    cmd_list->copy_texture_region(state.resource, 0, &source_box, staging, 0, &dest_box);
+  }
+  cmd_list->barrier(state.resource, source_new, source_old);
   queue->flush_immediate_command_list();
+  auto* native_device = reinterpret_cast<ID3D12Device*>(
+      static_cast<uintptr_t>(device->get_native()));
+  auto* native_queue = reinterpret_cast<ID3D12CommandQueue*>(
+      static_cast<uintptr_t>(queue->get_native()));
+  if (native_device == nullptr || native_queue == nullptr
+      || FAILED(native_device->CreateFence(
+          0u, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&state.copy_fence)))) {
+    device->destroy_resource(staging);
+    state.copy_fence.Reset();
+    renodx::utils::log::w("DL2 center probe skipped: copy fence creation failed");
+    return false;
+  }
+  state.copy_fence_value = 1u;
+  if (FAILED(native_queue->Signal(state.copy_fence.Get(), state.copy_fence_value))) {
+    device->destroy_resource(staging);
+    state.copy_fence.Reset();
+    state.copy_fence_value = 0u;
+    renodx::utils::log::w("DL2 center probe skipped: copy fence signal failed");
+    return false;
+  }
   state.staging = staging;
   state.copy_submitted = true;
   return true;
@@ -5067,6 +5112,9 @@ static bool BeginCenterProbeReadback(reshade::api::command_queue* queue, CenterP
 
 static bool CompleteCenterProbeReadback(reshade::api::command_queue* queue, CenterProbeCaptureState& state) {
   if (queue == nullptr || state.staging.handle == 0u || !state.copy_submitted || state.logged) return false;
+  if (state.copy_fence == nullptr || state.copy_fence->GetCompletedValue() < state.copy_fence_value) {
+    return false;
+  }
   auto* device = queue->get_device();
   if (device == nullptr) return false;
   const auto desc = device->get_resource_desc(state.staging);
@@ -5076,14 +5124,13 @@ static bool CompleteCenterProbeReadback(reshade::api::command_queue* queue, Cent
     return false;
   }
 
-  const float uvs[4][2] = {{0.30f, 0.58f}, {0.30f, 0.66f}, {0.30f, 0.74f}, {0.30f, 0.82f}};
   const char* names[4] = {"I", "N", "L", "B"};
   float values[4][3] = {};
   if (data.data != nullptr) {
     constexpr uint32_t bytes_per_pixel = 8u;
     for (uint32_t index = 0u; index < 4u; ++index) {
-      const uint32_t px = static_cast<uint32_t>(uvs[index][0] * static_cast<float>(desc.texture.width));
-      const uint32_t py = static_cast<uint32_t>(uvs[index][1] * static_cast<float>(desc.texture.height));
+      const uint32_t px = index;
+      const uint32_t py = 0u;
       const auto* pixel = static_cast<const uint8_t*>(data.data)
           + static_cast<size_t>(py) * data.row_pitch + static_cast<size_t>(px) * bytes_per_pixel;
       for (uint32_t channel = 0u; channel < 3u; ++channel) {
@@ -5096,6 +5143,8 @@ static bool CompleteCenterProbeReadback(reshade::api::command_queue* queue, Cent
   device->unmap_texture_region(state.staging, 0);
   device->destroy_resource(state.staging);
   state.staging = {};
+  state.copy_fence.Reset();
+  state.copy_fence_value = 0u;
   state.logged = true;
 
   std::ostringstream stream;
