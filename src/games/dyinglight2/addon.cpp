@@ -6022,11 +6022,9 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     // Full-screen post-LUT blit. The normal branch is bytecode-equivalent in
     // intent; its debug branch isolates the boundary before UI composition.
     {0xBFFC45ACu, CreateDl2BffcProbeShader()},
-    // Keep the original power operation in normal rendering, but register the
-    // exact replacement so its bounded post-Gamma probes actually execute.
-    // Its draw callback also keeps the FP16 output active at this final game
-    // color boundary.
-    TargetedDl2HdrShader(0xAD085E81),
+    // 0xAD remains audit-only. Its copied HDR template is not safe to register
+    // with the crash-isolation layout, and targeted binding was a prior crash
+    // boundary. Keep final Gamma untouched while 0x3E/0x268 are tested.
     // Disabled: guessed hashes caused crashes because the copied tonemapper
     // template shader has mismatched inputs/outputs.
     // CustomDirectXShaders(0x4d2b3f4d),

@@ -437,3 +437,8 @@ Build `ba9a7b7` intentionally had `kEnableDl2ShaderReplacements=false` for
 crash isolation, so Vanilla/RenoDRT changes were inert. The next diagnostic
 build restores shader replacements only; FG/Streamline, targeted descriptor
 rewrites, and shader-layout hooks remain disabled.
+
+The first replacement-enabled build (`bb5bc58`) crashed during startup after
+registering the copied `0xAD085E81` replacement. The next isolation removes
+only that replacement; `0xAD` remains audit-only while `0x3E` and `0x268` stay
+enabled for Vanilla/RenoDRT testing.
