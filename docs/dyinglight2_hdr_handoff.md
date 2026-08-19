@@ -464,3 +464,8 @@ addon; 0x268, 0xAD, UI, BFFC, and debug-probe shader targets are excluded from
 generation. BFFC probe code is also excluded from the C++ translation unit.
 This is a temporary crash-isolation configuration and must be removed after
 the test.
+
+`4a0edd7` confirmed the whitelist at runtime: only `0x3E` registered, but the
+process still crashed. The next A/B enables pipeline-layout hooks while
+keeping target clone/RTV hot-swap disabled, testing whether the replacement
+needs the original root-signature adaptation rather than clone activation.

@@ -125,10 +125,12 @@ bool dlss_fg_waiting_for_streamline_logged = false;
 // Crash-isolation A/B: leave HDR/resource paths unchanged while disabling
 // addon-owned Streamline and frame-generation hooks.
 inline constexpr bool kEnableDl2FgHooks = false;
-// Crash-isolation A/B: leave swapchain/HDR/resource upgrades active while
-// disabling RenoDX shader and pipeline-layout hooks.
+// Diagnostic A/B: keep the original pipeline-layout adaptation available so
+// replacement root signatures can be tested without enabling target hot-swap.
 inline constexpr bool kEnableDl2ShaderHooks = true;
-inline constexpr bool kEnableDl2ShaderLayoutHooks = false;
+inline constexpr bool kEnableDl2ShaderLayoutHooks = true;
+// Keep clone/RTV hot-swap disabled while testing replacement layout binding.
+inline constexpr bool kEnableDl2TargetHotSwap = false;
 inline constexpr bool kEnableDl2ShaderReplacements = true;
 bool dlss_fg_tag_clone_logged = false;
 bool dlss_fg_color_tag_suppression_logged = false;
@@ -5829,7 +5831,9 @@ renodx::mods::shader::CustomShader CreateDl2HdrShader(
   auto shader = renodx::mods::shader::CreateDirectXShader(crc32, dx11_code, dx12_code);
   // Clone/RTV hot-swap is disabled during crash isolation. Running it from a
   // replacement draw can touch a clone table that was intentionally disabled.
-  if constexpr (kEnableDl2ShaderLayoutHooks) shader.on_draw = ActivateDl2HdrTarget;
+  if constexpr (kEnableDl2ShaderLayoutHooks && kEnableDl2TargetHotSwap) {
+    shader.on_draw = ActivateDl2HdrTarget;
+  }
   return shader;
 }
 
