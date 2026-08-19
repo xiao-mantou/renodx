@@ -324,20 +324,21 @@ void main(
     probe_grade = probe_grade + -grade_luma;
     probe_grade = cb0[1].xxx * probe_grade + grade_luma;
     const float3 probe_tm = renodx::draw::ToneMapPass(probe_hdr, probe_grade, probe_neutral);
+    // B = same as normal-path final: pure ToneMapPass output.
+    const float3 probe_final = probe_tm;
     const float v_in = max(probe_hdr.r, max(probe_hdr.g, probe_hdr.b));
     const float v_n = max(probe_neutral.r, max(probe_neutral.g, probe_neutral.b));
     const float v_l = max(probe_grade.r, max(probe_grade.g, probe_grade.b));
-    // B = same as normal-path final: pure ToneMapPass output.
-    const float3 probe_final = probe_tm;
     const float v_b = max(probe_final.r, max(probe_final.g, probe_final.b));
     o0.rgb = 0.0;
     if (abs(v1.x - 0.5) < 0.002 || abs(v1.y - 0.5) < 0.002) o0.rgb += float3(1.0, 1.0, 1.0);
-    // Raw value pixels for the 'Capture 0x268 Center Probe' readback button
-    // (read pre-gamma from this pass's RTV): I, N, L, B at fixed UVs.
-    if (all(abs(v1.xy - float2(0.30, 0.58)) < float2(0.0015, 0.0015))) o0.rgb = v_in.xxx;
-    if (all(abs(v1.xy - float2(0.30, 0.66)) < float2(0.0015, 0.0015))) o0.rgb = v_n.xxx;
-    if (all(abs(v1.xy - float2(0.30, 0.74)) < float2(0.0015, 0.0015))) o0.rgb = v_l.xxx;
-    if (all(abs(v1.xy - float2(0.30, 0.82)) < float2(0.0015, 0.0015))) o0.rgb = v_b.xxx;
+    // Raw full-RGB values for the deferred center probe. All four values were
+    // derived from probe_src sampled once at (0.5,0.5), not from these output
+    // pixel coordinates.
+    if (all(abs(v1.xy - float2(0.30, 0.58)) < float2(0.0015, 0.0015))) o0.rgb = probe_hdr;
+    if (all(abs(v1.xy - float2(0.30, 0.66)) < float2(0.0015, 0.0015))) o0.rgb = probe_neutral;
+    if (all(abs(v1.xy - float2(0.30, 0.74)) < float2(0.0015, 0.0015))) o0.rgb = probe_grade;
+    if (all(abs(v1.xy - float2(0.30, 0.82)) < float2(0.0015, 0.0015))) o0.rgb = probe_final;
     // Four values stacked vertically, top to bottom: I, N, L, B.
     const float label_x = 0.44;
     o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.58, v_in, 0.006);
