@@ -122,6 +122,9 @@ std::atomic_bool dlss_fg_tag_transfer_capture_active = false;
 uint32_t dlss_fg_last_present_tag_serial = 0u;
 bool dlss_fg_hook_installed = false;
 bool dlss_fg_waiting_for_streamline_logged = false;
+// Crash-isolation A/B: keep the Center Probe implementation compiled, but do
+// not register its command-action callback during addon startup.
+inline constexpr bool kEnableDl2CenterProbeAction = false;
 bool dlss_fg_tag_clone_logged = false;
 bool dlss_fg_color_tag_suppression_logged = false;
 std::atomic_int32_t dlss_fg_aux_tag_mode_logged = -1;
@@ -6951,10 +6954,12 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           renodx::games::dyinglight2::descriptor_override::OnTargetDraw,
           {.shader_hash = 0x268BAB6Du,
            .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
-      renodx::utils::command_action::Register(
-          On268CenterProbeCapture,
-          {.shader_hash = 0x268BAB6Du,
-           .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+      if constexpr (kEnableDl2CenterProbeAction) {
+        renodx::utils::command_action::Register(
+            On268CenterProbeCapture,
+            {.shader_hash = 0x268BAB6Du,
+             .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+      }
       renodx::utils::command_action::Register(
           renodx::games::dyinglight2::descriptor_override::OnTargetDraw,
           {.shader_hash = 0xAD085E81u,
@@ -7167,6 +7172,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           renodx::games::dyinglight2::descriptor_override::OnTargetOutputDraw);
       renodx::utils::command_action::Unregister(
           renodx::games::dyinglight2::descriptor_override::OnTargetDraw);
+      if constexpr (kEnableDl2CenterProbeAction) {
+        renodx::utils::command_action::Unregister(On268CenterProbeCapture);
+      }
       reshade::unregister_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
       reshade::unregister_event<reshade::addon_event::barrier>(OnDlssFgBackbufferBarrier);
       reshade::unregister_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
