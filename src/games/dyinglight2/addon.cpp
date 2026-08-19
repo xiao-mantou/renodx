@@ -5827,7 +5827,9 @@ renodx::mods::shader::CustomShader CreateDl2HdrShader(
     std::span<const uint8_t> dx11_code,
     std::span<const uint8_t> dx12_code) {
   auto shader = renodx::mods::shader::CreateDirectXShader(crc32, dx11_code, dx12_code);
-  shader.on_draw = ActivateDl2HdrTarget;
+  // Clone/RTV hot-swap is disabled during crash isolation. Running it from a
+  // replacement draw can touch a clone table that was intentionally disabled.
+  if constexpr (kEnableDl2ShaderLayoutHooks) shader.on_draw = ActivateDl2HdrTarget;
   return shader;
 }
 

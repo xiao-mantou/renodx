@@ -451,3 +451,8 @@ tone-map testing has no unrelated replacement pipeline in the startup path.
 `5742925` still crashed with only `0x3E` and `0x268` registered. The next
 split keeps only `0x3E` to determine whether the crash is in the LUT replacement
 or already in the upstream tonemapper replacement.
+
+`3f2a015` still crashed with only `0x3E` registered. The replacement's draw
+callback was still invoking clone/RTV hot-swap despite layout isolation. The
+next build disables that callback when `kEnableDl2ShaderLayoutHooks=false`,
+leaving only the replacement pipeline active.
