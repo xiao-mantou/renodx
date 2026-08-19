@@ -127,7 +127,8 @@ bool dlss_fg_waiting_for_streamline_logged = false;
 inline constexpr bool kEnableDl2FgHooks = false;
 // Crash-isolation A/B: leave swapchain/HDR/resource upgrades active while
 // disabling RenoDX shader and pipeline-layout hooks.
-inline constexpr bool kEnableDl2ShaderHooks = false;
+inline constexpr bool kEnableDl2ShaderHooks = true;
+inline constexpr bool kEnableDl2ShaderLayoutHooks = false;
 bool dlss_fg_tag_clone_logged = false;
 bool dlss_fg_color_tag_suppression_logged = false;
 std::atomic_int32_t dlss_fg_aux_tag_mode_logged = -1;
@@ -6998,6 +6999,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           "DL2 shader hooks: ",
           kEnableDl2ShaderHooks ? "enabled" : "disabled",
           " for crash A/B");
+      renodx::utils::log::i(
+          "DL2 shader layout hooks: ",
+          kEnableDl2ShaderLayoutHooks ? "enabled" : "disabled",
+          " for crash A/B");
       reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
       if constexpr (kEnableDl2ShaderHooks) {
         reshade::register_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
@@ -7273,7 +7278,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
   renodx::mods::swapchain::Use(fdw_reason, &shader_injection);
   if constexpr (kEnableDl2ShaderHooks) {
-    renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
+    if constexpr (kEnableDl2ShaderLayoutHooks) {
+      renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
+    } else {
+      renodx::mods::shader::Use<ShaderInjectData>(fdw_reason, custom_shaders, nullptr);
+    }
   }
 
   // Register after the swapchain proxy so the one-shot capture includes any
