@@ -129,7 +129,7 @@ inline constexpr bool kEnableDl2FgHooks = false;
 // disabling RenoDX shader and pipeline-layout hooks.
 inline constexpr bool kEnableDl2ShaderHooks = true;
 inline constexpr bool kEnableDl2ShaderLayoutHooks = false;
-inline constexpr bool kEnableDl2ShaderReplacements = false;
+inline constexpr bool kEnableDl2ShaderReplacements = true;
 bool dlss_fg_tag_clone_logged = false;
 bool dlss_fg_color_tag_suppression_logged = false;
 std::atomic_int32_t dlss_fg_aux_tag_mode_logged = -1;

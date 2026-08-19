@@ -430,3 +430,10 @@ maps only after that fence completes. It leaves all tone mapping,
 LUT, RenoDRT, Game, and Peak code untouched. A source without an explicit
 render-target usage is skipped rather than guessed. This is diagnostic-only;
 do not interpret a missing readback as a rendering result.
+
+## 2026-08-20: restore shader replacements for tone-map A/B
+
+Build `ba9a7b7` intentionally had `kEnableDl2ShaderReplacements=false` for
+crash isolation, so Vanilla/RenoDRT changes were inert. The next diagnostic
+build restores shader replacements only; FG/Streamline, targeted descriptor
+rewrites, and shader-layout hooks remain disabled.
