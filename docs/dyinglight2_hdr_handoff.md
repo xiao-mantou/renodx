@@ -442,3 +442,8 @@ The first replacement-enabled build (`bb5bc58`) crashed during startup after
 registering the copied `0xAD085E81` replacement. The next isolation removes
 only that replacement; `0xAD` remains audit-only while `0x3E` and `0x268` stay
 enabled for Vanilla/RenoDRT testing.
+
+`c9867a8` still crashed after `0xAD` was removed, with the later startup log
+reaching the popup UI pipeline. The next isolation keeps only `0x3E` and
+`0x268` replacements; UI and BFFC replacements are temporarily disabled so
+tone-map testing has no unrelated replacement pipeline in the startup path.

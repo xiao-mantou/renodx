@@ -6009,19 +6009,7 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     // the vanilla grade below SDR white and reconstructs the HDR magnitude in
     // the now-proven Linear BT.709 intermediate domain.
     TargetedDl2HdrShader(0x268BAB6D),
-    // DL2 composites gamma-domain UI through an UNORM view of the same
-    // typeless target whose scene pass uses an sRGB view. FP16 cloning removes
-    // that view distinction, so decode matched UI to Linear BT.709 and apply
-    // the dedicated UI-white scale before alpha blending into the HDR scene.
-    Dl2UiWriterProbeShader(0x54F3F767),
-    Dl2UiWriterProbeShader(0xF34DDC49),
-    Dl2UiWriterProbeShader(0x43B22618),
-    Dl2UiWriterProbeShader(0x61DBDE91),
-    Dl2UiWriterProbeShader(0x2280559E),
-    Dl2UiWriterProbeShader(0x7D1BA5D4),
-    // Full-screen post-LUT blit. The normal branch is bytecode-equivalent in
-    // intent; its debug branch isolates the boundary before UI composition.
-    {0xBFFC45ACu, CreateDl2BffcProbeShader()},
+    // UI/BFFC replacements remain disabled during startup crash isolation.
     // 0xAD remains audit-only. Its copied HDR template is not safe to register
     // with the crash-isolation layout, and targeted binding was a prior crash
     // boundary. Keep final Gamma untouched while 0x3E/0x268 are tested.
