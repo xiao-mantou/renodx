@@ -6014,7 +6014,8 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     // saturate operation collapse them to SDR.
     TargetedDl2HdrShader(0x3E36DA5B),
     // 0x268 is temporarily isolated below; keep only the upstream 0x3E
-    // replacement for the final startup crash split.
+    // replacement while the layout-compatible LUT replacement is tested.
+    TargetedDl2HdrShader(0x268BAB6D),
     // UI/BFFC replacements remain disabled during startup crash isolation.
     // 0xAD remains audit-only. Its copied HDR template is not safe to register
     // with the crash-isolation layout, and targeted binding was a prior crash

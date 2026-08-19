@@ -469,3 +469,8 @@ the test.
 process still crashed. The next A/B enables pipeline-layout hooks while
 keeping target clone/RTV hot-swap disabled, testing whether the replacement
 needs the original root-signature adaptation rather than clone activation.
+
+`1d96ac6` did not crash. This confirms the startup crash was caused by running
+the replacement without pipeline-layout adaptation. The next minimal A/B adds
+only the `0x268` shader target and registration; `0xAD`, UI, BFFC, and target
+hot-swap remain disabled.
