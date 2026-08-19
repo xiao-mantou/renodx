@@ -122,6 +122,9 @@ std::atomic_bool dlss_fg_tag_transfer_capture_active = false;
 uint32_t dlss_fg_last_present_tag_serial = 0u;
 bool dlss_fg_hook_installed = false;
 bool dlss_fg_waiting_for_streamline_logged = false;
+// Crash-isolation A/B: leave HDR/resource paths unchanged while disabling
+// addon-owned Streamline and frame-generation hooks.
+inline constexpr bool kEnableDl2FgHooks = false;
 bool dlss_fg_tag_clone_logged = false;
 bool dlss_fg_color_tag_suppression_logged = false;
 std::atomic_int32_t dlss_fg_aux_tag_mode_logged = -1;
@@ -763,8 +766,10 @@ void CaptureReshadeSwapchainSnapshot(
     reshade::api::swapchain* swapchain) {
   if (queue == nullptr || swapchain == nullptr) return;
 
-  RegisterDlssFgNativeQueue(queue);
-  dlss_fg_active_swapchain.store(reinterpret_cast<uintptr_t>(swapchain), std::memory_order_release);
+  if constexpr (kEnableDl2FgHooks) {
+    RegisterDlssFgNativeQueue(queue);
+    dlss_fg_active_swapchain.store(reinterpret_cast<uintptr_t>(swapchain), std::memory_order_release);
+  }
 
   DlssFgSwapchainSnapshot snapshot = ReadNativeSwapchainSnapshot(
       reinterpret_cast<IDXGISwapChain*>(swapchain->get_native()));
@@ -2278,9 +2283,11 @@ void OnTypelessAuditInitSwapchain(reshade::api::swapchain* swapchain, bool) {
   // Streamline can load after init_device but before its first DLSS-G buffer
   // allocation. Retry here so the native-interface contract is active before
   // the first presentation rather than waiting for a downstream draw.
-  TryInstallStreamlineHook();
-  if (device->get_api() == reshade::api::device_api::d3d12) {
-    dlss_fg_active_swapchain.store(reinterpret_cast<uintptr_t>(swapchain), std::memory_order_release);
+  if constexpr (kEnableDl2FgHooks) {
+    TryInstallStreamlineHook();
+    if (device->get_api() == reshade::api::device_api::d3d12) {
+      dlss_fg_active_swapchain.store(reinterpret_cast<uintptr_t>(swapchain), std::memory_order_release);
+    }
   }
   const auto desc = device->get_resource_desc(swapchain->get_current_back_buffer());
   std::scoped_lock lock(typeless_creation_audit_mutex);
@@ -5093,7 +5100,7 @@ void OnDownstreamDrawCapturePresent(
     uint32_t,
     const reshade::api::rect*) {
   CaptureReshadeSwapchainSnapshot(queue, swapchain);
-  TryInstallStreamlineHook();
+  if constexpr (kEnableDl2FgHooks) TryInstallStreamlineHook();
   // One-shot, first-Present only. Reports the final presentation state so an
   // HDR10 black screen can be told apart from a wrong-encoding black screen.
   // It reads descriptors and handles only: no readback, dump, or redirection.
@@ -6923,7 +6930,7 @@ void OnInitDevice(reshade::api::device* device) {
     renodx::utils::log::i(support_message.str().c_str());
   }
 
-  TryInstallStreamlineHook();
+  if constexpr (kEnableDl2FgHooks) TryInstallStreamlineHook();
 }
 
 }  // namespace
@@ -6980,10 +6987,16 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::utils::log::i("DL2 AD targeted output rewrite: disabled (audit-only)");
       renodx::utils::log::i("DL2 build: ", renodx::build_info::kBuildVersion);
       renodx::utils::log::i("DL2 scoped clone diagnostic: output-audit-v1");
+      renodx::utils::log::i(
+          "DL2 Streamline/FG hooks: ",
+          kEnableDl2FgHooks ? "enabled" : "disabled",
+          " for crash A/B");
       reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
       reshade::register_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
-      reshade::register_event<reshade::addon_event::init_command_queue>(RegisterDlssFgNativeQueue);
-      reshade::register_event<reshade::addon_event::destroy_command_queue>(UnregisterDlssFgNativeQueue);
+      if constexpr (kEnableDl2FgHooks) {
+        reshade::register_event<reshade::addon_event::init_command_queue>(RegisterDlssFgNativeQueue);
+        reshade::register_event<reshade::addon_event::destroy_command_queue>(UnregisterDlssFgNativeQueue);
+      }
       reshade::register_event<reshade::addon_event::init_swapchain>(OnTypelessAuditInitSwapchain);
       reshade::register_event<reshade::addon_event::init_resource>(OnTypelessAuditInitResource);
       reshade::register_event<reshade::addon_event::destroy_resource>(OnTypelessAuditDestroyResource);
@@ -6993,8 +7006,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::register_event<reshade::addon_event::push_descriptors>(OnGammaAuditPushDescriptors);
       reshade::register_event<reshade::addon_event::map_buffer_region>(OnUpscalerMapBufferRegion);
       reshade::register_event<reshade::addon_event::unmap_buffer_region>(OnUpscalerUnmapBufferRegion);
-      reshade::register_event<reshade::addon_event::reset_command_list>(OnDlssFgResetCommandList);
-      reshade::register_event<reshade::addon_event::execute_command_list>(OnDlssFgExecuteCommandList);
+      if constexpr (kEnableDl2FgHooks) {
+        reshade::register_event<reshade::addon_event::reset_command_list>(OnDlssFgResetCommandList);
+        reshade::register_event<reshade::addon_event::execute_command_list>(OnDlssFgExecuteCommandList);
+      }
       // Disabled during crash isolation. The callback touches DLSS-G state
       // from the swapchain destruction path, which is unsafe until its
       // lifetime contract is independently verified.
@@ -7005,7 +7020,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // device teardown, so stale post-resize bindings cannot be reused.
       reshade::register_event<reshade::addon_event::destroy_swapchain>(
           renodx::games::dyinglight2::descriptor_override::OnDestroySwapchain);
-      reshade::register_event<reshade::addon_event::destroy_device>(OnDestroyDl2Device);
+      if constexpr (kEnableDl2FgHooks) {
+        reshade::register_event<reshade::addon_event::destroy_device>(OnDestroyDl2Device);
+      }
       reshade::register_event<reshade::addon_event::destroy_device>(
           renodx::games::dyinglight2::descriptor_override::OnDestroyDevice);
 
@@ -7203,7 +7220,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             renodx::games::dyinglight2::descriptor_override::OnTargetDraw);
       }
       reshade::unregister_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
-      reshade::unregister_event<reshade::addon_event::barrier>(OnDlssFgBackbufferBarrier);
+      if constexpr (kEnableDl2FgHooks) {
+        reshade::unregister_event<reshade::addon_event::barrier>(OnDlssFgBackbufferBarrier);
+      }
       reshade::unregister_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
       reshade::unregister_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
       reshade::unregister_event<reshade::addon_event::init_swapchain>(OnTypelessAuditInitSwapchain);
@@ -7215,18 +7234,24 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::push_descriptors>(OnGammaAuditPushDescriptors);
       reshade::unregister_event<reshade::addon_event::map_buffer_region>(OnUpscalerMapBufferRegion);
       reshade::unregister_event<reshade::addon_event::unmap_buffer_region>(OnUpscalerUnmapBufferRegion);
-      reshade::unregister_event<reshade::addon_event::reset_command_list>(OnDlssFgResetCommandList);
-      reshade::unregister_event<reshade::addon_event::execute_command_list>(OnDlssFgExecuteCommandList);
-      reshade::unregister_event<reshade::addon_event::init_command_queue>(RegisterDlssFgNativeQueue);
-      reshade::unregister_event<reshade::addon_event::destroy_command_queue>(UnregisterDlssFgNativeQueue);
+      if constexpr (kEnableDl2FgHooks) {
+        reshade::unregister_event<reshade::addon_event::reset_command_list>(OnDlssFgResetCommandList);
+        reshade::unregister_event<reshade::addon_event::execute_command_list>(OnDlssFgExecuteCommandList);
+        reshade::unregister_event<reshade::addon_event::init_command_queue>(RegisterDlssFgNativeQueue);
+        reshade::unregister_event<reshade::addon_event::destroy_command_queue>(UnregisterDlssFgNativeQueue);
+      }
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
       reshade::unregister_event<reshade::addon_event::destroy_swapchain>(
           renodx::games::dyinglight2::descriptor_override::OnDestroySwapchain);
-      reshade::unregister_event<reshade::addon_event::destroy_device>(OnDestroyDl2Device);
+      if constexpr (kEnableDl2FgHooks) {
+        reshade::unregister_event<reshade::addon_event::destroy_device>(OnDestroyDl2Device);
+      }
       reshade::unregister_event<reshade::addon_event::destroy_device>(
           renodx::games::dyinglight2::descriptor_override::OnDestroyDevice);
-      RemoveDlssFgNativeExecuteHook();
-      RemoveStreamlineHook();
+      if constexpr (kEnableDl2FgHooks) {
+        RemoveDlssFgNativeExecuteHook();
+        RemoveStreamlineHook();
+      }
       renodx::utils::state::Use(fdw_reason);
       renodx::utils::constants::Use(fdw_reason);
       renodx::utils::descriptor::Use(fdw_reason);
@@ -7242,7 +7267,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   // proxy copy/resolve work issued from its own Present callback.
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     reshade::register_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
-    reshade::register_event<reshade::addon_event::barrier>(OnDlssFgBackbufferBarrier);
+    if constexpr (kEnableDl2FgHooks) {
+      reshade::register_event<reshade::addon_event::barrier>(OnDlssFgBackbufferBarrier);
+    }
   }
 
   return TRUE;
