@@ -456,3 +456,11 @@ or already in the upstream tonemapper replacement.
 callback was still invoking clone/RTV hot-swap despite layout isolation. The
 next build disables that callback when `kEnableDl2ShaderLayoutHooks=false`,
 leaving only the replacement pipeline active.
+
+The temporary diagnostic build now defines
+`RENODX_DL2_MINIMAL_DIAGNOSTIC_BUILD` for DL2. Its CMake shader whitelist
+compiles only 0x3E plus the proxy/bridge binaries statically referenced by the
+addon; 0x268, 0xAD, UI, BFFC, and debug-probe shader targets are excluded from
+generation. BFFC probe code is also excluded from the C++ translation unit.
+This is a temporary crash-isolation configuration and must be removed after
+the test.

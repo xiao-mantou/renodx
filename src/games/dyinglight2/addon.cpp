@@ -5833,6 +5833,7 @@ renodx::mods::shader::CustomShader CreateDl2HdrShader(
   return shader;
 }
 
+#if !defined(RENODX_DL2_MINIMAL_DIAGNOSTIC_BUILD)
 bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
   ActivateDl2HdrTarget(cmd_list);
   {
@@ -5978,6 +5979,7 @@ renodx::mods::shader::CustomShader CreateDl2BffcProbeShader() {
   shader.on_drawn = &OnDl2BffcProbeDrawn;
   return shader;
 }
+#endif
 
 renodx::mods::shader::CustomShader CreateDl2UiWriterProbeShader(
     uint32_t crc32,
