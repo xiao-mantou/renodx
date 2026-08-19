@@ -447,3 +447,7 @@ enabled for Vanilla/RenoDRT testing.
 reaching the popup UI pipeline. The next isolation keeps only `0x3E` and
 `0x268` replacements; UI and BFFC replacements are temporarily disabled so
 tone-map testing has no unrelated replacement pipeline in the startup path.
+
+`5742925` still crashed with only `0x3E` and `0x268` registered. The next
+split keeps only `0x3E` to determine whether the crash is in the LUT replacement
+or already in the upstream tonemapper replacement.

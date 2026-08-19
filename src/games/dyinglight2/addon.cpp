@@ -6005,10 +6005,8 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     // 4.0 (and above 12.0 in outdoor highlights) before the vanilla curve and
     // saturate operation collapse them to SDR.
     TargetedDl2HdrShader(0x3E36DA5B),
-    // The native SDR LUT clamps the bridge back to SDR. Its replacement keeps
-    // the vanilla grade below SDR white and reconstructs the HDR magnitude in
-    // the now-proven Linear BT.709 intermediate domain.
-    TargetedDl2HdrShader(0x268BAB6D),
+    // 0x268 is temporarily isolated below; keep only the upstream 0x3E
+    // replacement for the final startup crash split.
     // UI/BFFC replacements remain disabled during startup crash isolation.
     // 0xAD remains audit-only. Its copied HDR template is not safe to register
     // with the crash-isolation layout, and targeted binding was a prior crash
