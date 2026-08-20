@@ -2800,6 +2800,7 @@ struct AdStageProbeState {
   reshade::api::format input_format = reshade::api::format::unknown;
   reshade::api::format output_format = reshade::api::format::unknown;
   reshade::api::resource staging = {};
+  reshade::api::format staging_format = reshade::api::format::unknown;
   Microsoft::WRL::ComPtr<ID3D12Fence> copy_fence;
   uint64_t copy_fence_value = 0u;
 };
@@ -2811,13 +2812,19 @@ static bool IsAdStageProbeCaptureRequested() {
   return ad_stage_probe_capture.load(std::memory_order_acquire) != 0.f;
 }
 
-static bool IsProbeFp16Resource(reshade::api::device* device, reshade::api::resource resource,
-                                reshade::api::format view_format) {
+static bool IsProbeReadableResource(reshade::api::device* device, reshade::api::resource resource,
+                                    reshade::api::format view_format) {
   if (device == nullptr || resource.handle == 0u) return false;
   const auto desc = device->get_resource_desc(resource);
-  const bool view_ok = view_format == reshade::api::format::r16g16b16a16_float
+  const bool view_ok = view_format == reshade::api::format::r8g8b8a8_unorm
+                       || view_format == reshade::api::format::r8g8b8a8_typeless
+                       || view_format == reshade::api::format::r10g10b10a2_unorm
+                       || view_format == reshade::api::format::r16g16b16a16_float
                        || view_format == reshade::api::format::r16g16b16a16_typeless;
-  const bool resource_ok = desc.texture.format == reshade::api::format::r16g16b16a16_float
+  const bool resource_ok = desc.texture.format == reshade::api::format::r8g8b8a8_unorm
+                           || desc.texture.format == reshade::api::format::r8g8b8a8_typeless
+                           || desc.texture.format == reshade::api::format::r10g10b10a2_unorm
+                           || desc.texture.format == reshade::api::format::r16g16b16a16_float
                            || desc.texture.format == reshade::api::format::r16g16b16a16_typeless;
   return desc.type == reshade::api::resource_type::texture_2d && view_ok && resource_ok;
 }
@@ -2841,9 +2848,12 @@ static void CaptureAdStageProbeResources(reshade::api::command_list* cmd_list) {
   const auto output = reshade::api::resource{output_info.effective};
   const auto input_format = input_info.effective_view_format;
   const auto output_format = output_info.effective_view_format;
-  if (!IsProbeFp16Resource(device, input, input_format)
-      || !IsProbeFp16Resource(device, output, output_format)) {
-    renodx::utils::log::w("DL2 AD stage probe skipped: input/output are not FP16 linear resources");
+  const auto input_desc = device->get_resource_desc(input);
+  const auto output_desc = device->get_resource_desc(output);
+  if (!IsProbeReadableResource(device, input, input_format)
+      || !IsProbeReadableResource(device, output, output_format)
+      || input_desc.texture.format != output_desc.texture.format) {
+    renodx::utils::log::w("DL2 AD stage probe skipped: unsupported or mismatched input/output formats");
     ad_stage_probe_state.logged = true;
     return;
   }
@@ -2864,8 +2874,13 @@ static bool BeginAdStageProbeReadback(reshade::api::command_queue* queue, AdStag
   }
   const auto in_desc = device->get_resource_desc(state.input);
   const auto out_desc = device->get_resource_desc(state.output);
+  state.staging_format = in_desc.texture.format == reshade::api::format::r8g8b8a8_typeless
+                             ? state.input_format
+                         : in_desc.texture.format == reshade::api::format::r16g16b16a16_typeless
+                             ? state.input_format
+                             : in_desc.texture.format;
   const auto staging_desc = reshade::api::resource_desc(
-      2u, 1u, 1u, 1, reshade::api::format::r16g16b16a16_float, 1,
+      2u, 1u, 1u, 1, state.staging_format, 1,
       reshade::api::memory_heap::gpu_to_cpu, reshade::api::resource_usage::copy_dest);
   if (!device->create_resource(staging_desc, nullptr, reshade::api::resource_usage::copy_dest, &state.staging)) {
     renodx::utils::log::w("DL2 AD stage probe readback: staging create failed");
@@ -2909,13 +2924,31 @@ static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdS
   auto* device = queue->get_device();
   reshade::api::subresource_data data = {};
   if (device == nullptr || !device->map_texture_region(state.staging, 0, nullptr, reshade::api::map_access::read_only, &data)) return false;
+  const auto format = state.staging_format;
+  const uint32_t bytes_per_pixel = format == reshade::api::format::r16g16b16a16_float
+                                       || format == reshade::api::format::r16g16b16a16_typeless ? 8u
+                                   : format == reshade::api::format::r10g10b10a2_unorm ? 4u
+                                                                                       : 4u;
   float values[2][3] = {};
   for (uint32_t index = 0u; index < 2u; ++index) {
-    const auto* pixel = static_cast<const uint8_t*>(data.data) + index * 8u;
-    for (uint32_t channel = 0u; channel < 3u; ++channel) {
-      uint16_t half = 0u;
-      std::memcpy(&half, pixel + channel * 2u, sizeof(uint16_t));
-      values[index][channel] = HalfToFloat(half);
+    const auto* pixel = static_cast<const uint8_t*>(data.data) + index * bytes_per_pixel;
+    if (format == reshade::api::format::r16g16b16a16_float
+        || format == reshade::api::format::r16g16b16a16_typeless) {
+      for (uint32_t channel = 0u; channel < 3u; ++channel) {
+        uint16_t half = 0u;
+        std::memcpy(&half, pixel + channel * 2u, sizeof(uint16_t));
+        values[index][channel] = HalfToFloat(half);
+      }
+    } else if (format == reshade::api::format::r10g10b10a2_unorm) {
+      uint32_t packed = 0u;
+      std::memcpy(&packed, pixel, sizeof(packed));
+      values[index][0] = static_cast<float>(packed & 0x3FFu) / 1023.f;
+      values[index][1] = static_cast<float>((packed >> 10u) & 0x3FFu) / 1023.f;
+      values[index][2] = static_cast<float>((packed >> 20u) & 0x3FFu) / 1023.f;
+    } else {
+      values[index][0] = static_cast<float>(pixel[0]) / 255.f;
+      values[index][1] = static_cast<float>(pixel[1]) / 255.f;
+      values[index][2] = static_cast<float>(pixel[2]) / 255.f;
     }
   }
   device->unmap_texture_region(state.staging, 0);
@@ -7068,7 +7101,7 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture 0xAD Stage Probe",
         .section = "Debug",
-        .tooltip = "One-shot read-only probe. Copies one center pixel from 0xAD t0 input (A) and its FP16 RTV output (G) into a tiny delayed staging resource.",
+        .tooltip = "One-shot read-only probe. Copies one center pixel from 0xAD t0 input (A) and RTV output (G) into a tiny same-format delayed staging resource, then decodes RGB.",
         .on_click = []() {
           {
             std::scoped_lock lock(ad_stage_probe_mutex);
