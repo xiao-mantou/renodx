@@ -321,22 +321,28 @@ void main(
                                                  probe_grade,
                                                  probe_proxy_scale.xxx,
                                                  probe_grade);
+    const float3 probe_tonemapped = RENODX_TONE_MAP_TYPE == 0.0
+                                        ? probe_reconstructed
+                                        : renodx::draw::ToneMapPass(probe_reconstructed);
     const float v_in = dot(probe_hdr, float3(0.2126, 0.7152, 0.0722));
     const float v_l = dot(probe_grade, float3(0.2126, 0.7152, 0.0722));
     const float v_r = dot(probe_reconstructed, float3(0.2126, 0.7152, 0.0722));
+    const float v_t = dot(probe_tonemapped, float3(0.2126, 0.7152, 0.0722));
     o0.rgb = 0.0;
     if (abs(v1.x - 0.5) < 0.002 || abs(v1.y - 0.5) < 0.002) o0.rgb += float3(1.0, 1.0, 1.0);
-    // Raw full-RGB values for the deferred center probe. All three values were
+    // Raw full-RGB values for the deferred center probe. All four values were
     // derived from probe_src sampled once at (0.5,0.5), not from these output
     // pixel coordinates.
     if (all(abs(v1.xy - float2(0.30, 0.58)) < float2(0.0015, 0.0015))) o0.rgb = probe_hdr;
     if (all(abs(v1.xy - float2(0.30, 0.68)) < float2(0.0015, 0.0015))) o0.rgb = probe_grade;
     if (all(abs(v1.xy - float2(0.30, 0.78)) < float2(0.0015, 0.0015))) o0.rgb = probe_reconstructed;
-    // Three values stacked vertically, top to bottom: I, L, R.
+    if (all(abs(v1.xy - float2(0.30, 0.88)) < float2(0.0015, 0.0015))) o0.rgb = probe_tonemapped;
+    // Four values stacked vertically, top to bottom: I, L, R, T.
     const float label_x = 0.44;
     o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.58, v_in, 0.006);
     o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.68, v_l, 0.006);
     o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.78, v_r, 0.006);
+    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.88, v_t, 0.006);
     o0.a = 1.0;
     return;
   }

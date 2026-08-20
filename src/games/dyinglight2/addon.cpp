@@ -5072,7 +5072,7 @@ static bool BeginCenterProbeReadback(reshade::api::command_queue* queue, CenterP
   const uint32_t source_width = std::max(1u, desc.texture.width);
   const uint32_t source_height = std::max(1u, desc.texture.height);
   const float probe_uvs[4][2] = {
-      {0.30f, 0.58f}, {0.30f, 0.66f}, {0.30f, 0.74f}, {0.30f, 0.82f}};
+      {0.30f, 0.58f}, {0.30f, 0.68f}, {0.30f, 0.78f}, {0.30f, 0.88f}};
   const reshade::api::resource_usage source_old = reshade::api::resource_usage::render_target;
   const reshade::api::resource_usage source_new = reshade::api::resource_usage::copy_source;
   cmd_list->barrier(state.resource, source_old, source_new);
@@ -5126,7 +5126,7 @@ static bool CompleteCenterProbeReadback(reshade::api::command_queue* queue, Cent
     return false;
   }
 
-  const char* names[4] = {"I", "N", "L", "B"};
+  const char* names[4] = {"I", "L", "R", "T"};
   float values[4][3] = {};
   if (data.data != nullptr) {
     constexpr uint32_t bytes_per_pixel = 8u;
