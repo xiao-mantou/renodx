@@ -2799,8 +2799,8 @@ struct AdStageProbeState {
   reshade::api::resource output = {};
   reshade::api::format input_format = reshade::api::format::unknown;
   reshade::api::format output_format = reshade::api::format::unknown;
-  reshade::api::resource staging = {};
-  reshade::api::format staging_format = reshade::api::format::unknown;
+  reshade::api::resource input_staging = {};
+  reshade::api::resource output_staging = {};
   Microsoft::WRL::ComPtr<ID3D12Fence> copy_fence;
   uint64_t copy_fence_value = 0u;
 };
@@ -2851,9 +2851,13 @@ static void CaptureAdStageProbeResources(reshade::api::command_list* cmd_list) {
   const auto input_desc = device->get_resource_desc(input);
   const auto output_desc = device->get_resource_desc(output);
   if (!IsProbeReadableResource(device, input, input_format)
-      || !IsProbeReadableResource(device, output, output_format)
-      || input_desc.texture.format != output_desc.texture.format) {
-    renodx::utils::log::w("DL2 AD stage probe skipped: unsupported or mismatched input/output formats");
+      || !IsProbeReadableResource(device, output, output_format)) {
+    renodx::utils::log::w(
+        "DL2 AD stage probe skipped: unsupported format input="
+        + std::to_string(static_cast<uint32_t>(input_desc.texture.format))
+        + "/view=" + std::to_string(static_cast<uint32_t>(input_format))
+        + " output=" + std::to_string(static_cast<uint32_t>(output_desc.texture.format))
+        + "/view=" + std::to_string(static_cast<uint32_t>(output_format)));
     ad_stage_probe_state.logged = true;
     return;
   }
@@ -2874,41 +2878,61 @@ static bool BeginAdStageProbeReadback(reshade::api::command_queue* queue, AdStag
   }
   const auto in_desc = device->get_resource_desc(state.input);
   const auto out_desc = device->get_resource_desc(state.output);
-  state.staging_format = in_desc.texture.format == reshade::api::format::r8g8b8a8_typeless
-                             ? state.input_format
-                         : in_desc.texture.format == reshade::api::format::r16g16b16a16_typeless
-                             ? state.input_format
-                             : in_desc.texture.format;
-  const auto staging_desc = reshade::api::resource_desc(
-      2u, 1u, 1u, 1, state.staging_format, 1,
-      reshade::api::memory_heap::gpu_to_cpu, reshade::api::resource_usage::copy_dest);
-  if (!device->create_resource(staging_desc, nullptr, reshade::api::resource_usage::copy_dest, &state.staging)) {
-    renodx::utils::log::w("DL2 AD stage probe readback: staging create failed");
+  const auto input_staging_format = state.input_format == reshade::api::format::r8g8b8a8_typeless
+                                        ? reshade::api::format::r8g8b8a8_unorm
+                                    : state.input_format == reshade::api::format::r16g16b16a16_typeless
+                                        ? reshade::api::format::r16g16b16a16_float
+                                        : state.input_format;
+  const auto output_staging_format = state.output_format == reshade::api::format::r8g8b8a8_typeless
+                                         ? reshade::api::format::r8g8b8a8_unorm
+                                     : state.output_format == reshade::api::format::r16g16b16a16_typeless
+                                         ? reshade::api::format::r16g16b16a16_float
+                                         : state.output_format;
+  const auto make_staging_desc = [](reshade::api::format format) {
+    return reshade::api::resource_desc(
+        1u, 1u, 1u, 1, format, 1, reshade::api::memory_heap::gpu_to_cpu,
+        reshade::api::resource_usage::copy_dest);
+  };
+  if (!device->create_resource(make_staging_desc(input_staging_format), nullptr,
+                               reshade::api::resource_usage::copy_dest, &state.input_staging)
+      || !device->create_resource(make_staging_desc(output_staging_format), nullptr,
+                                  reshade::api::resource_usage::copy_dest, &state.output_staging)) {
+    if (state.input_staging.handle != 0u) device->destroy_resource(state.input_staging);
+    if (state.output_staging.handle != 0u) device->destroy_resource(state.output_staging);
+    state.input_staging = {};
+    state.output_staging = {};
+    renodx::utils::log::w("DL2 AD stage probe readback: independent staging create failed");
     return false;
   }
   auto* cmd_list = queue->get_immediate_command_list();
-  if (cmd_list == nullptr) return false;
-  const auto copy_one = [&](reshade::api::resource source, const auto& desc, uint32_t dst_x) {
+  if (cmd_list == nullptr) {
+    device->destroy_resource(state.input_staging);
+    device->destroy_resource(state.output_staging);
+    state.input_staging = {};
+    state.output_staging = {};
+    return false;
+  }
+  const auto copy_one = [&](reshade::api::resource source, const auto& desc, reshade::api::resource staging,
+                            reshade::api::resource_usage old_usage) {
     const uint32_t x = std::min(std::max(1u, desc.texture.width) - 1u, static_cast<uint32_t>(0.5f * desc.texture.width));
     const uint32_t y = std::min(std::max(1u, desc.texture.height) - 1u, static_cast<uint32_t>(0.5f * desc.texture.height));
     const reshade::api::subresource_box box = {x, y, 0u, x + 1u, y + 1u, 1u};
-    const reshade::api::subresource_box dst = {dst_x, 0u, 0u, dst_x + 1u, 1u, 1u};
-    const auto old_usage = dst_x == 0u ? reshade::api::resource_usage::shader_resource
-                                       : reshade::api::resource_usage::render_target;
     cmd_list->barrier(source, old_usage, reshade::api::resource_usage::copy_source);
-    cmd_list->copy_texture_region(source, 0, &box, state.staging, 0, &dst);
+    cmd_list->copy_texture_region(source, 0, &box, staging, 0, nullptr);
     cmd_list->barrier(source, reshade::api::resource_usage::copy_source, old_usage);
   };
-  copy_one(state.input, in_desc, 0u);
-  copy_one(state.output, out_desc, 1u);
+  copy_one(state.input, in_desc, state.input_staging, reshade::api::resource_usage::shader_resource);
+  copy_one(state.output, out_desc, state.output_staging, reshade::api::resource_usage::render_target);
   queue->flush_immediate_command_list();
   auto* native_device = reinterpret_cast<ID3D12Device*>(static_cast<uintptr_t>(device->get_native()));
   auto* native_queue = reinterpret_cast<ID3D12CommandQueue*>(static_cast<uintptr_t>(queue->get_native()));
   if (native_device == nullptr || native_queue == nullptr
       || FAILED(native_device->CreateFence(0u, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&state.copy_fence)))
       || FAILED(native_queue->Signal(state.copy_fence.Get(), 1u))) {
-    device->destroy_resource(state.staging);
-    state.staging = {};
+    device->destroy_resource(state.input_staging);
+    device->destroy_resource(state.output_staging);
+    state.input_staging = {};
+    state.output_staging = {};
     state.copy_fence.Reset();
     renodx::utils::log::w("DL2 AD stage probe skipped: fence setup failed");
     return false;
@@ -2919,45 +2943,58 @@ static bool BeginAdStageProbeReadback(reshade::api::command_queue* queue, AdStag
 }
 
 static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdStageProbeState& state) {
-  if (queue == nullptr || !state.copy_submitted || state.logged || state.staging.handle == 0u
+  if (queue == nullptr || !state.copy_submitted || state.logged || state.input_staging.handle == 0u
+      || state.output_staging.handle == 0u
       || state.copy_fence == nullptr || state.copy_fence->GetCompletedValue() < state.copy_fence_value) return false;
   auto* device = queue->get_device();
-  reshade::api::subresource_data data = {};
-  if (device == nullptr || !device->map_texture_region(state.staging, 0, nullptr, reshade::api::map_access::read_only, &data)) return false;
-  const auto format = state.staging_format;
-  const uint32_t bytes_per_pixel = format == reshade::api::format::r16g16b16a16_float
-                                       || format == reshade::api::format::r16g16b16a16_typeless ? 8u
-                                   : format == reshade::api::format::r10g10b10a2_unorm ? 4u
-                                                                                       : 4u;
+  if (device == nullptr) return false;
   float values[2][3] = {};
-  for (uint32_t index = 0u; index < 2u; ++index) {
-    const auto* pixel = static_cast<const uint8_t*>(data.data) + index * bytes_per_pixel;
+  const auto read_one = [&](reshade::api::resource staging, reshade::api::format format, float out[3]) {
+    reshade::api::subresource_data data = {};
+    if (!device->map_texture_region(staging, 0, nullptr, reshade::api::map_access::read_only, &data)) return false;
+    const auto* pixel = static_cast<const uint8_t*>(data.data);
     if (format == reshade::api::format::r16g16b16a16_float
         || format == reshade::api::format::r16g16b16a16_typeless) {
       for (uint32_t channel = 0u; channel < 3u; ++channel) {
         uint16_t half = 0u;
         std::memcpy(&half, pixel + channel * 2u, sizeof(uint16_t));
-        values[index][channel] = HalfToFloat(half);
+        out[channel] = HalfToFloat(half);
       }
     } else if (format == reshade::api::format::r10g10b10a2_unorm) {
       uint32_t packed = 0u;
       std::memcpy(&packed, pixel, sizeof(packed));
-      values[index][0] = static_cast<float>(packed & 0x3FFu) / 1023.f;
-      values[index][1] = static_cast<float>((packed >> 10u) & 0x3FFu) / 1023.f;
-      values[index][2] = static_cast<float>((packed >> 20u) & 0x3FFu) / 1023.f;
+      out[0] = static_cast<float>(packed & 0x3FFu) / 1023.f;
+      out[1] = static_cast<float>((packed >> 10u) & 0x3FFu) / 1023.f;
+      out[2] = static_cast<float>((packed >> 20u) & 0x3FFu) / 1023.f;
     } else {
-      values[index][0] = static_cast<float>(pixel[0]) / 255.f;
-      values[index][1] = static_cast<float>(pixel[1]) / 255.f;
-      values[index][2] = static_cast<float>(pixel[2]) / 255.f;
+      out[0] = static_cast<float>(pixel[0]) / 255.f;
+      out[1] = static_cast<float>(pixel[1]) / 255.f;
+      out[2] = static_cast<float>(pixel[2]) / 255.f;
     }
-  }
-  device->unmap_texture_region(state.staging, 0);
-  device->destroy_resource(state.staging);
-  state.staging = {};
+    device->unmap_texture_region(staging, 0);
+    return true;
+  };
+  const auto typed_format = [](reshade::api::format format) {
+    return format == reshade::api::format::r8g8b8a8_typeless
+               ? reshade::api::format::r8g8b8a8_unorm
+           : format == reshade::api::format::r16g16b16a16_typeless
+               ? reshade::api::format::r16g16b16a16_float
+               : format;
+  };
+  if (!read_one(state.input_staging, typed_format(state.input_format), values[0])
+      || !read_one(state.output_staging, typed_format(state.output_format), values[1])) return false;
+  device->destroy_resource(state.input_staging);
+  device->destroy_resource(state.output_staging);
+  state.input_staging = {};
+  state.output_staging = {};
   state.copy_fence.Reset();
   state.logged = true;
   std::ostringstream stream;
-  stream << "DL2 AD stage probe readback: A=(" << values[0][0] << "," << values[0][1] << "," << values[0][2]
+  stream << "DL2 AD stage probe readback: input=0x" << std::hex << state.input.handle
+         << " format=" << std::dec << static_cast<uint32_t>(state.input_format)
+         << " output=0x" << std::hex << state.output.handle
+         << " format=" << std::dec << static_cast<uint32_t>(state.output_format)
+         << " A=(" << values[0][0] << "," << values[0][1] << "," << values[0][2]
          << ") Y=" << CenterProbeLuminance(values[0]) << " G=(" << values[1][0] << "," << values[1][1] << "," << values[1][2]
          << ") Y=" << CenterProbeLuminance(values[1]);
   renodx::utils::log::i(stream.str().c_str());
