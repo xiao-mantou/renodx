@@ -2799,6 +2799,8 @@ struct AdStageProbeState {
   reshade::api::resource output = {};
   reshade::api::format input_format = reshade::api::format::unknown;
   reshade::api::format output_format = reshade::api::format::unknown;
+  bool input_srgb = false;
+  bool output_srgb = false;
   reshade::api::resource input_staging = {};
   reshade::api::resource output_staging = {};
   Microsoft::WRL::ComPtr<ID3D12Fence> copy_fence;
@@ -2818,6 +2820,7 @@ static bool IsProbeReadableResource(reshade::api::device* device, reshade::api::
   const auto desc = device->get_resource_desc(resource);
   const bool view_ok = view_format == reshade::api::format::r8g8b8a8_unorm
                        || view_format == reshade::api::format::r8g8b8a8_typeless
+                       || view_format == reshade::api::format::r8g8b8a8_unorm_srgb
                        || view_format == reshade::api::format::r10g10b10a2_unorm
                        || view_format == reshade::api::format::r16g16b16a16_float
                        || view_format == reshade::api::format::r16g16b16a16_typeless;
@@ -2865,6 +2868,8 @@ static void CaptureAdStageProbeResources(reshade::api::command_list* cmd_list) {
   ad_stage_probe_state.output = output;
   ad_stage_probe_state.input_format = input_format;
   ad_stage_probe_state.output_format = output_format;
+  ad_stage_probe_state.input_srgb = input_format == reshade::api::format::r8g8b8a8_unorm_srgb;
+  ad_stage_probe_state.output_srgb = output_format == reshade::api::format::r8g8b8a8_unorm_srgb;
   ad_stage_probe_state.captured = true;
 }
 
@@ -2878,12 +2883,16 @@ static bool BeginAdStageProbeReadback(reshade::api::command_queue* queue, AdStag
   }
   const auto in_desc = device->get_resource_desc(state.input);
   const auto out_desc = device->get_resource_desc(state.output);
-  const auto input_staging_format = state.input_format == reshade::api::format::r8g8b8a8_typeless
+  const auto input_staging_format = state.input_format == reshade::api::format::r8g8b8a8_unorm_srgb
+                                        ? reshade::api::format::r8g8b8a8_unorm
+                                    : state.input_format == reshade::api::format::r8g8b8a8_typeless
                                         ? reshade::api::format::r8g8b8a8_unorm
                                     : state.input_format == reshade::api::format::r16g16b16a16_typeless
                                         ? reshade::api::format::r16g16b16a16_float
                                         : state.input_format;
-  const auto output_staging_format = state.output_format == reshade::api::format::r8g8b8a8_typeless
+  const auto output_staging_format = state.output_format == reshade::api::format::r8g8b8a8_unorm_srgb
+                                         ? reshade::api::format::r8g8b8a8_unorm
+                                     : state.output_format == reshade::api::format::r8g8b8a8_typeless
                                          ? reshade::api::format::r8g8b8a8_unorm
                                      : state.output_format == reshade::api::format::r16g16b16a16_typeless
                                          ? reshade::api::format::r16g16b16a16_float
@@ -2975,6 +2984,7 @@ static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdS
     return true;
   };
   const auto typed_format = [](reshade::api::format format) {
+    if (format == reshade::api::format::r8g8b8a8_unorm_srgb) return reshade::api::format::r8g8b8a8_unorm;
     return format == reshade::api::format::r8g8b8a8_typeless
                ? reshade::api::format::r8g8b8a8_unorm
            : format == reshade::api::format::r16g16b16a16_typeless
@@ -2983,6 +2993,14 @@ static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdS
   };
   if (!read_one(state.input_staging, typed_format(state.input_format), values[0])
       || !read_one(state.output_staging, typed_format(state.output_format), values[1])) return false;
+  const auto srgb_decode = [](float value) {
+    return value <= 0.04045f ? value / 12.92f
+                             : std::pow((value + 0.055f) / 1.055f, 2.4f);
+  };
+  for (uint32_t channel = 0u; channel < 3u; ++channel) {
+    if (state.input_srgb) values[0][channel] = srgb_decode(values[0][channel]);
+    if (state.output_srgb) values[1][channel] = srgb_decode(values[1][channel]);
+  }
   device->destroy_resource(state.input_staging);
   device->destroy_resource(state.output_staging);
   state.input_staging = {};
