@@ -280,8 +280,8 @@ void main(
     return;
   }
 
-  // Numeric probe (mode 60): samples input_hdr / neutral_sdr / native_lut_grade
-  // / ToneMapPass output at the screen-center pixel and renders the values as
+  // Numeric probe (mode 60): samples input_hdr / native_lut_grade /
+  // reconstructed at the screen-center pixel and renders their luminance as
   // glyph digits under a center crosshair. Mode 59's false-color bands are too
   // coarse to compare exact values across ToneMapType toggles; this gives exact
   // numbers for one point. 0x3E forces untonemapped for this mode too (same
@@ -290,7 +290,8 @@ void main(
     const float2 probe_uv = float2(0.5, 0.5);
     const float4 probe_src = t0.SampleLevel(s0_s, probe_uv, 0);
     const float3 probe_hdr = max(probe_src.rgb, 0.0);
-    const float3 probe_neutral = ApplyDL2SDRCurve(probe_hdr, sdr_curve0, sdr_curve1);
+    const float probe_proxy_scale = renodx::tonemap::neutwo::ComputeMaxChannelScale(probe_hdr);
+    const float3 probe_neutral = probe_hdr * probe_proxy_scale;
     float3 lut_gamma;
     float3 lut_gamma_lin = probe_neutral * float3(12.9200001, 12.9200001, 12.9200001);
     float3 lut_gamma_srgb = exp2(float3(0.416666657, 0.416666657, 0.416666657) * log2(abs(probe_neutral)));
@@ -314,35 +315,28 @@ void main(
     float grade_luma = saturate(dot(float3(0.212500006, 0.715399981, 0.0720999986), probe_grade));
     probe_grade = probe_grade + -grade_luma;
     probe_grade = cb0[1].xxx * probe_grade + grade_luma;
-    const float probe_proxy_scale = renodx::tonemap::neutwo::ComputeMaxChannelScale(probe_hdr);
     const float3 probe_reconstructed = RENODX_TONE_MAP_TYPE == 0.0
                                            ? probe_grade
                                            : renodx::math::DivideSafe(
                                                  probe_grade,
                                                  probe_proxy_scale.xxx,
                                                  probe_grade);
-    const float3 probe_final = RENODX_TONE_MAP_TYPE == 0.0
-                                   ? probe_reconstructed
-                                   : renodx::draw::ToneMapPass(probe_reconstructed);
-    const float v_in = max(probe_hdr.r, max(probe_hdr.g, probe_hdr.b));
-    const float v_n = max(probe_neutral.r, max(probe_neutral.g, probe_neutral.b));
-    const float v_l = max(probe_grade.r, max(probe_grade.g, probe_grade.b));
-    const float v_b = max(probe_final.r, max(probe_final.g, probe_final.b));
+    const float v_in = dot(probe_hdr, float3(0.2126, 0.7152, 0.0722));
+    const float v_l = dot(probe_grade, float3(0.2126, 0.7152, 0.0722));
+    const float v_r = dot(probe_reconstructed, float3(0.2126, 0.7152, 0.0722));
     o0.rgb = 0.0;
     if (abs(v1.x - 0.5) < 0.002 || abs(v1.y - 0.5) < 0.002) o0.rgb += float3(1.0, 1.0, 1.0);
-    // Raw full-RGB values for the deferred center probe. All four values were
+    // Raw full-RGB values for the deferred center probe. All three values were
     // derived from probe_src sampled once at (0.5,0.5), not from these output
     // pixel coordinates.
     if (all(abs(v1.xy - float2(0.30, 0.58)) < float2(0.0015, 0.0015))) o0.rgb = probe_hdr;
-    if (all(abs(v1.xy - float2(0.30, 0.66)) < float2(0.0015, 0.0015))) o0.rgb = probe_neutral;
-    if (all(abs(v1.xy - float2(0.30, 0.74)) < float2(0.0015, 0.0015))) o0.rgb = probe_grade;
-    if (all(abs(v1.xy - float2(0.30, 0.82)) < float2(0.0015, 0.0015))) o0.rgb = probe_final;
-    // Four values stacked vertically, top to bottom: I, N, L, B.
+    if (all(abs(v1.xy - float2(0.30, 0.68)) < float2(0.0015, 0.0015))) o0.rgb = probe_grade;
+    if (all(abs(v1.xy - float2(0.30, 0.78)) < float2(0.0015, 0.0015))) o0.rgb = probe_reconstructed;
+    // Three values stacked vertically, top to bottom: I, L, R.
     const float label_x = 0.44;
     o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.58, v_in, 0.006);
-    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.66, v_n, 0.006);
-    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.74, v_l, 0.006);
-    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.82, v_b, 0.006);
+    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.68, v_l, 0.006);
+    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.78, v_r, 0.006);
     o0.a = 1.0;
     return;
   }
