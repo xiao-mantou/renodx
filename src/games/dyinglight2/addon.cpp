@@ -2788,6 +2788,148 @@ void MarkDlssFgCommandListSwapchainWrite(
 }
 
 static bool IsCenterProbeCaptureRequested();
+static inline float HalfToFloat(uint16_t half);
+static inline float CenterProbeLuminance(const float rgb[3]);
+
+struct AdStageProbeState {
+  bool captured = false;
+  bool copy_submitted = false;
+  bool logged = false;
+  reshade::api::resource input = {};
+  reshade::api::resource output = {};
+  reshade::api::format input_format = reshade::api::format::unknown;
+  reshade::api::format output_format = reshade::api::format::unknown;
+  reshade::api::resource staging = {};
+  Microsoft::WRL::ComPtr<ID3D12Fence> copy_fence;
+  uint64_t copy_fence_value = 0u;
+};
+static std::atomic<float> ad_stage_probe_capture{0.f};
+static AdStageProbeState ad_stage_probe_state = {};
+static std::mutex ad_stage_probe_mutex;
+
+static bool IsAdStageProbeCaptureRequested() {
+  return ad_stage_probe_capture.load(std::memory_order_acquire) != 0.f;
+}
+
+static bool IsProbeFp16Resource(reshade::api::device* device, reshade::api::resource resource,
+                                reshade::api::format view_format) {
+  if (device == nullptr || resource.handle == 0u) return false;
+  const auto desc = device->get_resource_desc(resource);
+  const bool view_ok = view_format == reshade::api::format::r16g16b16a16_float
+                       || view_format == reshade::api::format::r16g16b16a16_typeless;
+  const bool resource_ok = desc.texture.format == reshade::api::format::r16g16b16a16_float
+                           || desc.texture.format == reshade::api::format::r16g16b16a16_typeless;
+  return desc.type == reshade::api::resource_type::texture_2d && view_ok && resource_ok;
+}
+
+static void CaptureAdStageProbeResources(reshade::api::command_list* cmd_list) {
+  if (!IsAdStageProbeCaptureRequested() || cmd_list == nullptr) return;
+  std::scoped_lock lock(ad_stage_probe_mutex);
+  if (ad_stage_probe_state.captured) return;
+  auto* device = cmd_list->get_device();
+  const auto* command_state = renodx::utils::state::GetCurrentState(cmd_list);
+  if (device == nullptr || command_state == nullptr || command_state->render_targets.empty()) return;
+  DescriptorBindingAudit t0 = {};
+  FindGraphicsDescriptorBinding(
+      device, command_state, 0u,
+      reshade::api::descriptor_type::texture_shader_resource_view, &t0);
+  const auto target_it = downstream_capture_rtvs.find(cmd_list);
+  if (!t0.found || target_it == downstream_capture_rtvs.end()) return;
+  const auto input_info = DescribeGammaAuditView(device, t0.slot.resource_view);
+  const auto output_info = DescribeGammaAuditView(device, target_it->second);
+  const auto input = reshade::api::resource{input_info.effective};
+  const auto output = reshade::api::resource{output_info.effective};
+  const auto input_format = input_info.effective_view_format;
+  const auto output_format = output_info.effective_view_format;
+  if (!IsProbeFp16Resource(device, input, input_format)
+      || !IsProbeFp16Resource(device, output, output_format)) {
+    renodx::utils::log::w("DL2 AD stage probe skipped: input/output are not FP16 linear resources");
+    ad_stage_probe_state.logged = true;
+    return;
+  }
+  ad_stage_probe_state.input = input;
+  ad_stage_probe_state.output = output;
+  ad_stage_probe_state.input_format = input_format;
+  ad_stage_probe_state.output_format = output_format;
+  ad_stage_probe_state.captured = true;
+}
+
+static bool BeginAdStageProbeReadback(reshade::api::command_queue* queue, AdStageProbeState& state) {
+  if (queue == nullptr || !state.captured || state.copy_submitted) return false;
+  auto* device = queue->get_device();
+  if (device == nullptr || device->get_api() != reshade::api::device_api::d3d12) {
+    renodx::utils::log::w("DL2 AD stage probe skipped: D3D12 fence synchronization required");
+    state.logged = true;
+    return false;
+  }
+  const auto in_desc = device->get_resource_desc(state.input);
+  const auto out_desc = device->get_resource_desc(state.output);
+  const auto staging_desc = reshade::api::resource_desc(
+      2u, 1u, 1u, 1, reshade::api::format::r16g16b16a16_float, 1,
+      reshade::api::memory_heap::gpu_to_cpu, reshade::api::resource_usage::copy_dest);
+  if (!device->create_resource(staging_desc, nullptr, reshade::api::resource_usage::copy_dest, &state.staging)) {
+    renodx::utils::log::w("DL2 AD stage probe readback: staging create failed");
+    return false;
+  }
+  auto* cmd_list = queue->get_immediate_command_list();
+  if (cmd_list == nullptr) return false;
+  const auto copy_one = [&](reshade::api::resource source, const auto& desc, uint32_t dst_x) {
+    const uint32_t x = std::min(std::max(1u, desc.texture.width) - 1u, static_cast<uint32_t>(0.5f * desc.texture.width));
+    const uint32_t y = std::min(std::max(1u, desc.texture.height) - 1u, static_cast<uint32_t>(0.5f * desc.texture.height));
+    const reshade::api::subresource_box box = {x, y, 0u, x + 1u, y + 1u, 1u};
+    const reshade::api::subresource_box dst = {dst_x, 0u, 0u, dst_x + 1u, 1u, 1u};
+    const auto old_usage = dst_x == 0u ? reshade::api::resource_usage::shader_resource
+                                       : reshade::api::resource_usage::render_target;
+    cmd_list->barrier(source, old_usage, reshade::api::resource_usage::copy_source);
+    cmd_list->copy_texture_region(source, 0, &box, state.staging, 0, &dst);
+    cmd_list->barrier(source, reshade::api::resource_usage::copy_source, old_usage);
+  };
+  copy_one(state.input, in_desc, 0u);
+  copy_one(state.output, out_desc, 1u);
+  queue->flush_immediate_command_list();
+  auto* native_device = reinterpret_cast<ID3D12Device*>(static_cast<uintptr_t>(device->get_native()));
+  auto* native_queue = reinterpret_cast<ID3D12CommandQueue*>(static_cast<uintptr_t>(queue->get_native()));
+  if (native_device == nullptr || native_queue == nullptr
+      || FAILED(native_device->CreateFence(0u, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&state.copy_fence)))
+      || FAILED(native_queue->Signal(state.copy_fence.Get(), 1u))) {
+    device->destroy_resource(state.staging);
+    state.staging = {};
+    state.copy_fence.Reset();
+    renodx::utils::log::w("DL2 AD stage probe skipped: fence setup failed");
+    return false;
+  }
+  state.copy_fence_value = 1u;
+  state.copy_submitted = true;
+  return true;
+}
+
+static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdStageProbeState& state) {
+  if (queue == nullptr || !state.copy_submitted || state.logged || state.staging.handle == 0u
+      || state.copy_fence == nullptr || state.copy_fence->GetCompletedValue() < state.copy_fence_value) return false;
+  auto* device = queue->get_device();
+  reshade::api::subresource_data data = {};
+  if (device == nullptr || !device->map_texture_region(state.staging, 0, nullptr, reshade::api::map_access::read_only, &data)) return false;
+  float values[2][3] = {};
+  for (uint32_t index = 0u; index < 2u; ++index) {
+    const auto* pixel = static_cast<const uint8_t*>(data.data) + index * 8u;
+    for (uint32_t channel = 0u; channel < 3u; ++channel) {
+      uint16_t half = 0u;
+      std::memcpy(&half, pixel + channel * 2u, sizeof(uint16_t));
+      values[index][channel] = HalfToFloat(half);
+    }
+  }
+  device->unmap_texture_region(state.staging, 0);
+  device->destroy_resource(state.staging);
+  state.staging = {};
+  state.copy_fence.Reset();
+  state.logged = true;
+  std::ostringstream stream;
+  stream << "DL2 AD stage probe readback: A=(" << values[0][0] << "," << values[0][1] << "," << values[0][2]
+         << ") Y=" << CenterProbeLuminance(values[0]) << " G=(" << values[1][0] << "," << values[1][1] << "," << values[1][2]
+         << ") Y=" << CenterProbeLuminance(values[1]);
+  renodx::utils::log::i(stream.str().c_str());
+  return true;
+}
 
 void OnDownstreamBindRenderTargets(
     reshade::api::command_list* cmd_list,
@@ -2815,6 +2957,7 @@ void OnDownstreamBindRenderTargets(
                                    || dlss_fg_producer_audit_state.active
                                    || gamma_draw_audit_capture
                                    || gamma_native_input_audit_capture
+                                   || IsAdStageProbeCaptureRequested()
                                    || upscaler_color_path_audit_state.active
                                    || upscaler_source_writer_audit_state.active
                                    || IsCenterProbeCaptureRequested()
@@ -3100,6 +3243,7 @@ inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
                                          shader_state, renodx::utils::shader::PIXEL_INDEX)
                                    : 0u;
   if (shader_hash == 0xAD085E81u) {
+    CaptureAdStageProbeResources(context.cmd_list);
     if constexpr (std::is_same_v<Context, renodx::utils::command_action::CommandContext<
                                               renodx::utils::command_action::DrawArguments>>) {
       return {.post_callback = DlssFgAdPostDraw, .replay = true};
@@ -3204,16 +3348,17 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   const bool capture_exact_ad_ordering =
       dlss_fg_exact_ad_ordering_remaining.load(std::memory_order_relaxed) != 0u;
   const bool capture_center_probe = IsCenterProbeCaptureRequested();
+  const bool capture_ad_stage_probe = IsAdStageProbeCaptureRequested();
   if (!capture_commands && !capture_transfers && !capture_fg_producer && !capture_fg_compute_writer
       && !capture_upscaler_color_path && !capture_upscaler_inputs && !capture_upscaler_source_writers
-      && !capture_exact_ad_ordering && !capture_center_probe) {
+      && !capture_exact_ad_ordering && !capture_center_probe && !capture_ad_stage_probe) {
     capture = {};
     downstream_capture_t0_views.clear();
     return {};
   }
   if (capture.consumed && !capture_fg_producer && !capture_fg_compute_writer
       && !capture_upscaler_color_path && !capture_upscaler_inputs && !capture_upscaler_source_writers
-      && !capture_exact_ad_ordering && !capture_center_probe) return {};
+      && !capture_exact_ad_ordering && !capture_center_probe && !capture_ad_stage_probe) return {};
 
   auto* shader_state = renodx::utils::command_action::GetShaderState(&context);
   if (shader_state == nullptr) return {};
@@ -5250,6 +5395,16 @@ void OnDownstreamDrawCapturePresent(
     }
   }
 
+  if (IsAdStageProbeCaptureRequested()) {
+    std::scoped_lock lock(ad_stage_probe_mutex);
+    if (ad_stage_probe_state.captured && !ad_stage_probe_state.copy_submitted && !ad_stage_probe_state.logged) {
+      BeginAdStageProbeReadback(queue, ad_stage_probe_state);
+    } else if (ad_stage_probe_state.copy_submitted && !ad_stage_probe_state.logged) {
+      CompleteAdStageProbeReadback(queue, ad_stage_probe_state);
+    }
+    if (ad_stage_probe_state.logged) ad_stage_probe_capture.store(0.f, std::memory_order_release);
+  }
+
   {
     std::scoped_lock lock(dlss_fg_handoff_audit_mutex);
     auto& audit = dlss_fg_handoff_audit;
@@ -6907,6 +7062,22 @@ renodx::utils::settings::Settings settings = {
           center_probe_capture.store(1.f, std::memory_order_release);
           renodx::utils::log::i("DL2 0x268 center probe capture armed (deferred FP16 readback).");
           return false; },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture 0xAD Stage Probe",
+        .section = "Debug",
+        .tooltip = "One-shot read-only probe. Copies one center pixel from 0xAD t0 input (A) and its FP16 RTV output (G) into a tiny delayed staging resource.",
+        .on_click = []() {
+          {
+            std::scoped_lock lock(ad_stage_probe_mutex);
+            ad_stage_probe_state = {};
+          }
+          ad_stage_probe_capture.store(1.f, std::memory_order_release);
+          renodx::utils::log::i("DL2 AD stage probe capture armed (deferred FP16 readback).");
+          return false;
+        },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
