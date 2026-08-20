@@ -157,25 +157,15 @@ void main(
     const float strengths[4] = {0.0, 0.25, 0.5, 0.75};
     input_hdr = lerp(input_hdr, renodx::color::srgb::DecodeSafe(input_hdr), strengths[quadrant]);
   }
-  // Plan B (0xA7F77A42 pattern): build a neutral SDR reference from the HDR
-  // signal instead of hard-clipping it, so the vanilla LUT and its
-  // smoothstep/contrast/saturation chain operate on a bounded 0..1 neutral
-  // reference. The HDR magnitude survives in `input_hdr` and is restored by
-  // the three-argument ToneMapPass below. This is the Silksong-style branch:
-  // neutral_sdr -> LUT -> graded_color, while untonemapped -> RenoDRT.
-  // Use DL2's full vanilla SDR curve (with saturate) as the LUT input so HDR's
-  // LUT grade matches vanilla's exactly, fixing the washed-out low/mid region.
-  // This is the SKILL "analytic vanilla tonemap" neutral_sdr option; input_hdr
-  // in the HDR path is untonemapped = scene_linear * exposure, so the curve
-  // output is identical to vanilla.
-  // NOTE: 0x268's own cb0 does NOT hold the curve coefficients. Its layout is
-  // vignette thresholds/gate (cb0[0].x/y/z), smoothstep contrast weight
-  // (cb0[0].w), saturation (cb0[1].x) and color temp (cb0[1].y). The SDR curve
-  // lives only in 0x3E's cbuffer, so reproduce it with the constants captured
-  // by the 0x3E Inputs and Curve audit (verified stable day/night).
+  // Vanilla keeps DL2's original SDR curve. HDR uses Wobbly's max-channel
+  // Neutwo proxy so the LUT sees a bounded SDR value while its scale is
+  // retained for exact post-LUT reconstruction.
   const float4 sdr_curve0 = float4(2.27, 0.17, 1.69, 0.8);
   const float4 sdr_curve1 = float4(0.14, 0.0, 0.0, 0.0);
-  const float3 neutral_sdr = ApplyDL2SDRCurve(input_hdr, sdr_curve0, sdr_curve1);
+  const float hdr_proxy_scale = renodx::tonemap::neutwo::ComputeMaxChannelScale(input_hdr);
+  const float3 neutral_sdr = RENODX_TONE_MAP_TYPE == 0.0
+                                 ? ApplyDL2SDRCurve(input_hdr, sdr_curve0, sdr_curve1)
+                                 : input_hdr * hdr_proxy_scale;
   if (RENODX_TONE_MAP_TYPE != 0.0 || probe59) {
     r1.xyz = neutral_sdr;
   }
@@ -243,14 +233,15 @@ void main(
   float3 stable_grade = native_lut_grade;
 
   if (RENODX_TONE_MAP_TYPE != 0.0) {
-    // Plan B (0xA7F77A42 / Silksong pattern): native LUT/color-grade chain
-    // produced `native_lut_grade` from neutral_sdr. Final HDR output is only
-    // ToneMapPass(untonemapped, graded, neutral_sdr). 0x3E supplies
-    // untonemapped; this pass owns the single ToneMapPass. No second TM, no
-    // lerp back to native_lut_grade on the normal path.
-    upgraded_grade = native_lut_grade;
-    stable_grade = native_lut_grade;
-    o0.rgb = renodx::draw::ToneMapPass(input_hdr, upgraded_grade, neutral_sdr);
+    // Reconstruct the LUT-graded HDR signal, then apply one standalone HDR
+    // tone map. Do not feed the result back through the three-argument
+    // UpgradeToneMap path.
+    upgraded_grade = renodx::math::DivideSafe(
+        native_lut_grade,
+        hdr_proxy_scale.xxx,
+        native_lut_grade);
+    stable_grade = upgraded_grade;
+    o0.rgb = renodx::draw::ToneMapPass(upgraded_grade);
   }
 
   if (RENODX_DEBUG_MODE > 34.5 && RENODX_DEBUG_MODE < 35.5) {
@@ -323,9 +314,16 @@ void main(
     float grade_luma = saturate(dot(float3(0.212500006, 0.715399981, 0.0720999986), probe_grade));
     probe_grade = probe_grade + -grade_luma;
     probe_grade = cb0[1].xxx * probe_grade + grade_luma;
-    const float3 probe_tm = renodx::draw::ToneMapPass(probe_hdr, probe_grade, probe_neutral);
-    // B = same as normal-path final: pure ToneMapPass output.
-    const float3 probe_final = probe_tm;
+    const float probe_proxy_scale = renodx::tonemap::neutwo::ComputeMaxChannelScale(probe_hdr);
+    const float3 probe_reconstructed = RENODX_TONE_MAP_TYPE == 0.0
+                                           ? probe_grade
+                                           : renodx::math::DivideSafe(
+                                                 probe_grade,
+                                                 probe_proxy_scale.xxx,
+                                                 probe_grade);
+    const float3 probe_final = RENODX_TONE_MAP_TYPE == 0.0
+                                   ? probe_reconstructed
+                                   : renodx::draw::ToneMapPass(probe_reconstructed);
     const float v_in = max(probe_hdr.r, max(probe_hdr.g, probe_hdr.b));
     const float v_n = max(probe_neutral.r, max(probe_neutral.g, probe_neutral.b));
     const float v_l = max(probe_grade.r, max(probe_grade.g, probe_grade.b));
