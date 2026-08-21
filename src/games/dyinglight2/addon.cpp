@@ -7281,14 +7281,22 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture 0xAD Stage Probe",
         .section = "Debug",
-        .tooltip = "One-shot read-only probe. Copies one center pixel from 0xAD t0 input (A) and RTV output (G) into a tiny same-format delayed staging resource, then decodes RGB.",
+        .tooltip = "One-shot paired read-only probe. Captures 0x268 output and 0xAD input/output with delayed tiny staging resources. Set Legacy Debug Mode=60 to include I/L/R/T values; no HDR logic changes.",
         .on_click = []() {
           {
             std::scoped_lock lock(ad_stage_probe_mutex);
             ad_stage_probe_state = {};
           }
+          {
+            std::scoped_lock lock(center_probe_mutex);
+            center_probe_state = {};
+          }
+          center_probe_capture.store(1.f, std::memory_order_release);
           ad_stage_probe_capture.store(1.f, std::memory_order_release);
-          renodx::utils::log::i("DL2 AD stage probe capture armed (deferred FP16 readback).");
+          renodx::utils::log::i(
+              (std::string("DL2 paired 0x268/AD probe armed (deferred readback), debug60=")
+               + (shader_injection.debug_mode > 59.5f && shader_injection.debug_mode < 60.5f ? "1" : "0"))
+                  .c_str());
           return false;
         },
         .is_visible = []() { return current_settings_mode >= 2; },
