@@ -2797,12 +2797,35 @@ struct AdStageProbeState {
   bool logged = false;
   reshade::api::resource input = {};
   reshade::api::resource output = {};
+  GammaAuditResource input_binding = {};
+  GammaAuditResource output_binding = {};
+  GammaAuditResource current_output = {};
+  uint64_t command_list = 0u;
+  uint64_t command_list_native = 0u;
+  uint64_t input_view = 0u;
+  uint64_t output_view = 0u;
+  uint64_t current_output_view = 0u;
+  uint32_t input_table = UINT_MAX;
+  uint32_t input_binding_index = UINT_MAX;
+  bool output_view_matches_current = false;
+  uint32_t render_target_count = 0u;
+  uint32_t shader_hash = 0u;
   reshade::api::format input_format = reshade::api::format::unknown;
   reshade::api::format output_format = reshade::api::format::unknown;
   bool input_srgb = false;
   bool output_srgb = false;
   reshade::api::resource input_staging = {};
   reshade::api::resource output_staging = {};
+  uint32_t input_copy_x = 0u;
+  uint32_t input_copy_y = 0u;
+  uint32_t output_copy_x = 0u;
+  uint32_t output_copy_y = 0u;
+  uint32_t input_copy_width = 0u;
+  uint32_t input_copy_height = 0u;
+  uint32_t output_copy_width = 0u;
+  uint32_t output_copy_height = 0u;
+  reshade::api::format input_staging_format = reshade::api::format::unknown;
+  reshade::api::format output_staging_format = reshade::api::format::unknown;
   Microsoft::WRL::ComPtr<ID3D12Fence> copy_fence;
   uint64_t copy_fence_value = 0u;
 };
@@ -2853,6 +2876,8 @@ static void CaptureAdStageProbeResources(reshade::api::command_list* cmd_list) {
   const auto output_format = output_info.effective_view_format;
   const auto input_desc = device->get_resource_desc(input);
   const auto output_desc = device->get_resource_desc(output);
+  const auto current_rtv = command_state->render_targets[0];
+  const auto current_output_info = DescribeGammaAuditView(device, current_rtv);
   if (!IsProbeReadableResource(device, input, input_format)
       || !IsProbeReadableResource(device, output, output_format)) {
     renodx::utils::log::w(
@@ -2866,6 +2891,22 @@ static void CaptureAdStageProbeResources(reshade::api::command_list* cmd_list) {
   }
   ad_stage_probe_state.input = input;
   ad_stage_probe_state.output = output;
+  ad_stage_probe_state.input_binding = input_info;
+  ad_stage_probe_state.output_binding = output_info;
+  ad_stage_probe_state.current_output = current_output_info;
+  ad_stage_probe_state.command_list = reinterpret_cast<uint64_t>(cmd_list);
+  ad_stage_probe_state.command_list_native = reinterpret_cast<uint64_t>(cmd_list->get_native());
+  ad_stage_probe_state.input_view = t0.slot.resource_view.handle;
+  ad_stage_probe_state.output_view = target_it->second.handle;
+  ad_stage_probe_state.current_output_view = current_rtv.handle;
+  ad_stage_probe_state.input_table = t0.table;
+  ad_stage_probe_state.input_binding_index = t0.binding;
+  ad_stage_probe_state.output_view_matches_current =
+      target_it->second.handle == current_rtv.handle
+      || (output_info.resource != 0u && output_info.resource == current_output_info.resource)
+      || (output_info.effective != 0u && output_info.effective == current_output_info.effective);
+  ad_stage_probe_state.render_target_count = static_cast<uint32_t>(command_state->render_targets.size());
+  ad_stage_probe_state.shader_hash = 0xAD085E81u;
   ad_stage_probe_state.input_format = input_format;
   ad_stage_probe_state.output_format = output_format;
   ad_stage_probe_state.input_srgb = input_format == reshade::api::format::r8g8b8a8_unorm_srgb;
@@ -2897,6 +2938,12 @@ static bool BeginAdStageProbeReadback(reshade::api::command_queue* queue, AdStag
                                      : state.output_format == reshade::api::format::r16g16b16a16_typeless
                                          ? reshade::api::format::r16g16b16a16_float
                                          : state.output_format;
+  state.input_staging_format = input_staging_format;
+  state.output_staging_format = output_staging_format;
+  state.input_copy_width = in_desc.texture.width;
+  state.input_copy_height = in_desc.texture.height;
+  state.output_copy_width = out_desc.texture.width;
+  state.output_copy_height = out_desc.texture.height;
   const auto make_staging_desc = [](reshade::api::format format) {
     return reshade::api::resource_desc(
         1u, 1u, 1u, 1, format, 1, reshade::api::memory_heap::gpu_to_cpu,
@@ -2922,16 +2969,20 @@ static bool BeginAdStageProbeReadback(reshade::api::command_queue* queue, AdStag
     return false;
   }
   const auto copy_one = [&](reshade::api::resource source, const auto& desc, reshade::api::resource staging,
-                            reshade::api::resource_usage old_usage) {
+                            reshade::api::resource_usage old_usage, uint32_t* out_x, uint32_t* out_y) {
     const uint32_t x = std::min(std::max(1u, desc.texture.width) - 1u, static_cast<uint32_t>(0.5f * desc.texture.width));
     const uint32_t y = std::min(std::max(1u, desc.texture.height) - 1u, static_cast<uint32_t>(0.5f * desc.texture.height));
+    if (out_x != nullptr) *out_x = x;
+    if (out_y != nullptr) *out_y = y;
     const reshade::api::subresource_box box = {x, y, 0u, x + 1u, y + 1u, 1u};
     cmd_list->barrier(source, old_usage, reshade::api::resource_usage::copy_source);
     cmd_list->copy_texture_region(source, 0, &box, staging, 0, nullptr);
     cmd_list->barrier(source, reshade::api::resource_usage::copy_source, old_usage);
   };
-  copy_one(state.input, in_desc, state.input_staging, reshade::api::resource_usage::shader_resource);
-  copy_one(state.output, out_desc, state.output_staging, reshade::api::resource_usage::render_target);
+  copy_one(state.input, in_desc, state.input_staging, reshade::api::resource_usage::shader_resource,
+           &state.input_copy_x, &state.input_copy_y);
+  copy_one(state.output, out_desc, state.output_staging, reshade::api::resource_usage::render_target,
+           &state.output_copy_x, &state.output_copy_y);
   queue->flush_immediate_command_list();
   auto* native_device = reinterpret_cast<ID3D12Device*>(static_cast<uintptr_t>(device->get_native()));
   auto* native_queue = reinterpret_cast<ID3D12CommandQueue*>(static_cast<uintptr_t>(queue->get_native()));
@@ -3001,6 +3052,16 @@ static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdS
     if (state.input_srgb) values[0][channel] = srgb_decode(values[0][channel]);
     if (state.output_srgb) values[1][channel] = srgb_decode(values[1][channel]);
   }
+  const uint64_t input_staging_handle = state.input_staging.handle;
+  const uint64_t output_staging_handle = state.output_staging.handle;
+  const auto input_staging_format = state.input_staging_format;
+  const auto output_staging_format = state.output_staging_format;
+  const uint64_t input_copy_resource = state.input.handle;
+  const uint64_t output_copy_resource = state.output.handle;
+  const auto input_copy_width = state.input_copy_width;
+  const auto input_copy_height = state.input_copy_height;
+  const auto output_copy_width = state.output_copy_width;
+  const auto output_copy_height = state.output_copy_height;
   device->destroy_resource(state.input_staging);
   device->destroy_resource(state.output_staging);
   state.input_staging = {};
@@ -3008,11 +3069,46 @@ static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdS
   state.copy_fence.Reset();
   state.logged = true;
   std::ostringstream stream;
-  stream << "DL2 AD stage probe readback: input=0x" << std::hex << state.input.handle
-         << " format=" << std::dec << static_cast<uint32_t>(state.input_format)
-         << " output=0x" << std::hex << state.output.handle
-         << " format=" << std::dec << static_cast<uint32_t>(state.output_format)
-         << " A=(" << values[0][0] << "," << values[0][1] << "," << values[0][2]
+  stream << "DL2 AD stage probe readback: shader=0x" << std::hex << std::uppercase << state.shader_hash
+         << " cmd=0x" << state.command_list << " native_cmd=0x" << state.command_list_native
+         << " rtv_count=" << std::dec << state.render_target_count
+         << " output_view_match=" << (state.output_view_matches_current ? 1 : 0)
+         << " input_view=0x" << std::hex << state.input_view
+         << " bound_input=0x" << state.input_binding.resource
+         << " effective_input=0x" << state.input_binding.effective
+         << " copy_input=0x" << input_copy_resource
+         << " input_desc=" << std::dec << state.input_binding.width << "x" << state.input_binding.height
+         << "/resource_format=" << static_cast<uint32_t>(state.input_binding.format)
+         << "/view_format=" << static_cast<uint32_t>(state.input_binding.view_format)
+         << "/effective_format=" << static_cast<uint32_t>(state.input_binding.effective_format)
+         << "/effective_view_format=" << static_cast<uint32_t>(state.input_binding.effective_view_format)
+         << " input_copy_desc=" << input_copy_width << "x" << input_copy_height
+         << " input_copy_xy=" << state.input_copy_x << "," << state.input_copy_y
+         << " input_staging=0x" << std::hex << input_staging_handle
+         << " staging_format=" << static_cast<uint32_t>(input_staging_format)
+         << " input_binding_table=" << std::dec << state.input_table
+         << " input_binding=" << state.input_binding_index
+         << " output_view=0x" << std::hex << state.output_view
+         << " current_rtv_view=0x" << state.current_output_view
+         << " bound_output=0x" << state.output_binding.resource
+         << " effective_output=0x" << state.output_binding.effective
+         << " current_output=0x" << state.current_output.resource
+         << " current_effective_output=0x" << state.current_output.effective
+         << " current_output_desc=" << state.current_output.width << "x" << state.current_output.height
+         << "/resource_format=" << static_cast<uint32_t>(state.current_output.format)
+         << "/view_format=" << static_cast<uint32_t>(state.current_output.view_format)
+         << "/effective_view_format=" << static_cast<uint32_t>(state.current_output.effective_view_format)
+         << " copy_output=0x" << output_copy_resource
+         << " output_desc=" << state.output_binding.width << "x" << state.output_binding.height
+         << "/resource_format=" << static_cast<uint32_t>(state.output_binding.format)
+         << "/view_format=" << static_cast<uint32_t>(state.output_binding.view_format)
+         << "/effective_format=" << static_cast<uint32_t>(state.output_binding.effective_format)
+         << "/effective_view_format=" << static_cast<uint32_t>(state.output_binding.effective_view_format)
+         << " output_copy_desc=" << output_copy_width << "x" << output_copy_height
+         << " output_copy_xy=" << state.output_copy_x << "," << state.output_copy_y
+         << " output_staging=0x" << output_staging_handle
+         << " staging_format=" << static_cast<uint32_t>(output_staging_format)
+         << std::dec << " A=(" << values[0][0] << "," << values[0][1] << "," << values[0][2]
          << ") Y=" << CenterProbeLuminance(values[0]) << " G=(" << values[1][0] << "," << values[1][1] << "," << values[1][2]
          << ") Y=" << CenterProbeLuminance(values[1]);
   renodx::utils::log::i(stream.str().c_str());
