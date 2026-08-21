@@ -1964,6 +1964,10 @@ struct DownstreamTransfer {
   uint64_t dest = 0u;
   reshade::api::format source_format = reshade::api::format::unknown;
   reshade::api::format dest_format = reshade::api::format::unknown;
+  uint32_t source_width = 0u;
+  uint32_t source_height = 0u;
+  uint32_t dest_width = 0u;
+  uint32_t dest_height = 0u;
   uint32_t source_usage = 0u;
   uint32_t dest_usage = 0u;
   uint32_t source_flags = 0u;
@@ -4133,6 +4137,10 @@ bool DescribeDownstreamTransfer(
       .dest = dest.handle,
       .source_format = source_desc.texture.format,
       .dest_format = dest_desc.texture.format,
+      .source_width = source_desc.texture.width,
+      .source_height = source_desc.texture.height,
+      .dest_width = dest_desc.texture.width,
+      .dest_height = dest_desc.texture.height,
       .source_usage = static_cast<uint32_t>(source_desc.usage),
       .dest_usage = static_cast<uint32_t>(dest_desc.usage),
       .source_flags = static_cast<uint32_t>(source_desc.flags),
@@ -6033,9 +6041,15 @@ void OnDownstreamDrawCapturePresent(
 
   if (capture.capture_commands) {
     std::stringstream stream;
-    stream << "DL2 same-Present command candidates after 0x"
+    stream << "DL2 same-Present readers after 0x"
            << std::hex << std::uppercase << capture.anchor_shader_hash
-           << std::dec << std::nouppercase << " (" << capture.count << "):";
+           << " anchor_rtv=0x" << capture.gamma_target
+           << "=>0x" << capture.gamma_target_effective
+           << " format=" << std::dec << static_cast<uint32_t>(capture.gamma_target_format)
+           << "=>" << static_cast<uint32_t>(capture.gamma_target_effective_format)
+           << " size=" << capture.gamma_target_width << "x" << capture.gamma_target_height
+           << " (" << capture.count << "):"
+           << std::dec << std::nouppercase;
     for (uint32_t index = 0u; index < capture.count; ++index) {
       stream << " " << (capture.is_compute[index] ? "CS" : "PS") << ":0x"
              << std::hex << std::uppercase << capture.hashes[index];
@@ -6061,6 +6075,7 @@ void OnDownstreamDrawCapturePresent(
                << "=>0x" << input.effective << ", " << static_cast<uint32_t>(input.effective_format)
                << ", view=" << static_cast<uint32_t>(input.view_format) << "=>"
                << static_cast<uint32_t>(input.effective_view_format)
+               << ", size=" << input.width << "x" << input.height
                << ", anchor=" << (reads_anchor ? "yes" : "no") << ")";
       }
     }
@@ -6068,7 +6083,9 @@ void OnDownstreamDrawCapturePresent(
   }
   if (capture.capture_transfers) {
     std::stringstream stream;
-    stream << "DL2 post-Gamma transfers (" << capture.transfer_count << "):";
+    stream << "DL2 post-0x268 resource transfers (" << capture.transfer_count << ")"
+           << " anchor=0x" << std::hex << std::uppercase << capture.gamma_target
+           << "=>0x" << capture.gamma_target_effective << ":";
     for (uint32_t index = 0u; index < capture.transfer_count; ++index) {
       const auto& transfer = capture.transfers[index];
       const char* type = transfer.type == DownstreamTransferType::copy_resource         ? "CopyResource"
@@ -6077,6 +6094,8 @@ void OnDownstreamDrawCapturePresent(
       stream << " " << type << "(0x" << std::hex << std::uppercase << transfer.source << ", "
              << static_cast<uint32_t>(transfer.source_format) << " => 0x" << transfer.dest << ", "
              << static_cast<uint32_t>(transfer.dest_format)
+             << ", src_size=" << transfer.source_width << "x" << transfer.source_height
+             << ", dst_size=" << transfer.dest_width << "x" << transfer.dest_height
              << ", src_usage=0x" << transfer.source_usage
              << ", dst_usage=0x" << transfer.dest_usage
              << ", src_flags=0x" << transfer.source_flags
@@ -7233,6 +7252,21 @@ renodx::utils::settings::Settings settings = {
                  << previous_mode << "=>" << current_mode
                  << " submission_logs=32";
           renodx::utils::log::i(stream.str().c_str()); },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture 0x268 to 0xAD Resource Chain",
+        .section = "Debug",
+        .tooltip = "One-shot read-only audit. Arms post-0x268 fullscreen readers and copy/resolve transfers together until the next Present; logs resource/view replacement, format, size, and clone/proxy relations. No readback or rendering changes.",
+        .on_click = []() {
+          std::scoped_lock lock(downstream_draw_capture_mutex);
+          downstream_draw_capture = 1.f;
+          downstream_transfer_capture = 1.f;
+          downstream_draw_capture_state = {};
+          downstream_capture_t0_views.clear();
+          renodx::utils::log::i("DL2 0x268=>0xAD resource-chain capture armed.");
+          return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
