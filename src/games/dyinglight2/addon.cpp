@@ -1993,8 +1993,10 @@ struct DownstreamTransfer {
 struct DownstreamTarget {
   uint64_t resource = 0u;
   uint64_t effective = 0u;
+  uint64_t clone = 0u;
   reshade::api::format format = reshade::api::format::unknown;
   reshade::api::format effective_format = reshade::api::format::unknown;
+  reshade::api::format clone_format = reshade::api::format::unknown;
   reshade::api::format view_format = reshade::api::format::unknown;
   reshade::api::format effective_view_format = reshade::api::format::unknown;
   uint32_t width = 0u;
@@ -4060,8 +4062,10 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
     candidate_target = {
         .resource = resource.resource,
         .effective = resource.effective,
+        .clone = resource.clone,
         .format = resource.format,
         .effective_format = resource.effective_format,
+        .clone_format = resource.clone_format,
         .view_format = resource.view_format,
         .effective_view_format = resource.effective_view_format,
         .width = resource.width,
@@ -4104,8 +4108,10 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
         capture.inputs[capture.count] = {
             .resource = resource.resource,
             .effective = resource.effective,
+            .clone = resource.clone,
             .format = resource.format,
             .effective_format = resource.effective_format,
+            .clone_format = resource.clone_format,
             .view_format = resource.view_format,
             .effective_view_format = resource.effective_view_format,
             .width = resource.width,
@@ -6058,6 +6064,8 @@ void OnDownstreamDrawCapturePresent(
         stream << "->rtv(0x" << target.resource << ", "
                << static_cast<uint32_t>(target.format) << "=>0x" << target.effective << ", "
                << static_cast<uint32_t>(target.effective_format)
+               << ", clone=0x" << target.clone << ", "
+               << static_cast<uint32_t>(target.clone_format)
                << ", view=" << static_cast<uint32_t>(target.view_format) << "=>"
                << static_cast<uint32_t>(target.effective_view_format) << ", clone="
                << (target.clone_enabled ? "on" : "off") << ", " << std::dec
@@ -6073,6 +6081,8 @@ void OnDownstreamDrawCapturePresent(
                                   || input.effective == capture.gamma_target_effective;
         stream << "<-t0(0x" << input.resource << ", " << static_cast<uint32_t>(input.format)
                << "=>0x" << input.effective << ", " << static_cast<uint32_t>(input.effective_format)
+               << ", clone=0x" << input.clone << ", "
+               << static_cast<uint32_t>(input.clone_format)
                << ", view=" << static_cast<uint32_t>(input.view_format) << "=>"
                << static_cast<uint32_t>(input.effective_view_format)
                << ", size=" << input.width << "x" << input.height
