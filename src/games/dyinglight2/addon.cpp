@@ -7638,12 +7638,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::swapchain::swapchain_proxy_compatibility_mode = false;
       renodx::mods::swapchain::force_borderless = false;
       renodx::mods::swapchain::use_resource_cloning = true;
-      // Crash-isolation A/B: the last failure occurred while the modified
-      // scRGB swapchain was rebuilt. Keep all scene diagnostics active, but
-      // let DL2's primary swapchain remain native for one decisive test.
-      renodx::mods::swapchain::ignored_window_class_names.insert("techland_game_class");
-      renodx::utils::log::w(
-          "DL2 swapchain modification: disabled for crash A/B (native window class)");
+      // Proxy source audit: allow the real game swapchain through so the
+      // final proxy source/resource diagnostic can observe the live path.
       // 初始用 DX11 shader，OnInitDevice 会根据 device API 动态切换
       renodx::mods::swapchain::swap_chain_proxy_vertex_shader = __swap_chain_proxy_vertex_shader_dx11;
       renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx11;
