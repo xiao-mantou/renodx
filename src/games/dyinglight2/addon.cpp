@@ -5413,6 +5413,7 @@ struct ProxySourceProbeState {
   Microsoft::WRL::ComPtr<ID3D12Fence> copy_fence;
   uint64_t copy_fence_value = 0u;
 };
+constexpr uint32_t kProxySourceProbeSampleCount = 5u;
 static std::atomic<float> proxy_source_probe_capture{0.f};
 static ProxySourceProbeState proxy_source_probe_state = {};
 static std::mutex proxy_source_probe_mutex;
@@ -5514,7 +5515,7 @@ static bool BeginProxySourceProbeReadback(
   }
   reshade::api::resource staging = {};
   const reshade::api::resource_desc staging_desc(
-      1u, 1u, 1u, 1, reshade::api::format::r16g16b16a16_float, 1,
+      kProxySourceProbeSampleCount, 1u, 1u, 1, reshade::api::format::r16g16b16a16_float, 1,
       reshade::api::memory_heap::gpu_to_cpu, reshade::api::resource_usage::copy_dest);
   if (!device->create_resource(
           staging_desc, nullptr, reshade::api::resource_usage::copy_dest, &staging)) {
@@ -5527,13 +5528,20 @@ static bool BeginProxySourceProbeReadback(
     renodx::utils::log::w("DL2 proxy source probe: no immediate command list");
     return false;
   }
-  const uint32_t x = std::min(state.width - 1u, state.width / 2u);
-  const uint32_t y = std::min(state.height - 1u, state.height / 2u);
-  const reshade::api::subresource_box source_box = {x, y, 0u, x + 1u, y + 1u, 1u};
+  constexpr float sample_uvs[kProxySourceProbeSampleCount][2] = {
+      {0.25f, 0.25f}, {0.75f, 0.25f}, {0.25f, 0.75f}, {0.75f, 0.75f}, {0.50f, 0.50f}};
   cmd_list->barrier(
       state.source, reshade::api::resource_usage::shader_resource,
       reshade::api::resource_usage::copy_source);
-  cmd_list->copy_texture_region(state.source, 0, &source_box, staging, 0, nullptr);
+  for (uint32_t index = 0u; index < kProxySourceProbeSampleCount; ++index) {
+    const uint32_t x = std::min(
+        state.width - 1u, static_cast<uint32_t>(sample_uvs[index][0] * state.width));
+    const uint32_t y = std::min(
+        state.height - 1u, static_cast<uint32_t>(sample_uvs[index][1] * state.height));
+    const reshade::api::subresource_box source_box = {x, y, 0u, x + 1u, y + 1u, 1u};
+    const reshade::api::subresource_box dest_box = {index, 0u, 0u, index + 1u, 1u, 1u};
+    cmd_list->copy_texture_region(state.source, 0, &source_box, staging, 0, &dest_box);
+  }
   cmd_list->barrier(
       state.source, reshade::api::resource_usage::copy_source,
       reshade::api::resource_usage::shader_resource);
@@ -5575,13 +5583,17 @@ static bool CompleteProxySourceProbeReadback(
     renodx::utils::log::w("DL2 proxy source probe: map failed");
     return false;
   }
-  float rgb[3] = {};
+  float rgb[kProxySourceProbeSampleCount][3] = {};
   if (data.data != nullptr) {
-    const auto* pixel = static_cast<const uint8_t*>(data.data);
-    for (uint32_t channel = 0u; channel < 3u; ++channel) {
-      uint16_t half = 0u;
-      std::memcpy(&half, pixel + channel * sizeof(uint16_t), sizeof(uint16_t));
-      rgb[channel] = HalfToFloat(half);
+    constexpr uint32_t bytes_per_pixel = 8u;
+    const auto* base = static_cast<const uint8_t*>(data.data);
+    for (uint32_t index = 0u; index < kProxySourceProbeSampleCount; ++index) {
+      const auto* pixel = base + static_cast<size_t>(index) * bytes_per_pixel;
+      for (uint32_t channel = 0u; channel < 3u; ++channel) {
+        uint16_t half = 0u;
+        std::memcpy(&half, pixel + channel * sizeof(uint16_t), sizeof(uint16_t));
+        rgb[index][channel] = HalfToFloat(half);
+      }
     }
   }
   device->unmap_texture_region(state.staging, 0);
@@ -5591,11 +5603,15 @@ static bool CompleteProxySourceProbeReadback(
   state.copy_fence_value = 0u;
   state.logged = true;
   std::ostringstream stream;
+  constexpr const char* sample_names[kProxySourceProbeSampleCount] = {
+      "TL", "TR", "BL", "BR", "C"};
   stream << "DL2 proxy source probe: source=0x" << std::hex << state.source.handle << std::dec
          << " format=" << static_cast<uint32_t>(state.source_format)
-         << " size=" << state.width << "x" << state.height
-         << " sample=(0.5,0.5) rgb=(" << rgb[0] << "," << rgb[1] << "," << rgb[2]
-         << ") Y=" << CenterProbeLuminance(rgb);
+         << " size=" << state.width << "x" << state.height;
+  for (uint32_t index = 0u; index < kProxySourceProbeSampleCount; ++index) {
+    stream << " " << sample_names[index] << "=(" << rgb[index][0] << "," << rgb[index][1]
+           << "," << rgb[index][2] << ") Y=" << CenterProbeLuminance(rgb[index]);
+  }
   renodx::utils::log::i(stream.str().c_str());
   return true;
 }
@@ -7539,14 +7555,14 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture Proxy Source Pixel",
         .section = "Debug",
-        .tooltip = "One-shot diagnostic: reads one RGB pixel from the FP16 clone actually sampled by the final Proxy. Uses delayed 1x1 staging and a fence; no HDR or Proxy math changes.",
+        .tooltip = "One-shot diagnostic: reads five RGB pixels (four quadrant centers plus center) from the FP16 clone actually sampled by the final Proxy. Uses delayed tiny staging and a fence; no HDR or Proxy math changes.",
         .on_click = []() {
           {
             std::scoped_lock lock(proxy_source_probe_mutex);
             proxy_source_probe_state = {};
           }
           proxy_source_probe_capture.store(1.f, std::memory_order_release);
-          renodx::utils::log::i("DL2 proxy source pixel probe armed (deferred 1x1 readback).");
+          renodx::utils::log::i("DL2 proxy source pixel probe armed (deferred 1x5 readback).");
           return false;
         },
         .is_visible = []() { return current_settings_mode >= 2; },
