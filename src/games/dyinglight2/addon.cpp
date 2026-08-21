@@ -2814,12 +2814,12 @@ struct AdStageProbeState {
   reshade::api::format output_format = reshade::api::format::unknown;
   bool input_srgb = false;
   bool output_srgb = false;
-  reshade::api::resource input_staging = {};
-  reshade::api::resource output_staging = {};
-  uint32_t input_copy_x = 0u;
-  uint32_t input_copy_y = 0u;
-  uint32_t output_copy_x = 0u;
-  uint32_t output_copy_y = 0u;
+  std::array<reshade::api::resource, 5> input_stagings = {};
+  std::array<reshade::api::resource, 5> output_stagings = {};
+  std::array<uint32_t, 5> input_copy_x = {};
+  std::array<uint32_t, 5> input_copy_y = {};
+  std::array<uint32_t, 5> output_copy_x = {};
+  std::array<uint32_t, 5> output_copy_y = {};
   uint32_t input_copy_width = 0u;
   uint32_t input_copy_height = 0u;
   uint32_t output_copy_width = 0u;
@@ -2949,29 +2949,45 @@ static bool BeginAdStageProbeReadback(reshade::api::command_queue* queue, AdStag
         1u, 1u, 1u, 1, format, 1, reshade::api::memory_heap::gpu_to_cpu,
         reshade::api::resource_usage::copy_dest);
   };
-  if (!device->create_resource(make_staging_desc(input_staging_format), nullptr,
-                               reshade::api::resource_usage::copy_dest, &state.input_staging)
-      || !device->create_resource(make_staging_desc(output_staging_format), nullptr,
-                                  reshade::api::resource_usage::copy_dest, &state.output_staging)) {
-    if (state.input_staging.handle != 0u) device->destroy_resource(state.input_staging);
-    if (state.output_staging.handle != 0u) device->destroy_resource(state.output_staging);
-    state.input_staging = {};
-    state.output_staging = {};
-    renodx::utils::log::w("DL2 AD stage probe readback: independent staging create failed");
-    return false;
+  const auto destroy_stagings = [&]() {
+    for (auto& staging : state.input_stagings) {
+      if (staging.handle != 0u) device->destroy_resource(staging);
+      staging = {};
+    }
+    for (auto& staging : state.output_stagings) {
+      if (staging.handle != 0u) device->destroy_resource(staging);
+      staging = {};
+    }
+  };
+  for (uint32_t index = 0u; index < state.input_stagings.size(); ++index) {
+    if (!device->create_resource(make_staging_desc(input_staging_format), nullptr,
+                                 reshade::api::resource_usage::copy_dest, &state.input_stagings[index])
+        || !device->create_resource(make_staging_desc(output_staging_format), nullptr,
+                                    reshade::api::resource_usage::copy_dest, &state.output_stagings[index])) {
+      destroy_stagings();
+      renodx::utils::log::w("DL2 AD stage probe readback: multipoint staging create failed");
+      return false;
+    }
   }
   auto* cmd_list = queue->get_immediate_command_list();
   if (cmd_list == nullptr) {
-    device->destroy_resource(state.input_staging);
-    device->destroy_resource(state.output_staging);
-    state.input_staging = {};
-    state.output_staging = {};
+    destroy_stagings();
     return false;
   }
+  constexpr std::array<std::array<float, 2>, 5> sample_points = {{
+      {0.50f, 0.50f},
+      {0.25f, 0.25f},
+      {0.75f, 0.25f},
+      {0.25f, 0.75f},
+      {0.75f, 0.75f},
+  }};
   const auto copy_one = [&](reshade::api::resource source, const auto& desc, reshade::api::resource staging,
-                            reshade::api::resource_usage old_usage, uint32_t* out_x, uint32_t* out_y) {
-    const uint32_t x = std::min(std::max(1u, desc.texture.width) - 1u, static_cast<uint32_t>(0.5f * desc.texture.width));
-    const uint32_t y = std::min(std::max(1u, desc.texture.height) - 1u, static_cast<uint32_t>(0.5f * desc.texture.height));
+                            reshade::api::resource_usage old_usage, uint32_t* out_x, uint32_t* out_y,
+                            float normalized_x, float normalized_y) {
+    const uint32_t x = std::min(std::max(1u, desc.texture.width) - 1u,
+                                static_cast<uint32_t>(normalized_x * desc.texture.width));
+    const uint32_t y = std::min(std::max(1u, desc.texture.height) - 1u,
+                                static_cast<uint32_t>(normalized_y * desc.texture.height));
     if (out_x != nullptr) *out_x = x;
     if (out_y != nullptr) *out_y = y;
     const reshade::api::subresource_box box = {x, y, 0u, x + 1u, y + 1u, 1u};
@@ -2979,20 +2995,19 @@ static bool BeginAdStageProbeReadback(reshade::api::command_queue* queue, AdStag
     cmd_list->copy_texture_region(source, 0, &box, staging, 0, nullptr);
     cmd_list->barrier(source, reshade::api::resource_usage::copy_source, old_usage);
   };
-  copy_one(state.input, in_desc, state.input_staging, reshade::api::resource_usage::shader_resource,
-           &state.input_copy_x, &state.input_copy_y);
-  copy_one(state.output, out_desc, state.output_staging, reshade::api::resource_usage::render_target,
-           &state.output_copy_x, &state.output_copy_y);
+  for (uint32_t index = 0u; index < sample_points.size(); ++index) {
+    copy_one(state.input, in_desc, state.input_stagings[index], reshade::api::resource_usage::shader_resource,
+             &state.input_copy_x[index], &state.input_copy_y[index], sample_points[index][0], sample_points[index][1]);
+    copy_one(state.output, out_desc, state.output_stagings[index], reshade::api::resource_usage::render_target,
+             &state.output_copy_x[index], &state.output_copy_y[index], sample_points[index][0], sample_points[index][1]);
+  }
   queue->flush_immediate_command_list();
   auto* native_device = reinterpret_cast<ID3D12Device*>(static_cast<uintptr_t>(device->get_native()));
   auto* native_queue = reinterpret_cast<ID3D12CommandQueue*>(static_cast<uintptr_t>(queue->get_native()));
   if (native_device == nullptr || native_queue == nullptr
       || FAILED(native_device->CreateFence(0u, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&state.copy_fence)))
       || FAILED(native_queue->Signal(state.copy_fence.Get(), 1u))) {
-    device->destroy_resource(state.input_staging);
-    device->destroy_resource(state.output_staging);
-    state.input_staging = {};
-    state.output_staging = {};
+    destroy_stagings();
     state.copy_fence.Reset();
     renodx::utils::log::w("DL2 AD stage probe skipped: fence setup failed");
     return false;
@@ -3003,12 +3018,12 @@ static bool BeginAdStageProbeReadback(reshade::api::command_queue* queue, AdStag
 }
 
 static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdStageProbeState& state) {
-  if (queue == nullptr || !state.copy_submitted || state.logged || state.input_staging.handle == 0u
-      || state.output_staging.handle == 0u
+  if (queue == nullptr || !state.copy_submitted || state.logged
+      || state.input_stagings[0].handle == 0u || state.output_stagings[0].handle == 0u
       || state.copy_fence == nullptr || state.copy_fence->GetCompletedValue() < state.copy_fence_value) return false;
   auto* device = queue->get_device();
   if (device == nullptr) return false;
-  float values[2][3] = {};
+  float values[5][2][3] = {};
   const auto read_one = [&](reshade::api::resource staging, reshade::api::format format, float out[3]) {
     reshade::api::subresource_data data = {};
     if (!device->map_texture_region(staging, 0, nullptr, reshade::api::map_access::read_only, &data)) return false;
@@ -3042,18 +3057,22 @@ static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdS
                ? reshade::api::format::r16g16b16a16_float
                : format;
   };
-  if (!read_one(state.input_staging, typed_format(state.input_format), values[0])
-      || !read_one(state.output_staging, typed_format(state.output_format), values[1])) return false;
+  for (uint32_t index = 0u; index < state.input_stagings.size(); ++index) {
+    if (!read_one(state.input_stagings[index], typed_format(state.input_format), values[index][0])
+        || !read_one(state.output_stagings[index], typed_format(state.output_format), values[index][1])) return false;
+  }
   const auto srgb_decode = [](float value) {
     return value <= 0.04045f ? value / 12.92f
                              : std::pow((value + 0.055f) / 1.055f, 2.4f);
   };
   for (uint32_t channel = 0u; channel < 3u; ++channel) {
-    if (state.input_srgb) values[0][channel] = srgb_decode(values[0][channel]);
-    if (state.output_srgb) values[1][channel] = srgb_decode(values[1][channel]);
+    for (uint32_t index = 0u; index < state.input_stagings.size(); ++index) {
+      if (state.input_srgb) values[index][0][channel] = srgb_decode(values[index][0][channel]);
+      if (state.output_srgb) values[index][1][channel] = srgb_decode(values[index][1][channel]);
+    }
   }
-  const uint64_t input_staging_handle = state.input_staging.handle;
-  const uint64_t output_staging_handle = state.output_staging.handle;
+  const auto input_staging_handles = state.input_stagings;
+  const auto output_staging_handles = state.output_stagings;
   const auto input_staging_format = state.input_staging_format;
   const auto output_staging_format = state.output_staging_format;
   const uint64_t input_copy_resource = state.input.handle;
@@ -3062,10 +3081,14 @@ static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdS
   const auto input_copy_height = state.input_copy_height;
   const auto output_copy_width = state.output_copy_width;
   const auto output_copy_height = state.output_copy_height;
-  device->destroy_resource(state.input_staging);
-  device->destroy_resource(state.output_staging);
-  state.input_staging = {};
-  state.output_staging = {};
+  for (auto& staging : state.input_stagings) {
+    device->destroy_resource(staging);
+    staging = {};
+  }
+  for (auto& staging : state.output_stagings) {
+    device->destroy_resource(staging);
+    staging = {};
+  }
   state.copy_fence.Reset();
   state.logged = true;
   std::ostringstream stream;
@@ -3083,8 +3106,6 @@ static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdS
          << "/effective_format=" << static_cast<uint32_t>(state.input_binding.effective_format)
          << "/effective_view_format=" << static_cast<uint32_t>(state.input_binding.effective_view_format)
          << " input_copy_desc=" << input_copy_width << "x" << input_copy_height
-         << " input_copy_xy=" << state.input_copy_x << "," << state.input_copy_y
-         << " input_staging=0x" << std::hex << input_staging_handle
          << " staging_format=" << static_cast<uint32_t>(input_staging_format)
          << " input_binding_table=" << std::dec << state.input_table
          << " input_binding=" << state.input_binding_index
@@ -3105,12 +3126,20 @@ static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdS
          << "/effective_format=" << static_cast<uint32_t>(state.output_binding.effective_format)
          << "/effective_view_format=" << static_cast<uint32_t>(state.output_binding.effective_view_format)
          << " output_copy_desc=" << output_copy_width << "x" << output_copy_height
-         << " output_copy_xy=" << state.output_copy_x << "," << state.output_copy_y
-         << " output_staging=0x" << output_staging_handle
          << " staging_format=" << static_cast<uint32_t>(output_staging_format)
-         << std::dec << " A=(" << values[0][0] << "," << values[0][1] << "," << values[0][2]
-         << ") Y=" << CenterProbeLuminance(values[0]) << " G=(" << values[1][0] << "," << values[1][1] << "," << values[1][2]
-         << ") Y=" << CenterProbeLuminance(values[1]);
+         << std::dec << " points=5";
+  constexpr std::array<const char*, 5> point_names = {"C", "TL", "TR", "BL", "BR"};
+  for (uint32_t index = 0u; index < point_names.size(); ++index) {
+    stream << " " << point_names[index]
+           << "@" << state.input_copy_x[index] << "," << state.input_copy_y[index]
+           << "/" << state.output_copy_x[index] << "," << state.output_copy_y[index]
+           << " staging=0x" << std::hex << input_staging_handles[index].handle
+           << ",0x" << output_staging_handles[index].handle
+           << std::dec << " A=(" << values[index][0][0] << "," << values[index][0][1] << "," << values[index][0][2]
+           << ") Y=" << CenterProbeLuminance(values[index][0])
+           << " G=(" << values[index][1][0] << "," << values[index][1][1] << "," << values[index][1][2]
+           << ") Y=" << CenterProbeLuminance(values[index][1]);
+  }
   renodx::utils::log::i(stream.str().c_str());
   return true;
 }
