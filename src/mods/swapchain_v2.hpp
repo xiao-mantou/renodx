@@ -486,6 +486,12 @@ static void OnInitDevice(reshade::api::device* device) {
 }
 
 static void DestroySwapchainProxyItems(reshade::api::device* device, DeviceData* data) {
+  const auto count = data->swapchain_proxy_passes.size();
+  if (count != 0u) {
+    std::stringstream s;
+    s << "RenoDX swapchain lifecycle: destroying " << count << " proxy pass(es) before swapchain teardown";
+    reshade::log::message(reshade::log::level::info, s.str().c_str());
+  }
   for (auto& [handle, pass] : data->swapchain_proxy_passes) {
     assert(pass != nullptr);
     pass->Destroy(device);
@@ -934,6 +940,13 @@ static void OnInitSwapchain(reshade::api::swapchain* swapchain, bool resize) {
         info->clone_target = &data->swap_chain_clone_info;
         info->clone_enabled = utils::device_proxy::UseProxyRequested() || !UsingSwapchainCompatibilityMode();
         info->clone_can_deactivate = false;
+        std::stringstream s;
+        s << "RenoDX swapchain lifecycle: init backbuffer=0x"
+          << std::hex << std::uppercase << buffer.handle << std::dec << std::nouppercase
+          << " clone_target=1 clone_enabled=" << (info->clone_enabled ? 1 : 0)
+          << " existing_clone=0x" << std::hex << std::uppercase << info->clone.handle
+          << std::dec << std::nouppercase;
+        reshade::log::message(reshade::log::level::info, s.str().c_str());
       }
     });
   }
@@ -989,6 +1002,11 @@ static void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) 
 
   auto* data = renodx::utils::data::Get<DeviceData>(device);
   if (data == nullptr) return;
+
+  // Back-buffer keyed proxy overrides belong to the old swapchain generation.
+  // Drop them before any new Present can consume a recycled handle.
+  ClearProxyDrawBackBufferSkips();
+  ClearProxySourceOverrides();
 
   const auto& desc = data->swapchain_desc;
   if (hwnd != nullptr && !resize && utils::swapchain::IsDXGI(swapchain)
@@ -1253,6 +1271,10 @@ inline bool RenderProxy(
   auto* device = swapchain->get_device();
   auto* data = renodx::utils::data::Get<DeviceData>(device);
   if (data == nullptr || utils::device_proxy::UseProxyRequested()) return false;
+
+  // Serialize proxy pass lookup/use with OnDestroySwapchain. Resize can be
+  // delivered while a Present callback is still rendering the old pass.
+  const std::unique_lock data_lock(data->mutex);
 
   const auto back_buffer_handle = swapchain->get_current_back_buffer().handle;
   auto pass_pointer = data->swapchain_proxy_passes.find(back_buffer_handle);
