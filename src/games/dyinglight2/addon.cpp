@@ -2595,6 +2595,8 @@ GammaAuditResource DescribeNativeD3D11Resource(
   return result;
 }
 
+static bool IsAdStageProbeCaptureRequested();
+
 void OnGammaAuditPushDescriptors(
     reshade::api::command_list* cmd_list,
     reshade::api::shader_stage stages,
@@ -2608,7 +2610,8 @@ void OnGammaAuditPushDescriptors(
                                          && !downstream_draw_capture_state.consumed;
   const bool capture_fg_compute_writer = dlss_fg_compute_writer_audit_state.active;
   const bool capture_upscaler_color_path = upscaler_color_path_audit_state.active;
-  const bool capture_upscaler_inputs = upscaler_input_audit_state.active;
+  const bool capture_ad_stage_probe = IsAdStageProbeCaptureRequested();
+  const bool capture_upscaler_inputs = upscaler_input_audit_state.active || capture_ad_stage_probe;
   const bool capture_upscaler_source_writers = upscaler_source_writer_audit_state.active;
   if ((!capture_gamma_input && !capture_downstream_inputs && !capture_fg_compute_writer
        && !capture_upscaler_color_path && !capture_upscaler_inputs
@@ -2813,6 +2816,9 @@ struct AdStageProbeState {
   uint64_t current_output_view = 0u;
   uint32_t input_table = UINT_MAX;
   uint32_t input_binding_index = UINT_MAX;
+  uint32_t cb0_table = UINT_MAX;
+  uint32_t cb0_binding_index = UINT_MAX;
+  UpscalerCurveAudit cb0_curve = {};
   bool output_view_matches_current = false;
   uint32_t render_target_count = 0u;
   uint32_t shader_hash = 0u;
@@ -2872,6 +2878,10 @@ static void CaptureAdStageProbeResources(reshade::api::command_list* cmd_list) {
   FindGraphicsDescriptorBinding(
       device, command_state, 0u,
       reshade::api::descriptor_type::texture_shader_resource_view, &t0);
+  DescriptorBindingAudit cb0 = {};
+  FindGraphicsDescriptorBinding(
+      device, command_state, 0u,
+      reshade::api::descriptor_type::constant_buffer, &cb0);
   const auto target_it = downstream_capture_rtvs.find(cmd_list);
   if (!t0.found || target_it == downstream_capture_rtvs.end()) return;
   const auto input_info = DescribeGammaAuditView(device, t0.slot.resource_view);
@@ -2907,6 +2917,16 @@ static void CaptureAdStageProbeResources(reshade::api::command_list* cmd_list) {
   ad_stage_probe_state.current_output_view = current_rtv.handle;
   ad_stage_probe_state.input_table = t0.table;
   ad_stage_probe_state.input_binding_index = t0.binding;
+  ad_stage_probe_state.cb0_table = cb0.table;
+  ad_stage_probe_state.cb0_binding_index = cb0.binding;
+  if (cb0.found) {
+    ad_stage_probe_state.cb0_curve = DescribeUpscalerCurve(device, cb0.slot.buffer_range);
+  } else {
+    const auto cb0_it = upscaler_input_cb0_ranges.find(cmd_list);
+    if (cb0_it != upscaler_input_cb0_ranges.end()) {
+      ad_stage_probe_state.cb0_curve = DescribeUpscalerCurve(device, cb0_it->second);
+    }
+  }
   ad_stage_probe_state.output_view_matches_current =
       target_it->second.handle == current_rtv.handle
       || (output_info.resource != 0u && output_info.resource == current_output_info.resource)
@@ -3115,6 +3135,15 @@ static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdS
          << " staging_format=" << static_cast<uint32_t>(input_staging_format)
          << " input_binding_table=" << std::dec << state.input_table
          << " input_binding=" << state.input_binding_index
+         << " cb0_table=" << state.cb0_table
+         << " cb0_binding=" << state.cb0_binding_index
+         << " cb0_resource=0x" << std::hex << state.cb0_curve.resource
+         << " cb0_offset=" << std::dec << state.cb0_curve.offset
+         << " cb0_size=" << state.cb0_curve.size
+         << " cb0_cache=" << (state.cb0_curve.cache_available ? 1 : 0)
+         << " cb0_float_count=" << state.cb0_curve.cached_float_count
+         << " cb0_0_x=" << state.cb0_curve.values[0]
+         << " cb0_0_bits=0x" << std::hex << state.cb0_curve.bits[0]
          << " output_view=0x" << std::hex << state.output_view
          << " current_rtv_view=0x" << state.current_output_view
          << " bound_output=0x" << state.output_binding.resource
