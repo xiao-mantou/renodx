@@ -6396,7 +6396,6 @@ void OnDownstreamDrawCapturePresent(
     }
   }
   if (bffc_ad_chain_audit_state.active) {
-    std::scoped_lock chain_lock(downstream_draw_capture_mutex);
     auto& audit = bffc_ad_chain_audit_state;
     ++audit.presents;
     if (audit.presents >= 4u) {
