@@ -2280,6 +2280,7 @@ struct BffcAdChainAuditState {
   uint64_t start_generation = 0u;
   uint64_t start_present = 0u;
   uint32_t event_count = 0u;
+  uint32_t event_start = 0u;
   uint32_t transfer_count = 0u;
   uint32_t presents = 0u;
   uint64_t draw_serial = 0u;
@@ -2489,9 +2490,15 @@ static void RecordBffcAdChainEvent(
 
   // Keep a bounded history of full-size writes so a producer on another
   // command list/epoch can still be matched after the AD clone is discovered.
-  if (output.width < 128u || output.height < 128u
-      || audit.event_count >= audit.events.size()) return;
-  audit.events[audit.event_count++] = {
+  if (output.width < 128u || output.height < 128u) return;
+  const uint32_t event_index = audit.event_count < audit.events.size()
+                                   ? audit.event_count++
+                                   : [&audit]() {
+                                      const uint32_t index = audit.event_start;
+                                      audit.event_start = (audit.event_start + 1u) % audit.events.size();
+                                      return index;
+                                    }();
+  audit.events[event_index] = {
       .shader_hash = shader_hash,
       .is_compute = is_compute,
       .present = dl2_probe_present_serial,
@@ -3772,6 +3779,17 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       const auto input_it = downstream_capture_t0_views.find(context.cmd_list);
       if (input_it != downstream_capture_t0_views.end()) {
         input = DescribeGammaAuditView(device, input_it->second);
+      } else {
+        DescriptorBindingAudit t0_binding = {};
+        FindGraphicsDescriptorBinding(
+            device,
+            renodx::utils::state::GetCurrentState(context.cmd_list),
+            0u,
+            reshade::api::descriptor_type::texture_shader_resource_view,
+            &t0_binding);
+        if (t0_binding.found) {
+          input = DescribeGammaAuditView(device, t0_binding.slot.resource_view);
+        }
       }
     }
     RecordBffcAdChainEvent(context.cmd_list, shader_hash, is_compute, input, output);
@@ -6429,7 +6447,10 @@ void OnDownstreamDrawCapturePresent(
                                        ? audit.ad_output.effective
                                        : audit.ad_output.resource;
       for (uint32_t index = 0u; index < audit.event_count; ++index) {
-        const auto& event = audit.events[index];
+        const uint32_t event_index = audit.event_count < audit.events.size()
+                                         ? index
+                                         : (audit.event_start + index) % audit.events.size();
+        const auto& event = audit.events[event_index];
         const bool relevant = event.shader_hash == 0xBFFC45ACu
                               || event.shader_hash == 0xAD085E81u
                               || BffcAdChainResourceMatches(event.output, bffc_resource)
@@ -6863,8 +6884,10 @@ bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
   ActivateDl2HdrTarget(cmd_list);
   {
     std::scoped_lock lock(downstream_draw_capture_mutex);
-    if (!upscaler_color_path_audit_state.active
-        || upscaler_color_writer_observations.size() >= 32u) return true;
+    const bool chain_capture = bffc_ad_chain_audit_state.active;
+    if (!upscaler_color_path_audit_state.active && !chain_capture) return true;
+    if (upscaler_color_path_audit_state.active
+        && !chain_capture && upscaler_color_writer_observations.size() >= 32u) return true;
   }
 
   auto* state = renodx::utils::shader::GetCurrentState(cmd_list);
@@ -6944,6 +6967,10 @@ bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
     }
   }
   const uint64_t epoch = upscaler_color_command_epochs[reinterpret_cast<uintptr_t>(cmd_list)];
+  if (bffc_ad_chain_audit_state.active) {
+    std::scoped_lock chain_lock(downstream_draw_capture_mutex);
+    RecordBffcAdChainEvent(cmd_list, 0xBFFC45ACu, false, input, output);
+  }
   std::ostringstream resources;
   resources << "DL2 BFFC replacement resources: cmd=0x" << std::hex
             << reinterpret_cast<uintptr_t>(cmd_list)
@@ -6959,7 +6986,8 @@ bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
             << " view=" << static_cast<uint32_t>(output.view_format)
             << "=>" << static_cast<uint32_t>(output.effective_view_format);
   renodx::utils::log::i(resources.str().c_str());
-  if (output.resource != 0u && upscaler_color_writer_observations.size() < 128u) {
+  if (upscaler_color_path_audit_state.active
+      && output.resource != 0u && upscaler_color_writer_observations.size() < 128u) {
     upscaler_color_writer_observations.push_back({
         .shader_hash = 0xBFFC45ACu,
         .resource = output.resource,
@@ -6983,7 +7011,8 @@ bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
 void OnDl2BffcProbeDrawn(reshade::api::command_list* cmd_list) {
   if (!upscaler_color_path_audit_state.active
       && !upscaler_input_audit_state.active
-      && !upscaler_source_writer_audit_state.active) {
+      && !upscaler_source_writer_audit_state.active
+      && !bffc_ad_chain_audit_state.active) {
     return;
   }
   auto* state = renodx::utils::shader::GetCurrentState(cmd_list);
