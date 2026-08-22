@@ -7679,6 +7679,23 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture 0x268 Producer Consumer Chain",
+        .section = "Debug",
+        .tooltip = "One-shot combined audit: captures the 0x268 RTV, same-Present consumer draws, and CopyResource/CopyTexture/Resolve operations with resource, clone, proxy, format, and size metadata. No readback or rendering changes.",
+        .on_click = []() {
+          std::scoped_lock lock(downstream_draw_capture_mutex);
+          downstream_draw_capture = 1.f;
+          downstream_transfer_capture = 1.f;
+          downstream_draw_capture_state = {};
+          downstream_capture_rtvs.clear();
+          downstream_capture_t0_views.clear();
+          renodx::utils::log::i("DL2 0x268 producer/consumer chain capture armed.");
+          return false;
+        },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture 0x268 ToneMapPass + Proxy Range",
         .section = "Debug",
         .tooltip = "One-shot paired read-only probe. Reads TL/TR/BL/BR/C from the 0x268 ToneMapPass RTV and the FP16 Proxy source with the same UVs, using delayed tiny staging resources. No HDR or Proxy math changes.",
