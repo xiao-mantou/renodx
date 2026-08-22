@@ -3581,6 +3581,7 @@ inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
 };
 
 static void Capture268CenterProbeResource(reshade::api::command_list* cmd_list);
+static void RecordCenterProbeDraw(reshade::api::command_list* cmd_list, uint32_t shader_hash);
 
 inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& context)
     -> renodx::utils::command_action::CallbackResult<Context> {
@@ -3618,8 +3619,8 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       shader_state, is_compute ? renodx::utils::shader::COMPUTE_INDEX
                                : renodx::utils::shader::PIXEL_INDEX);
 
-  if (capture_center_probe && !is_compute && shader_hash == 0x268BAB6Du) {
-    Capture268CenterProbeResource(context.cmd_list);
+  if (capture_center_probe && !is_compute) {
+    RecordCenterProbeDraw(context.cmd_list, shader_hash);
   }
   if (capture_center_probe && !capture_commands && !capture_transfers && !capture_fg_producer
       && !capture_fg_compute_writer && !capture_upscaler_color_path && !capture_upscaler_inputs
@@ -5389,6 +5390,15 @@ struct CenterProbeCaptureState {
   bool copy_submitted = false;
   bool logged = false;
   bool range_mode = false;
+  uint64_t arm_serial = 0u;
+  uint64_t capture_present_serial = 0u;
+  uint64_t capture_draw_serial = 0u;
+  uint64_t capture_generation = 0u;
+  uint64_t copy_present_serial = 0u;
+  uint64_t complete_present_serial = 0u;
+  uint64_t writes_after_capture = 0u;
+  uint64_t writes_at_copy = 0u;
+  uint64_t last_write_draw_serial = 0u;
   reshade::api::resource resource = {};
   reshade::api::resource staging = {};
   reshade::api::format view_format = reshade::api::format::unknown;
@@ -5406,6 +5416,11 @@ struct ProxySourceProbeState {
   bool captured = false;
   bool copy_submitted = false;
   bool logged = false;
+  uint64_t arm_serial = 0u;
+  uint64_t capture_present_serial = 0u;
+  uint64_t capture_generation = 0u;
+  uint64_t copy_present_serial = 0u;
+  uint64_t complete_present_serial = 0u;
   reshade::api::resource source = {};
   reshade::api::resource staging = {};
   reshade::api::format source_format = reshade::api::format::unknown;
@@ -5420,6 +5435,9 @@ constexpr float kProxySourceProbeSampleUVs[kProxySourceProbeSampleCount][2] = {
 static std::atomic<float> proxy_source_probe_capture{0.f};
 static ProxySourceProbeState proxy_source_probe_state = {};
 static std::mutex proxy_source_probe_mutex;
+static uint64_t dl2_probe_arm_serial = 0u;
+static uint64_t dl2_probe_present_serial = 0u;
+static uint64_t dl2_probe_draw_serial = 0u;
 
 static bool IsProxySourceProbeCaptureRequested() {
   return proxy_source_probe_capture.load(std::memory_order_acquire) != 0.f;
@@ -5442,6 +5460,39 @@ static void ResetProxySourceProbeOnSwapchainDestroy() {
 
 static bool IsCenterProbeCaptureRequested() {
   return center_probe_capture.load(std::memory_order_acquire) != 0.f;
+}
+
+static void RecordCenterProbeDraw(reshade::api::command_list* cmd_list, uint32_t shader_hash) {
+  if (cmd_list == nullptr) return;
+  const uint64_t draw_serial = ++dl2_probe_draw_serial;
+  std::scoped_lock probe_lock(center_probe_mutex);
+  const bool was_captured = center_probe_state.captured;
+  if (!was_captured && shader_hash == 0x268BAB6Du) {
+    Capture268CenterProbeResource(cmd_list);
+    return;
+  }
+  if (!was_captured || center_probe_state.resource.handle == 0u
+      || draw_serial <= center_probe_state.capture_draw_serial) {
+    return;
+  }
+
+  reshade::api::resource_view target_view = {};
+  if (const auto target_it = downstream_capture_rtvs.find(cmd_list);
+      target_it != downstream_capture_rtvs.end()) {
+    target_view = target_it->second;
+  } else if (const auto* command_state = renodx::utils::state::GetCurrentState(cmd_list);
+             command_state != nullptr && !command_state->render_targets.empty()) {
+    target_view = command_state->render_targets[0];
+  }
+  if (target_view.handle == 0u) return;
+  const auto output = DescribeGammaAuditView(cmd_list->get_device(), target_view);
+  const bool matches = output.resource == center_probe_state.resource.handle
+                       || output.effective == center_probe_state.resource.handle
+                       || output.clone == center_probe_state.resource.handle;
+  if (matches) {
+    ++center_probe_state.writes_after_capture;
+    center_probe_state.last_write_draw_serial = draw_serial;
+  }
 }
 
 static inline float HalfToFloat(uint16_t half) {
@@ -5504,6 +5555,9 @@ static void CaptureProxySourceProbeResource(reshade::api::swapchain* swapchain) 
   proxy_source_probe_state.source_format = desc.texture.format;
   proxy_source_probe_state.width = desc.texture.width;
   proxy_source_probe_state.height = desc.texture.height;
+  proxy_source_probe_state.capture_present_serial = dl2_probe_present_serial;
+  proxy_source_probe_state.capture_generation =
+      dlss_fg_swapchain_generation.load(std::memory_order_acquire);
   proxy_source_probe_state.captured = true;
 }
 
@@ -5569,6 +5623,7 @@ static bool BeginProxySourceProbeReadback(
     return false;
   }
   state.staging = staging;
+  state.copy_present_serial = dl2_probe_present_serial;
   state.copy_submitted = true;
   return true;
 }
@@ -5602,13 +5657,19 @@ static bool CompleteProxySourceProbeReadback(
   state.staging = {};
   state.copy_fence.Reset();
   state.copy_fence_value = 0u;
+  state.complete_present_serial = dl2_probe_present_serial;
   state.logged = true;
   std::ostringstream stream;
   constexpr const char* sample_names[kProxySourceProbeSampleCount] = {
       "TL", "TR", "BL", "BR", "C"};
   stream << "DL2 proxy source probe: source=0x" << std::hex << state.source.handle << std::dec
          << " format=" << static_cast<uint32_t>(state.source_format)
-         << " size=" << state.width << "x" << state.height;
+         << " size=" << state.width << "x" << state.height
+         << " arm=" << state.arm_serial
+         << " capture_present=" << state.capture_present_serial
+         << " copy_present=" << state.copy_present_serial
+         << " complete_present=" << state.complete_present_serial
+         << " generation=" << state.capture_generation;
   for (uint32_t index = 0u; index < kProxySourceProbeSampleCount; ++index) {
     stream << " " << sample_names[index] << "=(" << rgb[index][0] << "," << rgb[index][1]
            << "," << rgb[index][2] << ") Y=" << CenterProbeLuminance(rgb[index]);
@@ -5697,6 +5758,8 @@ static bool BeginCenterProbeReadback(reshade::api::command_queue* queue, CenterP
     return false;
   }
   state.staging = staging;
+  state.copy_present_serial = dl2_probe_present_serial;
+  state.writes_at_copy = state.writes_after_capture;
   state.copy_submitted = true;
   return true;
 }
@@ -5741,6 +5804,7 @@ static bool CompleteCenterProbeReadback(reshade::api::command_queue* queue, Cent
   state.staging = {};
   state.copy_fence.Reset();
   state.copy_fence_value = 0u;
+  state.complete_present_serial = dl2_probe_present_serial;
   state.logged = true;
 
   std::ostringstream stream;
@@ -5748,7 +5812,16 @@ static bool CompleteCenterProbeReadback(reshade::api::command_queue* queue, Cent
     stream << "DL2 0x268 ToneMapPass probe: resource=0x" << std::hex << state.resource.handle << std::dec
            << " format=" << static_cast<uint32_t>(source_desc.texture.format)
            << " view_format=" << static_cast<uint32_t>(state.view_format)
-           << " size=" << source_desc.texture.width << "x" << source_desc.texture.height;
+           << " size=" << source_desc.texture.width << "x" << source_desc.texture.height
+           << " arm=" << state.arm_serial
+           << " capture_present=" << state.capture_present_serial
+           << " capture_draw=" << state.capture_draw_serial
+           << " copy_present=" << state.copy_present_serial
+           << " complete_present=" << state.complete_present_serial
+           << " generation=" << state.capture_generation
+           << " writes_after_capture=" << state.writes_after_capture
+           << " writes_at_copy=" << state.writes_at_copy
+           << " last_write_draw=" << state.last_write_draw_serial;
     for (uint32_t index = 0u; index < sample_count; ++index) {
       stream << " " << range_names[index] << "=(" << values[index][0] << "," << values[index][1] << ","
              << values[index][2] << ") Y=" << CenterProbeLuminance(values[index]);
@@ -5756,7 +5829,16 @@ static bool CompleteCenterProbeReadback(reshade::api::command_queue* queue, Cent
   } else {
     stream << "DL2 center probe readback: resource=0x" << std::hex << state.resource.handle << std::dec
            << " view_format=" << static_cast<uint32_t>(state.view_format)
-           << " size=" << staging_desc.texture.width << "x" << staging_desc.texture.height;
+           << " size=" << staging_desc.texture.width << "x" << staging_desc.texture.height
+           << " arm=" << state.arm_serial
+           << " capture_present=" << state.capture_present_serial
+           << " capture_draw=" << state.capture_draw_serial
+           << " copy_present=" << state.copy_present_serial
+           << " complete_present=" << state.complete_present_serial
+           << " generation=" << state.capture_generation
+           << " writes_after_capture=" << state.writes_after_capture
+           << " writes_at_copy=" << state.writes_at_copy
+           << " last_write_draw=" << state.last_write_draw_serial;
     for (uint32_t index = 0u; index < sample_count; ++index) {
       stream << " " << legacy_names[index] << "=(" << values[index][0] << "," << values[index][1] << ","
              << values[index][2] << ") Y=" << CenterProbeLuminance(values[index]);
@@ -5771,7 +5853,7 @@ static bool CompleteCenterProbeReadback(reshade::api::command_queue* queue, Cent
 static void Capture268CenterProbeResource(reshade::api::command_list* cmd_list) {
   if (center_probe_capture.load(std::memory_order_acquire) == 0.f) return;
   if (cmd_list == nullptr) return;
-  std::scoped_lock lock(center_probe_mutex);
+  // Caller holds center_probe_mutex while this runs.
   if (center_probe_state.captured) return;
   auto* device = cmd_list->get_device();
   if (device == nullptr) return;
@@ -5797,6 +5879,10 @@ static void Capture268CenterProbeResource(reshade::api::command_list* cmd_list) 
   if (resource.handle == 0u) return;
   center_probe_state.resource = resource;
   center_probe_state.view_format = device->get_resource_view_desc(selected_view).format;
+  center_probe_state.capture_present_serial = dl2_probe_present_serial;
+  center_probe_state.capture_draw_serial = dl2_probe_draw_serial;
+  center_probe_state.capture_generation =
+      dlss_fg_swapchain_generation.load(std::memory_order_acquire);
   center_probe_state.captured = true;
 }
 
@@ -5807,6 +5893,7 @@ void OnDownstreamDrawCapturePresent(
     const reshade::api::rect*,
     uint32_t,
     const reshade::api::rect*) {
+  ++dl2_probe_present_serial;
   CaptureReshadeSwapchainSnapshot(queue, swapchain);
   if constexpr (kEnableDl2FgHooks) TryInstallStreamlineHook();
 
@@ -7561,9 +7648,11 @@ renodx::utils::settings::Settings settings = {
         .section = "Debug",
         .tooltip = "One-shot diagnostic: reads full RGB I/N/L/B from the FP16 linear 0x268 RTV after two Presents. Values come from one fixed source sample at (0.5,0.5). No tone-map or brightness changes.",
         .on_click = []() {
+          const uint64_t arm = ++dl2_probe_arm_serial;
           {
             std::scoped_lock lock(center_probe_mutex);
             center_probe_state = {};
+            center_probe_state.arm_serial = arm;
           }
           center_probe_capture.store(1.f, std::memory_order_release);
           renodx::utils::log::i("DL2 0x268 center probe capture armed (deferred FP16 readback).");
@@ -7576,9 +7665,11 @@ renodx::utils::settings::Settings settings = {
         .section = "Debug",
         .tooltip = "One-shot diagnostic: reads five RGB pixels (four quadrant centers plus center) from the FP16 clone actually sampled by the final Proxy. Uses delayed tiny staging and a fence; no HDR or Proxy math changes.",
         .on_click = []() {
+          const uint64_t arm = ++dl2_probe_arm_serial;
           {
             std::scoped_lock lock(proxy_source_probe_mutex);
             proxy_source_probe_state = {};
+            proxy_source_probe_state.arm_serial = arm;
           }
           proxy_source_probe_capture.store(1.f, std::memory_order_release);
           renodx::utils::log::i("DL2 proxy source pixel probe armed (deferred 1x5 readback).");
@@ -7592,14 +7683,17 @@ renodx::utils::settings::Settings settings = {
         .section = "Debug",
         .tooltip = "One-shot paired read-only probe. Reads TL/TR/BL/BR/C from the 0x268 ToneMapPass RTV and the FP16 Proxy source with the same UVs, using delayed tiny staging resources. No HDR or Proxy math changes.",
         .on_click = []() {
+          const uint64_t arm = ++dl2_probe_arm_serial;
           {
             std::scoped_lock lock(center_probe_mutex);
             center_probe_state = {};
             center_probe_state.range_mode = true;
+            center_probe_state.arm_serial = arm;
           }
           {
             std::scoped_lock lock(proxy_source_probe_mutex);
             proxy_source_probe_state = {};
+            proxy_source_probe_state.arm_serial = arm;
           }
           center_probe_capture.store(1.f, std::memory_order_release);
           proxy_source_probe_capture.store(1.f, std::memory_order_release);
@@ -7615,6 +7709,7 @@ renodx::utils::settings::Settings settings = {
         .section = "Debug",
         .tooltip = "One-shot paired read-only probe. Captures 0x268 output and 0xAD input/output with delayed tiny staging resources. Set Legacy Debug Mode=60 to include I/L/R/T values; no HDR logic changes.",
         .on_click = []() {
+          const uint64_t arm = ++dl2_probe_arm_serial;
           {
             std::scoped_lock lock(ad_stage_probe_mutex);
             ad_stage_probe_state = {};
@@ -7622,6 +7717,7 @@ renodx::utils::settings::Settings settings = {
           {
             std::scoped_lock lock(center_probe_mutex);
             center_probe_state = {};
+            center_probe_state.arm_serial = arm;
           }
           center_probe_capture.store(1.f, std::memory_order_release);
           ad_stage_probe_capture.store(1.f, std::memory_order_release);
