@@ -1993,6 +1993,19 @@ struct DownstreamTransfer {
   uint32_t dest_clone_flags = 0u;
 };
 
+struct DownstreamClear {
+  uint64_t resource = 0u;
+  uint64_t effective = 0u;
+  uint64_t clone = 0u;
+  reshade::api::format format = reshade::api::format::unknown;
+  reshade::api::format effective_format = reshade::api::format::unknown;
+  reshade::api::format view_format = reshade::api::format::unknown;
+  uint32_t width = 0u;
+  uint32_t height = 0u;
+  uint32_t rect_count = 0u;
+  float color[4] = {};
+};
+
 struct DownstreamTarget {
   uint64_t resource = 0u;
   uint64_t effective = 0u;
@@ -2013,8 +2026,10 @@ struct DownstreamDrawCaptureState {
   std::array<DownstreamTarget, 64> targets = {};
   std::array<DownstreamTarget, 64> inputs = {};
   std::array<DownstreamTransfer, 16> transfers = {};
+  std::array<DownstreamClear, 16> clears = {};
   uint32_t count = 0u;
   uint32_t transfer_count = 0u;
+  uint32_t clear_count = 0u;
   bool active = false;
   bool consumed = false;
   bool capture_commands = false;
@@ -4228,6 +4243,42 @@ void RecordDownstreamTransfer(
   capture.transfers[capture.transfer_count++] = transfer;
 }
 
+void RecordDownstreamClear(
+    reshade::api::command_list* cmd_list,
+    reshade::api::resource_view view,
+    const float color[4],
+    uint32_t rect_count) {
+  std::scoped_lock lock(downstream_draw_capture_mutex);
+  auto& capture = downstream_draw_capture_state;
+  if (!capture.active || capture.consumed || capture.clear_count >= capture.clears.size()) return;
+  if (cmd_list == nullptr || view.handle == 0u) return;
+  auto* device = cmd_list->get_device();
+  if (device == nullptr) return;
+  const auto described = DescribeGammaAuditView(device, view);
+  if (described.resource == 0u) return;
+  auto& clear = capture.clears[capture.clear_count++];
+  clear.resource = described.resource;
+  clear.effective = described.effective;
+  clear.clone = described.clone;
+  clear.format = described.format;
+  clear.effective_format = described.effective_format;
+  clear.view_format = described.view_format;
+  clear.width = described.width;
+  clear.height = described.height;
+  clear.rect_count = rect_count;
+  if (color != nullptr) std::copy_n(color, 4u, clear.color);
+}
+
+bool OnDownstreamClearRenderTargetView(
+    reshade::api::command_list* cmd_list,
+    reshade::api::resource_view rtv,
+    const float color[4],
+    uint32_t rect_count,
+    const reshade::api::rect*) {
+  RecordDownstreamClear(cmd_list, rtv, color, rect_count);
+  return false;
+}
+
 void RecordDlssFgTagTransfer(
     DownstreamTransferType type,
     reshade::api::command_list* cmd_list,
@@ -4750,9 +4801,26 @@ void OnDlssFgBackbufferBarrier(
            << " old=0x" << std::hex << static_cast<uint32_t>(old_states[index])
            << " new=0x" << static_cast<uint32_t>(new_states[index])
            << " remaining=" << std::dec << (remaining - 1u);
-    reshade::log::message(reshade::log::level::info, stream.str().c_str());
+      reshade::log::message(reshade::log::level::info, stream.str().c_str());
+    }
+    if (capture.clear_count != 0u) {
+      std::stringstream clear_stream;
+      clear_stream << "DL2 post-0x268 RTV clears (" << capture.clear_count << "):";
+      for (uint32_t index = 0u; index < capture.clear_count; ++index) {
+        const auto& clear = capture.clears[index];
+        clear_stream << " clear(0x" << std::hex << std::uppercase << clear.resource
+                     << "=>0x" << clear.effective << ", fmt=" << std::dec
+                     << static_cast<uint32_t>(clear.format) << "=>"
+                     << static_cast<uint32_t>(clear.effective_format)
+                     << ", view=" << static_cast<uint32_t>(clear.view_format)
+                     << ", size=" << clear.width << "x" << clear.height
+                     << ", rects=" << clear.rect_count << ", color=("
+                     << clear.color[0] << "," << clear.color[1] << ","
+                     << clear.color[2] << "," << clear.color[3] << "))";
+      }
+      reshade::log::message(reshade::log::level::info, clear_stream.str().c_str());
+    }
   }
-}
 
 void OnDlssFgResetCommandList(reshade::api::command_list* cmd_list) {
   {
@@ -7942,6 +8010,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           kEnableDl2ShaderReplacements ? "enabled" : "disabled",
           " for crash A/B");
       reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
+      reshade::register_event<reshade::addon_event::clear_render_target_view>(
+          OnDownstreamClearRenderTargetView);
       if constexpr (kEnableDl2ShaderHooks) {
         reshade::register_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
       }
@@ -8172,6 +8242,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         reshade::unregister_event<reshade::addon_event::barrier>(OnDlssFgBackbufferBarrier);
       }
       reshade::unregister_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
+      reshade::unregister_event<reshade::addon_event::clear_render_target_view>(
+          OnDownstreamClearRenderTargetView);
       if constexpr (kEnableDl2ShaderHooks) {
         reshade::unregister_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
       }
