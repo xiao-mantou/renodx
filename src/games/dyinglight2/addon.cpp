@@ -7751,12 +7751,19 @@ renodx::utils::settings::Settings settings = {
         .section = "Debug",
         .tooltip = "One-shot combined audit: captures the 0x268 RTV, same-Present consumer draws, and CopyResource/CopyTexture/Resolve operations with resource, clone, proxy, format, and size metadata. No readback or rendering changes.",
         .on_click = []() {
+          const uint64_t arm = ++dl2_probe_arm_serial;
           std::scoped_lock lock(downstream_draw_capture_mutex);
           downstream_draw_capture = 1.f;
           downstream_transfer_capture = 1.f;
           downstream_draw_capture_state = {};
           downstream_capture_rtvs.clear();
           downstream_capture_t0_views.clear();
+          {
+            std::scoped_lock probe_lock(proxy_source_probe_mutex);
+            proxy_source_probe_state = {};
+            proxy_source_probe_state.arm_serial = arm;
+          }
+          proxy_source_probe_capture.store(1.f, std::memory_order_release);
           renodx::utils::log::i("DL2 0x268 producer/consumer chain capture armed.");
           return false;
         },
