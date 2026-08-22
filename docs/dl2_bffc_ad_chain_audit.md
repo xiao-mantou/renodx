@@ -16,3 +16,9 @@ Expected next test: arm `Capture BFFC to AD Clone Chain (4 Presents)`, reproduce
 - AD event `#250` t0 is exactly `0x17F4C337500 => 0x17F4C33B7F0`, same Present `12200`, generation `1`, command list `0x17F475A9CB8`, epoch `0`.
 - AD output is `0x17C939C6310 => 0x17C939CCC40`, format `10`, clone enabled. No CopyResource/CopyTexture/Resolve was recorded.
 - Therefore the replacement path is direct: `BFFC output -> AD t0 -> AD clone output`; the previously printed summary `bffc_output` was overwritten by later ordinary BFFC draws, so event `#185` is authoritative.
+
+## Next diagnostic build
+
+- BFFC/AD chain events now record draw/dispatch arguments, viewport/scissor, and AD `cb0[0].x` bits.
+- Pixel events use the bound RTV; compute events enumerate the current compute UAV descriptor tables, with push-descriptor fallback, and never reuse a stale pixel RTV.
+- This remains read-only metadata capture. No HDR, ToneMap, Proxy, resource replacement, or brightness logic changes.

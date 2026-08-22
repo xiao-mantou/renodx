@@ -2264,11 +2264,24 @@ struct UpscalerSourceWriterAuditState {
 struct BffcAdChainEvent {
   uint32_t shader_hash = 0u;
   bool is_compute = false;
+  bool has_uav = false;
   uint64_t present = 0u;
   uint64_t generation = 0u;
   uint64_t draw_serial = 0u;
   uint64_t command_list = 0u;
   uint64_t command_list_epoch = 0u;
+  uint32_t draw_count = 0u;
+  uint32_t instance_count = 0u;
+  uint32_t dispatch_x = 0u;
+  uint32_t dispatch_y = 0u;
+  uint32_t dispatch_z = 0u;
+  uint32_t viewport_count = 0u;
+  reshade::api::viewport viewport = {};
+  uint32_t scissor_count = 0u;
+  reshade::api::rect scissor = {};
+  bool cb0_valid = false;
+  float cb0_0_x = 0.f;
+  uint32_t cb0_0_bits = 0u;
   GammaAuditResource input = {};
   GammaAuditResource output = {};
 };
@@ -2468,7 +2481,8 @@ static void RecordBffcAdChainEvent(
     uint32_t shader_hash,
     bool is_compute,
     const GammaAuditResource& input,
-    const GammaAuditResource& output) {
+    const GammaAuditResource& output,
+    const BffcAdChainEvent& metadata) {
   auto& audit = bffc_ad_chain_audit_state;
   if (!audit.active || output.resource == 0u) return;
 
@@ -2498,17 +2512,17 @@ static void RecordBffcAdChainEvent(
                                       audit.event_start = (audit.event_start + 1u) % audit.events.size();
                                       return index;
                                     }();
-  audit.events[event_index] = {
-      .shader_hash = shader_hash,
-      .is_compute = is_compute,
-      .present = dl2_probe_present_serial,
-      .generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire),
-      .draw_serial = draw_serial,
-      .command_list = command_list,
-      .command_list_epoch = epoch,
-      .input = input,
-      .output = output,
-  };
+  auto& event = audit.events[event_index];
+  event = metadata;
+  event.shader_hash = shader_hash;
+  event.is_compute = is_compute;
+  event.present = dl2_probe_present_serial;
+  event.generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
+  event.draw_serial = draw_serial;
+  event.command_list = command_list;
+  event.command_list_epoch = epoch;
+  event.input = input;
+  event.output = output;
 }
 
 constexpr bool IsDl2PopupUiShader(uint32_t hash) {
@@ -2615,6 +2629,53 @@ bool FindGraphicsDescriptorBinding(
         }
       });
   return found;
+}
+
+std::vector<reshade::api::resource_view> FindComputeUavViews(
+    reshade::api::device* device,
+    const renodx::utils::state::CommandListState* command_state) {
+  std::vector<reshade::api::resource_view> result;
+  if (device == nullptr || command_state == nullptr) return result;
+  auto* descriptor_data = renodx::utils::data::Get<renodx::utils::descriptor::DeviceData>(device);
+  if (descriptor_data == nullptr) return result;
+
+  renodx::utils::pipeline_layout::GetPipelineLayoutData(
+      command_state->compute_pipeline_layout,
+      [&](const renodx::utils::pipeline_layout::PipelineLayoutData* layout_data) {
+        for (uint32_t table_index = 0u;
+             table_index < layout_data->params.size()
+             && table_index < command_state->compute_descriptor_tables.size();
+             ++table_index) {
+          const auto& param = layout_data->params[table_index];
+          if (param.type != reshade::api::pipeline_layout_param_type::descriptor_table) continue;
+          const auto table = command_state->compute_descriptor_tables[table_index];
+          if (table.handle == 0u) continue;
+          for (uint32_t range_index = 0u; range_index < param.descriptor_table.count; ++range_index) {
+            const auto& range = param.descriptor_table.ranges[range_index];
+            if (range.type != reshade::api::descriptor_type::texture_unordered_access_view
+                && range.type != reshade::api::descriptor_type::buffer_unordered_access_view) {
+              continue;
+            }
+            const uint32_t count = range.count == UINT_MAX ? 64u : std::min(range.count, 64u);
+            for (uint32_t offset = 0u; offset < count; ++offset) {
+              reshade::api::descriptor_heap heap = {};
+              uint32_t heap_offset = 0u;
+              const uint32_t binding = range.binding + offset;
+              device->get_descriptor_heap_offset(table, binding, 0u, &heap, &heap_offset);
+              const std::shared_lock descriptor_lock(descriptor_data->mutex);
+              const auto heap_it = descriptor_data->heaps.find(heap.handle);
+              if (heap_it == descriptor_data->heaps.end() || heap_offset >= heap_it->second.size()) continue;
+              const auto& slot = heap_it->second[heap_offset];
+              if (slot.type != range.type || slot.resource_view.handle == 0u) continue;
+              const bool known = std::any_of(result.begin(), result.end(), [&](const auto candidate) {
+                return candidate.handle == slot.resource_view.handle;
+              });
+              if (!known && result.size() < 64u) result.push_back(slot.resource_view);
+            }
+          }
+        }
+      });
+  return result;
 }
 
 UpscalerCurveAudit DescribeUpscalerCurve(
@@ -2728,9 +2789,11 @@ void OnGammaAuditPushDescriptors(
   const bool capture_fg_compute_writer = dlss_fg_compute_writer_audit_state.active;
   const bool capture_upscaler_color_path = upscaler_color_path_audit_state.active;
   const bool capture_ad_stage_probe = IsAdStageProbeCaptureRequested();
-  const bool capture_upscaler_inputs = upscaler_input_audit_state.active || capture_ad_stage_probe;
-  const bool capture_upscaler_source_writers = upscaler_source_writer_audit_state.active;
   const bool capture_bffc_ad_chain = bffc_ad_chain_audit_state.active;
+  const bool capture_upscaler_inputs = upscaler_input_audit_state.active
+                                       || capture_ad_stage_probe
+                                       || capture_bffc_ad_chain;
+  const bool capture_upscaler_source_writers = upscaler_source_writer_audit_state.active;
   if ((!capture_gamma_input && !capture_downstream_inputs && !capture_fg_compute_writer
        && !capture_upscaler_color_path && !capture_upscaler_inputs
        && !capture_upscaler_source_writers && !capture_bffc_ad_chain)
@@ -2762,12 +2825,12 @@ void OnGammaAuditPushDescriptors(
     }
   }
 
-  if (capture_upscaler_source_writers
+  if ((capture_upscaler_source_writers || capture_bffc_ad_chain)
       && renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::compute)
       && (update.type == reshade::api::descriptor_type::texture_unordered_access_view
           || update.type == reshade::api::descriptor_type::buffer_unordered_access_view)) {
     std::scoped_lock lock(downstream_draw_capture_mutex);
-    if (upscaler_source_writer_audit_state.active) {
+    if (upscaler_source_writer_audit_state.active || capture_bffc_ad_chain) {
       auto& views = upscaler_source_compute_uav_views[cmd_list];
       for (uint32_t index = 0u; index < update.count && views.size() < 64u; ++index) {
         const auto view = renodx::utils::descriptor::GetResourceViewFromDescriptorUpdate(update, index);
@@ -2776,8 +2839,9 @@ void OnGammaAuditPushDescriptors(
           return candidate.handle == view.handle;
         });
         if (!known) views.push_back(view);
-        if (upscaler_source_writer_audit_state.compute_candidate_count
-            < upscaler_source_writer_audit_state.compute_candidates.size()) {
+        if (upscaler_source_writer_audit_state.active
+            && upscaler_source_writer_audit_state.compute_candidate_count
+                   < upscaler_source_writer_audit_state.compute_candidates.size()) {
           auto* device = cmd_list->get_device();
           const auto candidate = DescribeGammaAuditView(device, view);
           const bool known_candidate = std::any_of(
@@ -3766,16 +3830,30 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
 
   if (capture_bffc_ad_chain) {
     auto* device = context.cmd_list->get_device();
-    GammaAuditResource output = {};
-    if (const auto target_it = downstream_capture_rtvs.find(context.cmd_list);
-        target_it != downstream_capture_rtvs.end()) {
-      output = DescribeGammaAuditView(device, target_it->second);
-    } else if (const auto* command_state = renodx::utils::state::GetCurrentState(context.cmd_list);
-               command_state != nullptr && !command_state->render_targets.empty()) {
-      output = DescribeGammaAuditView(device, command_state->render_targets[0]);
+    const auto* command_state = renodx::utils::state::GetCurrentState(context.cmd_list);
+    BffcAdChainEvent metadata = {};
+    metadata.draw_count = draw_count;
+    metadata.instance_count = instance_count;
+    if constexpr (requires { context.arguments.group_count_x; }) {
+      metadata.dispatch_x = context.arguments.group_count_x;
+      metadata.dispatch_y = context.arguments.group_count_y;
+      metadata.dispatch_z = context.arguments.group_count_z;
+    }
+    if (command_state != nullptr) {
+      metadata.viewport_count = static_cast<uint32_t>(command_state->viewports.size());
+      if (!command_state->viewports.empty()) metadata.viewport = command_state->viewports[0];
+      metadata.scissor_count = static_cast<uint32_t>(command_state->scissor_rects.size());
+      if (!command_state->scissor_rects.empty()) metadata.scissor = command_state->scissor_rects[0];
     }
     GammaAuditResource input = {};
     if (!is_compute) {
+      GammaAuditResource output = {};
+      if (const auto target_it = downstream_capture_rtvs.find(context.cmd_list);
+          target_it != downstream_capture_rtvs.end()) {
+        output = DescribeGammaAuditView(device, target_it->second);
+      } else if (command_state != nullptr && !command_state->render_targets.empty()) {
+        output = DescribeGammaAuditView(device, command_state->render_targets[0]);
+      }
       const auto input_it = downstream_capture_t0_views.find(context.cmd_list);
       if (input_it != downstream_capture_t0_views.end()) {
         input = DescribeGammaAuditView(device, input_it->second);
@@ -3791,8 +3869,48 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
           input = DescribeGammaAuditView(device, t0_binding.slot.resource_view);
         }
       }
+      if (shader_hash == 0xAD085E81u) {
+        DescriptorBindingAudit cb0_binding = {};
+        FindGraphicsDescriptorBinding(
+            device, command_state, 0u,
+            reshade::api::descriptor_type::constant_buffer, &cb0_binding);
+        auto curve = cb0_binding.found
+                         ? DescribeUpscalerCurve(device, cb0_binding.slot.buffer_range)
+                         : UpscalerCurveAudit{};
+        if (curve.resource == 0u) {
+          const auto curve_it = upscaler_input_cb0_ranges.find(context.cmd_list);
+          if (curve_it != upscaler_input_cb0_ranges.end()) {
+            curve = DescribeUpscalerCurve(device, curve_it->second);
+          }
+        }
+        if (curve.cache_available && curve.cached_float_count != 0u) {
+          metadata.cb0_valid = true;
+          metadata.cb0_0_x = curve.values[0];
+          metadata.cb0_0_bits = curve.bits[0];
+        }
+      }
+      RecordBffcAdChainEvent(context.cmd_list, shader_hash, false, input, output, metadata);
+    } else {
+      // A compute command list has no RTV contract. Enumerate its currently
+      // bound UAVs and record only those resources, never a stale render-target
+      // binding left on the command list by a previous pixel draw.
+      auto uav_views = FindComputeUavViews(device, command_state);
+      if (uav_views.empty()) {
+        const auto push_views = upscaler_source_compute_uav_views.find(context.cmd_list);
+        if (push_views != upscaler_source_compute_uav_views.end()) {
+          uav_views = push_views->second;
+        }
+      }
+      for (const auto view : uav_views) {
+        auto event_metadata = metadata;
+        event_metadata.has_uav = true;
+        RecordBffcAdChainEvent(
+            context.cmd_list, shader_hash, true, {}, DescribeGammaAuditView(device, view), event_metadata);
+      }
+      if (!capture_upscaler_source_writers) {
+        upscaler_source_compute_uav_views.erase(context.cmd_list);
+      }
     }
-    RecordBffcAdChainEvent(context.cmd_list, shader_hash, is_compute, input, output);
   }
 
   const bool capture_tonemapper_inputs = upscaler_input_audit_state.active
@@ -6461,11 +6579,25 @@ void OnDownstreamDrawCapturePresent(
         stream << " event#" << (index + 1u)
                << " present=" << event.present
                << " gen=" << event.generation
-               << " draw=" << event.draw_serial
+               << " serial=" << event.draw_serial
                << " " << (event.is_compute ? "CS" : "PS")
                << " shader=0x" << std::hex << std::uppercase << event.shader_hash
                << " cmd=0x" << event.command_list
-               << " epoch=" << std::dec << event.command_list_epoch;
+               << " epoch=" << std::dec << event.command_list_epoch
+               << " args=" << event.draw_count << "x" << event.instance_count
+               << " dispatch=" << event.dispatch_x << "x" << event.dispatch_y << "x" << event.dispatch_z
+               << " viewport_count=" << event.viewport_count
+               << " viewport=" << event.viewport.x << "," << event.viewport.y << ","
+               << event.viewport.width << "x" << event.viewport.height
+               << " scissor_count=" << event.scissor_count
+               << " scissor=" << event.scissor.left << "," << event.scissor.top << "-"
+               << event.scissor.right << "," << event.scissor.bottom
+               << " write=" << (event.has_uav ? "UAV" : "RTV");
+        if (event.cb0_valid) {
+          stream << " cb0_0_x=" << event.cb0_0_x
+                 << " cb0_0_bits=0x" << std::hex << event.cb0_0_bits << std::dec;
+        }
+        stream << " ";
         append_resource(stream, " in", event.input);
         append_resource(stream, " out", event.output);
       }
@@ -6969,7 +7101,7 @@ bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
   const uint64_t epoch = upscaler_color_command_epochs[reinterpret_cast<uintptr_t>(cmd_list)];
   if (bffc_ad_chain_audit_state.active) {
     std::scoped_lock chain_lock(downstream_draw_capture_mutex);
-    RecordBffcAdChainEvent(cmd_list, 0xBFFC45ACu, false, input, output);
+    RecordBffcAdChainEvent(cmd_list, 0xBFFC45ACu, false, input, output, {});
   }
   std::ostringstream resources;
   resources << "DL2 BFFC replacement resources: cmd=0x" << std::hex
