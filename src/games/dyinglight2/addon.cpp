@@ -6571,8 +6571,7 @@ void OnDownstreamDrawCapturePresent(
                      << clear.color[2] << "," << clear.color[3] << "))";
       }
       reshade::log::message(reshade::log::level::info, clear_stream.str().c_str());
-    }
-  }
+     }
 
   // One capture per manual arm. This leaves no per-frame work afterwards and
   // prevents draw recording from leaking into the next frame's G-buffer.
