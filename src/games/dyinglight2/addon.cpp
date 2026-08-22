@@ -4803,23 +4803,6 @@ void OnDlssFgBackbufferBarrier(
            << " remaining=" << std::dec << (remaining - 1u);
       reshade::log::message(reshade::log::level::info, stream.str().c_str());
     }
-    if (capture.clear_count != 0u) {
-      std::stringstream clear_stream;
-      clear_stream << "DL2 post-0x268 RTV clears (" << capture.clear_count << "):";
-      for (uint32_t index = 0u; index < capture.clear_count; ++index) {
-        const auto& clear = capture.clears[index];
-        clear_stream << " clear(0x" << std::hex << std::uppercase << clear.resource
-                     << "=>0x" << clear.effective << ", fmt=" << std::dec
-                     << static_cast<uint32_t>(clear.format) << "=>"
-                     << static_cast<uint32_t>(clear.effective_format)
-                     << ", view=" << static_cast<uint32_t>(clear.view_format)
-                     << ", size=" << clear.width << "x" << clear.height
-                     << ", rects=" << clear.rect_count << ", color=("
-                     << clear.color[0] << "," << clear.color[1] << ","
-                     << clear.color[2] << "," << clear.color[3] << "))";
-      }
-      reshade::log::message(reshade::log::level::info, clear_stream.str().c_str());
-    }
   }
 
 void OnDlssFgResetCommandList(reshade::api::command_list* cmd_list) {
@@ -6570,7 +6553,25 @@ void OnDownstreamDrawCapturePresent(
     } else {
       stream << " gamma_target(unavailable)";
     }
-    reshade::log::message(reshade::log::level::info, stream.str().c_str());
+     reshade::log::message(reshade::log::level::info, stream.str().c_str());
+    }
+    if (capture.clear_count != 0u) {
+      std::stringstream clear_stream;
+      clear_stream << "DL2 post-0x268 RTV clears (" << capture.clear_count << "):";
+      for (uint32_t index = 0u; index < capture.clear_count; ++index) {
+        const auto& clear = capture.clears[index];
+        clear_stream << " clear(0x" << std::hex << std::uppercase << clear.resource
+                     << "=>0x" << clear.effective << ", fmt=" << std::dec
+                     << static_cast<uint32_t>(clear.format) << "=>"
+                     << static_cast<uint32_t>(clear.effective_format)
+                     << ", view=" << static_cast<uint32_t>(clear.view_format)
+                     << ", size=" << clear.width << "x" << clear.height
+                     << ", rects=" << clear.rect_count << ", color=("
+                     << clear.color[0] << "," << clear.color[1] << ","
+                     << clear.color[2] << "," << clear.color[3] << "))";
+      }
+      reshade::log::message(reshade::log::level::info, clear_stream.str().c_str());
+    }
   }
 
   // One capture per manual arm. This leaves no per-frame work afterwards and
