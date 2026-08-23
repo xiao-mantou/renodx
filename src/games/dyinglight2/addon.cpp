@@ -1889,11 +1889,13 @@ void RemoveStreamlineHook() {
 
 static void ResetProxySourceProbeOnSwapchainDestroy();
 static void ResetBffcAdChainAudit();
+static void ResetAdStageProbeOnSwapchainDestroy();
 
 void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) {
   auto* device = swapchain != nullptr ? swapchain->get_device() : nullptr;
   ResetProxySourceProbeOnSwapchainDestroy();
   ResetBffcAdChainAudit();
+  ResetAdStageProbeOnSwapchainDestroy();
   dlss_fg_active_swapchain.store(0u, std::memory_order_release);
   const uint64_t generation = dlss_fg_swapchain_generation.fetch_add(1u, std::memory_order_acq_rel) + 1u;
   dlss_fg_handoff_epoch.fetch_add(1u, std::memory_order_acq_rel);
@@ -3101,9 +3103,11 @@ struct AdStageProbeState {
     std::array<uint32_t, 5> copy_x = {};
     std::array<uint32_t, 5> copy_y = {};
   };
-  std::array<BffcSnapshot, 16> bffc_snapshots = {};
+  std::array<BffcSnapshot, 4> bffc_snapshots = {};
   uint32_t bffc_snapshot_count = 0u;
   uint64_t bffc_draw_serial = 0u;
+  std::array<reshade::api::resource, 4> bffc_staging_pool = {};
+  uint32_t bffc_staging_pool_count = 0u;
 };
 static std::atomic<float> ad_stage_probe_capture{0.f};
 static AdStageProbeState ad_stage_probe_state = {};
@@ -3111,6 +3115,44 @@ static std::mutex ad_stage_probe_mutex;
 
 static bool IsAdStageProbeCaptureRequested() {
   return ad_stage_probe_capture.load(std::memory_order_acquire) != 0.f;
+}
+
+static void ResetAdStageProbeOnSwapchainDestroy() {
+  // Do not destroy staging resources while a diagnostic copy may still be in
+  // flight. Abandon the one-shot state and let device teardown reclaim them.
+  ad_stage_probe_capture.store(0.f, std::memory_order_release);
+  std::scoped_lock probe_lock(ad_stage_probe_mutex);
+  ad_stage_probe_state = {};
+}
+
+static void DestroyBffcAdStageStaging(reshade::api::device* device, AdStageProbeState& state) {
+  if (device == nullptr) return;
+  for (auto& snapshot : state.bffc_snapshots) {
+    if (snapshot.staging.handle != 0u) device->destroy_resource(snapshot.staging);
+    snapshot.staging = {};
+  }
+  for (auto& staging : state.bffc_staging_pool) {
+    if (staging.handle != 0u) device->destroy_resource(staging);
+    staging = {};
+  }
+  state.bffc_staging_pool_count = 0u;
+}
+
+static bool PrepareBffcAdStageStaging(reshade::api::device* device, AdStageProbeState& state) {
+  if (device == nullptr || state.bffc_staging_pool_count != 0u) return true;
+  const reshade::api::resource_desc staging_desc(
+      5u, 1u, 1u, 1, reshade::api::format::r16g16b16a16_float, 1,
+      reshade::api::memory_heap::gpu_to_cpu, reshade::api::resource_usage::copy_dest);
+  for (uint32_t index = 0u; index < state.bffc_staging_pool.size(); ++index) {
+    if (!device->create_resource(
+            staging_desc, nullptr, reshade::api::resource_usage::copy_dest,
+            &state.bffc_staging_pool[index])) {
+      DestroyBffcAdStageStaging(device, state);
+      return false;
+    }
+    ++state.bffc_staging_pool_count;
+  }
+  return true;
 }
 
 // BFFC writes the resource that AD later samples, but subsequent fullscreen
@@ -3158,20 +3200,14 @@ static void CaptureBffcAdStageSnapshot(reshade::api::command_list* cmd_list) {
     }
   }
   if (snapshot == nullptr) {
-    if (state.bffc_snapshot_count >= state.bffc_snapshots.size()) return;
+    if (state.bffc_snapshot_count >= state.bffc_snapshots.size()
+        || state.bffc_staging_pool_count == 0u) return;
     snapshot = &state.bffc_snapshots[state.bffc_snapshot_count++];
     snapshot->resource = source;
     snapshot->binding = output;
-    const reshade::api::resource_desc staging_desc(
-        5u, 1u, 1u, 1, reshade::api::format::r16g16b16a16_float, 1,
-        reshade::api::memory_heap::gpu_to_cpu, reshade::api::resource_usage::copy_dest);
-    if (!device->create_resource(
-            staging_desc, nullptr, reshade::api::resource_usage::copy_dest, &snapshot->staging)) {
-      snapshot->resource = {};
-      snapshot->binding = {};
-      --state.bffc_snapshot_count;
-      return;
-    }
+    snapshot->staging = state.bffc_staging_pool[state.bffc_staging_pool_count - 1u];
+    state.bffc_staging_pool[state.bffc_staging_pool_count - 1u] = {};
+    --state.bffc_staging_pool_count;
   }
 
   constexpr float sample_uvs[5][2] = {
@@ -3200,20 +3236,6 @@ static void CaptureBffcAdStageSnapshot(reshade::api::command_list* cmd_list) {
   snapshot->present = dl2_probe_present_serial;
   snapshot->draw_serial = ++state.bffc_draw_serial;
   snapshot->command_list = reinterpret_cast<uint64_t>(cmd_list);
-}
-
-static void BffcAdStageProbePostDraw(
-    renodx::utils::command_action::CommandContext<
-        renodx::utils::command_action::DrawArguments>& context,
-    const void*) {
-  CaptureBffcAdStageSnapshot(context.cmd_list);
-}
-
-static void BffcAdStageProbePostDrawIndexed(
-    renodx::utils::command_action::CommandContext<
-        renodx::utils::command_action::DrawIndexedArguments>& context,
-    const void*) {
-  CaptureBffcAdStageSnapshot(context.cmd_list);
 }
 
 static bool IsProbeReadableResource(reshade::api::device* device, reshade::api::resource resource,
@@ -3316,11 +3338,7 @@ static bool BeginAdStageProbeReadback(reshade::api::command_queue* queue, AdStag
     return false;
   }
   const auto destroy_bffc_stagings = [&]() {
-    for (uint32_t index = 0u; index < state.bffc_snapshot_count; ++index) {
-      auto& snapshot = state.bffc_snapshots[index];
-      if (snapshot.staging.handle != 0u) device->destroy_resource(snapshot.staging);
-      snapshot.staging = {};
-    }
+    DestroyBffcAdStageStaging(device, state);
   };
   const auto in_desc = device->get_resource_desc(state.input);
   const auto out_desc = device->get_resource_desc(state.output);
@@ -3533,11 +3551,7 @@ static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdS
     device->destroy_resource(staging);
     staging = {};
   }
-  for (uint32_t index = 0u; index < state.bffc_snapshot_count; ++index) {
-    auto& snapshot = state.bffc_snapshots[index];
-    if (snapshot.staging.handle != 0u) device->destroy_resource(snapshot.staging);
-    snapshot.staging = {};
-  }
+  DestroyBffcAdStageStaging(device, state);
   state.copy_fence.Reset();
   state.logged = true;
   std::ostringstream stream;
@@ -4081,19 +4095,6 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   const bool targeted_color_shader = shader_hash == 0x3E36DA5Bu
                                      || shader_hash == 0x268BAB6Du
                                      || shader_hash == 0xAD085E81u;
-  const bool schedule_bffc_post = capture_ad_stage_probe && !is_compute
-                                  && shader_hash == 0xBFFC45ACu && likely_fullscreen_draw;
-  const auto bffc_post_result = [&]() -> renodx::utils::command_action::CallbackResult<Context> {
-    if (!schedule_bffc_post) return {};
-    if constexpr (std::is_same_v<Context, renodx::utils::command_action::CommandContext<
-                                              renodx::utils::command_action::DrawArguments>>) {
-      return {.post_callback = BffcAdStageProbePostDraw, .replay = true};
-    } else if constexpr (std::is_same_v<Context, renodx::utils::command_action::CommandContext<
-                                                       renodx::utils::command_action::DrawIndexedArguments>>) {
-      return {.post_callback = BffcAdStageProbePostDrawIndexed, .replay = true};
-    }
-    return {};
-  };
 
   if (capture_bffc_ad_chain) {
     auto* device = context.cmd_list->get_device();
@@ -4613,10 +4614,10 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
         }
       }
     }
-    return bffc_post_result();
+    return {};
   }
 
-  if (!capture.capture_commands) return bffc_post_result();
+  if (!capture.capture_commands) return {};
   if (shader_hash == 0u) return {};
 
   // The main menu records many low-resolution material/compute passes after
@@ -4647,7 +4648,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
                                 && (capture.gamma_target == 0u
                                     || (candidate_target.width * 10u >= capture.gamma_target_width * 9u
                                         && candidate_target.height * 10u >= capture.gamma_target_height * 9u));
-  if (!known_popup_ui && !full_size_target) return bffc_post_result();
+  if (!known_popup_ui && !full_size_target) return {};
 
   // DL2 records late work across multiple command lists. Stay bounded by the
   // next Present, but keep a small unique candidate set rather than assuming
@@ -4692,7 +4693,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
     }
     ++capture.count;
   }
-  return bffc_post_result();
+  return {};
 };
 
 bool DescribeDownstreamTransfer(
@@ -6553,6 +6554,11 @@ void OnDownstreamDrawCapturePresent(
 
   if (IsAdStageProbeCaptureRequested()) {
     std::scoped_lock lock(ad_stage_probe_mutex);
+    if (!ad_stage_probe_state.captured && !ad_stage_probe_state.copy_submitted
+        && !ad_stage_probe_state.logged && ad_stage_probe_state.bffc_staging_pool_count == 0u) {
+      PrepareBffcAdStageStaging(queue != nullptr ? queue->get_device() : nullptr,
+                                ad_stage_probe_state);
+    }
     if (ad_stage_probe_state.captured && !ad_stage_probe_state.copy_submitted && !ad_stage_probe_state.logged) {
       BeginAdStageProbeReadback(queue, ad_stage_probe_state);
     } else if (ad_stage_probe_state.copy_submitted && !ad_stage_probe_state.logged) {
@@ -7459,7 +7465,8 @@ void OnDl2BffcProbeDrawn(reshade::api::command_list* cmd_list) {
   if (!upscaler_color_path_audit_state.active
       && !upscaler_input_audit_state.active
       && !upscaler_source_writer_audit_state.active
-      && !bffc_ad_chain_audit_state.active) {
+      && !bffc_ad_chain_audit_state.active
+      && !IsAdStageProbeCaptureRequested()) {
     return;
   }
   auto* state = renodx::utils::shader::GetCurrentState(cmd_list);
@@ -7471,6 +7478,10 @@ void OnDl2BffcProbeDrawn(reshade::api::command_list* cmd_list) {
     stream << " pipeline=0x" << pixel_state->pipeline.handle;
   }
   renodx::utils::log::i(stream.str().c_str());
+  // The shader framework invokes on_drawn after the BFFC command has completed.
+  // Use this existing post-draw hook for the one-shot AD-stage snapshot so the
+  // generic command observer does not replay BFFC or mutate its command list.
+  if (IsAdStageProbeCaptureRequested()) CaptureBffcAdStageSnapshot(cmd_list);
 }
 
 renodx::mods::shader::CustomShader CreateDl2BffcProbeShader() {
