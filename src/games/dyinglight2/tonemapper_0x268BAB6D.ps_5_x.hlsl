@@ -221,8 +221,17 @@ void main(
     lut_gamma = cmp(float3(0.00313080009, 0.00313080009, 0.00313080009) >= neutral_sdr) ? lut_gamma_lin : lut_gamma_srgb;
     lut_gamma = lut_gamma * float3(0.96875, 0.96875, 0.96875) + float3(0.015625, 0.015625, 0.015625);
     float3 lut_sampled = t1.SampleLevel(s1_s, lut_gamma, 0).xyz;
-    lut_sampled = lut_sampled * float3(0.947867274, 0.947867274, 0.947867274) + float3(0.0521326996, 0.0521326996, 0.0521326996);
-    lut_result = renodx::color::srgb::DecodeSafe(lut_sampled);
+    // Match Vanilla's single LUT-output decode exactly. The affine/pow
+    // sequence below is already the inverse sRGB operation; calling
+    // srgb::DecodeSafe on its result would decode the LUT output twice and
+    // crush/destaturate low-light colors such as fog.
+    float3 lut_linear = lut_sampled * float3(0.947867274, 0.947867274, 0.947867274)
+                        + float3(0.0521326996, 0.0521326996, 0.0521326996);
+    float3 lut_linear_pow = exp2(float3(2.4000001, 2.4000001, 2.4000001) * log2(abs(lut_linear)));
+    float3 lut_linear_low = lut_sampled * float3(0.0773993805, 0.0773993805, 0.0773993805);
+    lut_result = lut_sampled <= float3(0.0404499993, 0.0404499993, 0.0404499993)
+                     ? lut_linear_low
+                     : lut_linear_pow;
   }
   r1.xyz = lut_result;
   r0.xyz = r1.xyz * r0.xyz;
