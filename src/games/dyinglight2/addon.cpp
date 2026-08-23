@@ -2304,6 +2304,8 @@ struct BffcAdChainAuditState {
   GammaAuditResource bffc_output = {};
   GammaAuditResource ad_output = {};
   GammaAuditResource ad_input = {};
+  BffcAdChainEvent ad_input_last_writer = {};
+  bool ad_input_last_writer_seen = false;
 };
 
 DownstreamDrawCaptureState downstream_draw_capture_state = {};
@@ -2476,6 +2478,13 @@ static bool BffcAdChainResourceMatches(const GammaAuditResource& resource, uint6
          && (resource.resource == handle || resource.effective == handle || resource.clone == handle);
 }
 
+static bool BffcAdChainEventWritesResource(
+    const BffcAdChainEvent& event, const GammaAuditResource& resource) {
+  return BffcAdChainResourceMatches(resource, event.output.resource)
+         || BffcAdChainResourceMatches(resource, event.output.effective)
+         || BffcAdChainResourceMatches(resource, event.output.clone);
+}
+
 static void RecordBffcAdChainEvent(
     reshade::api::command_list* cmd_list,
     uint32_t shader_hash,
@@ -2500,6 +2509,8 @@ static void RecordBffcAdChainEvent(
     audit.ad_seen = true;
     audit.ad_output = output;
     audit.ad_input = input;
+    audit.ad_input_last_writer = {};
+    audit.ad_input_last_writer_seen = false;
   }
 
   // Keep a bounded history of full-size writes so a producer on another
@@ -2523,6 +2534,26 @@ static void RecordBffcAdChainEvent(
   event.command_list_epoch = epoch;
   event.input = input;
   event.output = output;
+
+  const auto current_generation = event.generation;
+  const auto record_if_ad_input_writer = [&](const BffcAdChainEvent& candidate) {
+    if (candidate.shader_hash == 0xAD085E81u || candidate.generation != current_generation) return;
+    if (BffcAdChainEventWritesResource(candidate, audit.ad_input)) {
+      audit.ad_input_last_writer = candidate;
+      audit.ad_input_last_writer_seen = true;
+    }
+  };
+  if (shader_hash == 0xAD085E81u) {
+    const uint32_t stored_count = audit.event_count;
+    for (uint32_t order = 0u; order < stored_count; ++order) {
+      const uint32_t stored_index = stored_count < audit.events.size()
+                                        ? order
+                                        : (audit.event_start + order) % audit.events.size();
+      record_if_ad_input_writer(audit.events[stored_index]);
+    }
+  } else if (audit.ad_seen) {
+    record_if_ad_input_writer(event);
+  }
 }
 
 constexpr bool IsDl2PopupUiShader(uint32_t hash) {
@@ -6558,6 +6589,30 @@ void OnDownstreamDrawCapturePresent(
       append_resource(stream, "bffc_output", audit.bffc_output);
       append_resource(stream, "ad_t0", audit.ad_input);
       append_resource(stream, "ad_output", audit.ad_output);
+      if (audit.ad_input_last_writer_seen) {
+        const auto& writer = audit.ad_input_last_writer;
+        stream << " ad_input_last_writer=present=" << writer.present
+               << " gen=" << writer.generation
+               << " serial=" << writer.draw_serial
+               << " order=" << writer.draw_serial
+               << " " << (writer.is_compute ? "CS" : "PS")
+               << " shader=0x" << std::hex << std::uppercase << writer.shader_hash
+               << " cmd=0x" << writer.command_list
+               << std::dec << " epoch=" << writer.command_list_epoch
+               << " args=" << writer.draw_count << "x" << writer.instance_count
+               << " dispatch=" << writer.dispatch_x << "x" << writer.dispatch_y << "x"
+               << writer.dispatch_z
+               << " viewport_count=" << writer.viewport_count
+               << " viewport=" << writer.viewport.x << "," << writer.viewport.y << ","
+               << writer.viewport.width << "x" << writer.viewport.height
+               << " scissor_count=" << writer.scissor_count
+               << " scissor=" << writer.scissor.left << "," << writer.scissor.top << "-"
+               << writer.scissor.right << "," << writer.scissor.bottom
+               << " write=" << (writer.has_uav ? "UAV" : "RTV") << " ";
+        append_resource(stream, "out", writer.output);
+      } else {
+        stream << " ad_input_last_writer=none";
+      }
       const uint64_t bffc_resource = audit.bffc_output.effective != 0u
                                          ? audit.bffc_output.effective
                                          : audit.bffc_output.resource;
@@ -6574,7 +6629,8 @@ void OnDownstreamDrawCapturePresent(
                               || BffcAdChainResourceMatches(event.output, bffc_resource)
                               || BffcAdChainResourceMatches(event.output, ad_resource)
                               || BffcAdChainResourceMatches(event.input, bffc_resource)
-                              || BffcAdChainResourceMatches(event.input, ad_resource);
+                              || BffcAdChainResourceMatches(event.input, ad_resource)
+                              || BffcAdChainEventWritesResource(event, audit.ad_input);
         if (!relevant) continue;
         stream << " event#" << (index + 1u)
                << " present=" << event.present
