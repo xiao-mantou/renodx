@@ -182,13 +182,14 @@ function(build_shader_target ADDON ADDON_PATH)
     cmake_path(GET FILE FILENAME FILENAME)
     cmake_path(GET FILE PARENT_PATH TARGET_PATH)
 
-    # Temporary DL2 crash-isolation build: compile only the upstream 0x3E
-    # replacement and shader binaries that addon.cpp still references for the
-    # swapchain/bridge plumbing. Restore the full glob after diagnosis.
+    # Temporary DL2 crash-isolation build: compile only the active HDR bridge,
+    # the observer-only BFFC stage probe, and shader binaries still referenced
+    # by the swapchain/bridge plumbing. Keep 0xAD/UI and other probes excluded.
     if(ADDON STREQUAL "dyinglight2")
       set(DL2_MINIMAL_SHADER_FILES
         "tonemapper_0x3E36DA5B.ps_5_x.hlsl"
         "tonemapper_0x268BAB6D.ps_5_x.hlsl"
+        "blit_0xBFFC45AC.ps_5_x.hlsl"
         "swap_chain_proxy_vertex_shader.vs_5_x.hlsl"
         "swap_chain_proxy_pixel_shader.ps_5_x.hlsl"
         "dlss_fg_bridge_compute_shader.cs_5_x.hlsl")
@@ -691,6 +692,7 @@ foreach(FILE ${ADDON_FILES})
   if(ADDON STREQUAL "dyinglight2")
     target_compile_definitions(${ADDON} PRIVATE RENODX_BUILD_VERSION="${RENODX_BUILD_VERSION}")
     target_compile_definitions(${ADDON} PRIVATE RENODX_DL2_MINIMAL_DIAGNOSTIC_BUILD=1)
+    target_compile_definitions(${ADDON} PRIVATE RENODX_DL2_BFFC_STAGE_PROBE=1)
   endif()
   build_shader_target(${ADDON} ${ADDON_PATH})
   generate_resource_rc(${ADDON})

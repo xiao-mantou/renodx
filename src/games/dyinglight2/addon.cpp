@@ -1890,6 +1890,7 @@ void RemoveStreamlineHook() {
 static void ResetProxySourceProbeOnSwapchainDestroy();
 static void ResetBffcAdChainAudit();
 static void ResetAdStageProbeOnSwapchainDestroy();
+static void SetBffcAdStageObserver(bool enabled);
 
 void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) {
   auto* device = swapchain != nullptr ? swapchain->get_device() : nullptr;
@@ -3121,6 +3122,7 @@ static void ResetAdStageProbeOnSwapchainDestroy() {
   // Do not destroy staging resources while a diagnostic copy may still be in
   // flight. Abandon the one-shot state and let device teardown reclaim them.
   ad_stage_probe_capture.store(0.f, std::memory_order_release);
+  SetBffcAdStageObserver(false);
   std::scoped_lock probe_lock(ad_stage_probe_mutex);
   ad_stage_probe_state = {};
 }
@@ -3627,6 +3629,7 @@ static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdS
     }
   }
   renodx::utils::log::i(stream.str().c_str());
+  SetBffcAdStageObserver(false);
   return true;
 }
 
@@ -7332,13 +7335,15 @@ renodx::mods::shader::CustomShader CreateDl2HdrShader(
   return shader;
 }
 
-#if !defined(RENODX_DL2_MINIMAL_DIAGNOSTIC_BUILD)
+#if !defined(RENODX_DL2_MINIMAL_DIAGNOSTIC_BUILD) || defined(RENODX_DL2_BFFC_STAGE_PROBE)
 bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
-  ActivateDl2HdrTarget(cmd_list);
+  const bool stage_probe = IsAdStageProbeCaptureRequested();
+  if (!stage_probe) ActivateDl2HdrTarget(cmd_list);
   {
     std::scoped_lock lock(downstream_draw_capture_mutex);
     const bool chain_capture = bffc_ad_chain_audit_state.active;
-    if (!upscaler_color_path_audit_state.active && !chain_capture) return true;
+    if (!upscaler_color_path_audit_state.active && !chain_capture && !stage_probe) return true;
+    if (stage_probe && !upscaler_color_path_audit_state.active && !chain_capture) return true;
     if (upscaler_color_path_audit_state.active
         && !chain_capture && upscaler_color_writer_observations.size() >= 32u) return true;
   }
@@ -7488,7 +7493,10 @@ renodx::mods::shader::CustomShader CreateDl2BffcProbeShader() {
   auto shader = renodx::mods::shader::CreateDirectXShader(
       0xBFFC45ACu, __0xBFFC45AC_dx11, __0xBFFC45AC_dx12);
   shader.on_draw = &OnDl2BffcProbeDraw;
-  shader.on_drawn = &OnDl2BffcProbeDrawn;
+  // This entry is an observer only. The diagnostic arm below enables its
+  // on_drawn callback for one capture; on_replace remains false so normal
+  // BFFC rendering never binds the copied probe pipeline.
+  shader.on_replace = [](reshade::api::command_list*) { return false; };
   return shader;
 }
 #endif
@@ -7524,7 +7532,11 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     // 0x268 is temporarily isolated below; keep only the upstream 0x3E
     // replacement while the layout-compatible LUT replacement is tested.
     TargetedDl2HdrShader(0x268BAB6D),
-    // UI/BFFC replacements remain disabled during startup crash isolation.
+    // BFFC is registered as an observer-only entry. It never replaces the
+    // native pipeline; its post-draw callback is enabled only by the one-shot
+    // AD stage probe below.
+    {0xBFFC45ACu, CreateDl2BffcProbeShader()},
+    // UI replacements remain disabled during startup crash isolation.
     // 0xAD remains audit-only. Its copied HDR template is not safe to register
     // with the crash-isolation layout, and targeted binding was a prior crash
     // boundary. Keep final Gamma untouched while 0x3E/0x268 are tested.
@@ -7535,6 +7547,14 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     // CustomDirectXShaders(0x79b3c079),
     // CustomDirectXShaders(0xa766966e),
 };
+
+static void SetBffcAdStageObserver(bool enabled) {
+  const auto it = custom_shaders.find(0xBFFC45ACu);
+  if (it == custom_shaders.end()) return;
+  it->second.on_drawn = enabled ? std::function<void(reshade::api::command_list*)>(
+                                      &OnDl2BffcProbeDrawn)
+                                : std::function<void(reshade::api::command_list*)>();
+}
 
 float current_settings_mode = 0;
 // Quick Debug Probe stores its own index; on change it forwards the mapped
@@ -8533,6 +8553,7 @@ renodx::utils::settings::Settings settings = {
             std::scoped_lock lock(ad_stage_probe_mutex);
             ad_stage_probe_state = {};
           }
+          SetBffcAdStageObserver(true);
           {
             std::scoped_lock lock(center_probe_mutex);
             center_probe_state = {};
