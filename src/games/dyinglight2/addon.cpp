@@ -7549,8 +7549,9 @@ renodx::mods::shader::CustomShaders custom_shaders = {
 };
 
 static void SetBffcAdStageObserver(bool enabled) {
-  const auto it = custom_shaders.find(0xBFFC45ACu);
-  if (it == custom_shaders.end()) return;
+  auto& runtime_shaders = renodx::mods::shader::custom_shaders;
+  const auto it = runtime_shaders.find(0xBFFC45ACu);
+  if (it == runtime_shaders.end()) return;
   it->second.on_drawn = enabled ? std::function<void(reshade::api::command_list*)>(
                                       &OnDl2BffcProbeDrawn)
                                 : std::function<void(reshade::api::command_list*)>();
