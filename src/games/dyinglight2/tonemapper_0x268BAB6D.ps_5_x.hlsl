@@ -21,16 +21,6 @@ float3 ApplyDL2SDRCurve(float3 color, float4 curve0, float4 curve1) {
   return saturate((a * color) / (b * color + curve1.xxx));
 }
 
-// HDR-only extension of the native DL2 curve. Keep the same rational curve,
-// but retain values above 1 so the HDR bridge can carry them through the LUT
-// with an explicit reversible RGB scale. Vanilla/Off continues to use the
-// clipped function above unchanged.
-float3 ApplyDL2SDRCurveExtended(float3 color, float4 curve0, float4 curve1) {
-  const float3 a = curve0.xxx * color + curve0.yyy;
-  const float3 b = curve0.zzz * color + curve0.www;
-  return (a * color) / (b * color + curve1.xxx);
-}
-
 // 5x7 pixel glyphs (bit k set = column k from the left, 1 = lit).
 // Index 0-9 = digits, 10 = decimal point.
 uint DebugGlyph(int digit, int row) {
@@ -167,23 +157,15 @@ void main(
     const float strengths[4] = {0.0, 0.25, 0.5, 0.75};
     input_hdr = lerp(input_hdr, renodx::color::srgb::DecodeSafe(input_hdr), strengths[quadrant]);
   }
-  // Vanilla keeps DL2's original SDR curve. HDR evaluates the same curve
-  // without clipping, then applies one shared scale only when the extended
-  // result exceeds the LUT domain. The scale is reused after native grading
-  // so low/mid values remain identical to Vanilla while highlights retain a
-  // recoverable scene magnitude.
+  // Vanilla keeps DL2's original SDR curve. HDR uses Wobbly's max-channel
+  // Neutwo proxy so the LUT sees a bounded SDR value while its scale is
+  // retained for exact post-LUT reconstruction.
   const float4 sdr_curve0 = float4(2.27, 0.17, 1.69, 0.8);
   const float4 sdr_curve1 = float4(0.14, 0.0, 0.0, 0.0);
-  float hdr_proxy_scale = 1.0;
-  float3 neutral_sdr;
-  if (RENODX_TONE_MAP_TYPE == 0.0) {
-    neutral_sdr = ApplyDL2SDRCurve(input_hdr, sdr_curve0, sdr_curve1);
-  } else {
-    const float3 extended_dl2 = ApplyDL2SDRCurveExtended(input_hdr, sdr_curve0, sdr_curve1);
-    const float extended_max = max(extended_dl2.r, max(extended_dl2.g, extended_dl2.b));
-    hdr_proxy_scale = extended_max > 1.0 ? 1.0 / extended_max : 1.0;
-    neutral_sdr = extended_dl2 * hdr_proxy_scale;
-  }
+  const float hdr_proxy_scale = renodx::tonemap::neutwo::ComputeMaxChannelScale(input_hdr);
+  const float3 neutral_sdr = RENODX_TONE_MAP_TYPE == 0.0
+                                 ? ApplyDL2SDRCurve(input_hdr, sdr_curve0, sdr_curve1)
+                                 : input_hdr * hdr_proxy_scale;
   if (RENODX_TONE_MAP_TYPE != 0.0 || probe59) {
     r1.xyz = neutral_sdr;
   }
