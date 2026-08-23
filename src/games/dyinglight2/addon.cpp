@@ -3216,19 +3216,6 @@ static void BffcAdStageProbePostDrawIndexed(
   CaptureBffcAdStageSnapshot(context.cmd_list);
 }
 
-inline constexpr auto OnBffcAdStageProbe = []<typename Context>(Context& context)
-    -> renodx::utils::command_action::CallbackResult<Context> {
-  if (!IsAdStageProbeCaptureRequested() || context.IsDispatch()) return {};
-  if constexpr (std::is_same_v<Context, renodx::utils::command_action::CommandContext<
-                                            renodx::utils::command_action::DrawArguments>>) {
-    return {.post_callback = BffcAdStageProbePostDraw, .replay = true};
-  } else if constexpr (std::is_same_v<Context, renodx::utils::command_action::CommandContext<
-                                                     renodx::utils::command_action::DrawIndexedArguments>>) {
-    return {.post_callback = BffcAdStageProbePostDrawIndexed, .replay = true};
-  }
-  return {};
-};
-
 static bool IsProbeReadableResource(reshade::api::device* device, reshade::api::resource resource,
                                     reshade::api::format view_format) {
   if (device == nullptr || resource.handle == 0u) return false;
@@ -4094,6 +4081,19 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   const bool targeted_color_shader = shader_hash == 0x3E36DA5Bu
                                      || shader_hash == 0x268BAB6Du
                                      || shader_hash == 0xAD085E81u;
+  const bool schedule_bffc_post = capture_ad_stage_probe && !is_compute
+                                  && shader_hash == 0xBFFC45ACu && likely_fullscreen_draw;
+  const auto bffc_post_result = [&]() -> renodx::utils::command_action::CallbackResult<Context> {
+    if (!schedule_bffc_post) return {};
+    if constexpr (std::is_same_v<Context, renodx::utils::command_action::CommandContext<
+                                              renodx::utils::command_action::DrawArguments>>) {
+      return {.post_callback = BffcAdStageProbePostDraw, .replay = true};
+    } else if constexpr (std::is_same_v<Context, renodx::utils::command_action::CommandContext<
+                                                       renodx::utils::command_action::DrawIndexedArguments>>) {
+      return {.post_callback = BffcAdStageProbePostDrawIndexed, .replay = true};
+    }
+    return {};
+  };
 
   if (capture_bffc_ad_chain) {
     auto* device = context.cmd_list->get_device();
@@ -4613,10 +4613,10 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
         }
       }
     }
-    return {};
+    return bffc_post_result();
   }
 
-  if (!capture.capture_commands) return {};
+  if (!capture.capture_commands) return bffc_post_result();
   if (shader_hash == 0u) return {};
 
   // The main menu records many low-resolution material/compute passes after
@@ -4647,7 +4647,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
                                 && (capture.gamma_target == 0u
                                     || (candidate_target.width * 10u >= capture.gamma_target_width * 9u
                                         && candidate_target.height * 10u >= capture.gamma_target_height * 9u));
-  if (!known_popup_ui && !full_size_target) return {};
+  if (!known_popup_ui && !full_size_target) return bffc_post_result();
 
   // DL2 records late work across multiple command lists. Stay bounded by the
   // next Present, but keep a small unique candidate set rather than assuming
@@ -4692,7 +4692,7 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
     }
     ++capture.count;
   }
-  return {};
+  return bffc_post_result();
 };
 
 bool DescribeDownstreamTransfer(
@@ -8690,10 +8690,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
            .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW
                             | renodx::utils::command_action::COMMAND_TYPE_DIRECT_DISPATCH
                             | renodx::utils::command_action::COMMAND_TYPE_INDIRECT});
-      renodx::utils::command_action::Register(
-          OnBffcAdStageProbe,
-          {.shader_hash = 0xBFFC45ACu,
-           .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
       renodx::utils::command_action::Register(
           OnGammaDrawAudit,
           {.shader_hash = 0xAD085E81u,
