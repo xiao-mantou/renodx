@@ -2301,11 +2301,13 @@ struct BffcAdChainAuditState {
   bool logged = false;
   bool bffc_seen = false;
   bool ad_seen = false;
+  uint64_t ad_present = 0u;
+  uint64_t ad_draw_serial = 0u;
   GammaAuditResource bffc_output = {};
   GammaAuditResource ad_output = {};
   GammaAuditResource ad_input = {};
-  BffcAdChainEvent ad_input_last_writer = {};
-  bool ad_input_last_writer_seen = false;
+  BffcAdChainEvent ad_input_pre_writer = {};
+  bool ad_input_pre_writer_seen = false;
 };
 
 DownstreamDrawCaptureState downstream_draw_capture_state = {};
@@ -2507,10 +2509,12 @@ static void RecordBffcAdChainEvent(
     audit.bffc_output = output;
   } else if (shader_hash == 0xAD085E81u) {
     audit.ad_seen = true;
+    audit.ad_present = dl2_probe_present_serial;
+    audit.ad_draw_serial = draw_serial;
     audit.ad_output = output;
     audit.ad_input = input;
-    audit.ad_input_last_writer = {};
-    audit.ad_input_last_writer_seen = false;
+    audit.ad_input_pre_writer = {};
+    audit.ad_input_pre_writer_seen = false;
   }
 
   // Keep a bounded history of full-size writes so a producer on another
@@ -2537,10 +2541,13 @@ static void RecordBffcAdChainEvent(
 
   const auto current_generation = event.generation;
   const auto record_if_ad_input_writer = [&](const BffcAdChainEvent& candidate) {
-    if (candidate.shader_hash == 0xAD085E81u || candidate.generation != current_generation) return;
+    if (candidate.shader_hash == 0xAD085E81u || candidate.generation != current_generation
+        || (audit.ad_draw_serial != 0u && candidate.draw_serial >= audit.ad_draw_serial)) {
+      return;
+    }
     if (BffcAdChainEventWritesResource(candidate, audit.ad_input)) {
-      audit.ad_input_last_writer = candidate;
-      audit.ad_input_last_writer_seen = true;
+      audit.ad_input_pre_writer = candidate;
+      audit.ad_input_pre_writer_seen = true;
     }
   };
   if (shader_hash == 0xAD085E81u) {
@@ -2551,8 +2558,6 @@ static void RecordBffcAdChainEvent(
                                         : (audit.event_start + order) % audit.events.size();
       record_if_ad_input_writer(audit.events[stored_index]);
     }
-  } else if (audit.ad_seen) {
-    record_if_ad_input_writer(event);
   }
 }
 
@@ -6585,13 +6590,15 @@ void OnDownstreamDrawCapturePresent(
              << " events=" << audit.event_count
              << " transfers=" << audit.transfer_count
              << " bffc_seen=" << (audit.bffc_seen ? 1 : 0)
-             << " ad_seen=" << (audit.ad_seen ? 1 : 0);
+             << " ad_seen=" << (audit.ad_seen ? 1 : 0)
+             << " ad_draw=present=" << audit.ad_present
+             << " serial=" << audit.ad_draw_serial;
       append_resource(stream, "bffc_output", audit.bffc_output);
       append_resource(stream, "ad_t0", audit.ad_input);
       append_resource(stream, "ad_output", audit.ad_output);
-      if (audit.ad_input_last_writer_seen) {
-        const auto& writer = audit.ad_input_last_writer;
-        stream << " ad_input_last_writer=present=" << writer.present
+      if (audit.ad_input_pre_writer_seen) {
+        const auto& writer = audit.ad_input_pre_writer;
+        stream << " ad_input_pre_writer=present=" << writer.present
                << " gen=" << writer.generation
                << " serial=" << writer.draw_serial
                << " order=" << writer.draw_serial
@@ -6611,7 +6618,7 @@ void OnDownstreamDrawCapturePresent(
                << " write=" << (writer.has_uav ? "UAV" : "RTV") << " ";
         append_resource(stream, "out", writer.output);
       } else {
-        stream << " ad_input_last_writer=none";
+        stream << " ad_input_pre_writer=none";
       }
       const uint64_t bffc_resource = audit.bffc_output.effective != 0u
                                          ? audit.bffc_output.effective
