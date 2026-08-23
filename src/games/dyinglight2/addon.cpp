@@ -3109,8 +3109,10 @@ struct AdStageProbeState {
   uint64_t bffc_draw_serial = 0u;
   std::array<reshade::api::resource, 4> bffc_staging_pool = {};
   uint32_t bffc_staging_pool_count = 0u;
+  bool bffc_skip_logged = false;
 };
 static std::atomic<float> ad_stage_probe_capture{0.f};
+static std::atomic<bool> ad_stage_probe_arm_pending{false};
 static AdStageProbeState ad_stage_probe_state = {};
 static std::mutex ad_stage_probe_mutex;
 
@@ -3122,6 +3124,7 @@ static void ResetAdStageProbeOnSwapchainDestroy() {
   // Do not destroy staging resources while a diagnostic copy may still be in
   // flight. Abandon the one-shot state and let device teardown reclaim them.
   ad_stage_probe_capture.store(0.f, std::memory_order_release);
+  ad_stage_probe_arm_pending.store(false, std::memory_order_release);
   SetBffcAdStageObserver(false);
   std::scoped_lock probe_lock(ad_stage_probe_mutex);
   ad_stage_probe_state = {};
@@ -3163,6 +3166,15 @@ static bool PrepareBffcAdStageStaging(reshade::api::device* device, AdStageProbe
 static void CaptureBffcAdStageSnapshot(reshade::api::command_list* cmd_list) {
   if (!IsAdStageProbeCaptureRequested() || cmd_list == nullptr) return;
 
+  std::scoped_lock probe_lock(ad_stage_probe_mutex);
+  auto& state = ad_stage_probe_state;
+  if (state.captured || state.logged) return;
+  const auto log_skip = [&](const std::string& message) {
+    if (state.bffc_skip_logged) return;
+    state.bffc_skip_logged = true;
+    renodx::utils::log::w(message.c_str());
+  };
+
   reshade::api::resource_view target_view = {};
   {
     std::scoped_lock lock(downstream_draw_capture_mutex);
@@ -3175,10 +3187,24 @@ static void CaptureBffcAdStageSnapshot(reshade::api::command_list* cmd_list) {
       target_view = command_state->render_targets[0];
     }
   }
-  if (target_view.handle == 0u) return;
+  if (target_view.handle == 0u) {
+    log_skip("DL2 BFFC stage snapshot skipped: no target RTV");
+    return;
+  }
+
+  // Crash-isolation disables active target hot-swap. For diagnostics, select
+  // an already-created FP16 clone view without rebinding the draw target.
+  renodx::utils::resource::GetResourceViewInfo(
+      target_view,
+      [&target_view](const renodx::utils::resource::ResourceViewInfo& info) {
+        if (info.clone_enabled && info.clone.handle != 0u) target_view = info.clone;
+      });
 
   auto* device = cmd_list->get_device();
-  if (device == nullptr) return;
+  if (device == nullptr) {
+    log_skip("DL2 BFFC stage snapshot skipped: no device");
+    return;
+  }
   const auto output = DescribeGammaAuditView(device, target_view);
   const uint64_t source_handle = output.effective != 0u ? output.effective : output.resource;
   if (source_handle == 0u) return;
@@ -3187,12 +3213,14 @@ static void CaptureBffcAdStageSnapshot(reshade::api::command_list* cmd_list) {
   if (source_desc.type != reshade::api::resource_type::texture_2d
       || source_desc.texture.width == 0u || source_desc.texture.height == 0u
       || source_desc.texture.format != reshade::api::format::r16g16b16a16_float) {
+    std::ostringstream message;
+    message << "DL2 BFFC stage snapshot skipped: source=0x" << std::hex << source_handle
+            << " format=" << std::dec << static_cast<uint32_t>(source_desc.texture.format)
+            << " view=" << static_cast<uint32_t>(output.effective_view_format)
+            << " size=" << source_desc.texture.width << "x" << source_desc.texture.height;
+    log_skip(message.str());
     return;
   }
-
-  std::scoped_lock probe_lock(ad_stage_probe_mutex);
-  auto& state = ad_stage_probe_state;
-  if (state.captured || state.logged) return;
 
   AdStageProbeState::BffcSnapshot* snapshot = nullptr;
   for (uint32_t index = 0u; index < state.bffc_snapshot_count; ++index) {
@@ -3203,7 +3231,10 @@ static void CaptureBffcAdStageSnapshot(reshade::api::command_list* cmd_list) {
   }
   if (snapshot == nullptr) {
     if (state.bffc_snapshot_count >= state.bffc_snapshots.size()
-        || state.bffc_staging_pool_count == 0u) return;
+        || state.bffc_staging_pool_count == 0u) {
+      log_skip("DL2 BFFC stage snapshot skipped: no staging slot");
+      return;
+    }
     snapshot = &state.bffc_snapshots[state.bffc_snapshot_count++];
     snapshot->resource = source;
     snapshot->binding = output;
@@ -6494,6 +6525,20 @@ void OnDownstreamDrawCapturePresent(
   CaptureReshadeSwapchainSnapshot(queue, swapchain);
   if constexpr (kEnableDl2FgHooks) TryInstallStreamlineHook();
 
+  // Allocate the tiny BFFC staging pool before enabling the observer. The
+  // button may be clicked after the frame's BFFC draw has already started;
+  // arming at Present guarantees the next frame has a valid copy destination.
+  if (ad_stage_probe_arm_pending.load(std::memory_order_acquire)) {
+    std::scoped_lock probe_lock(ad_stage_probe_mutex);
+    if (PrepareBffcAdStageStaging(queue != nullptr ? queue->get_device() : nullptr,
+                                  ad_stage_probe_state)) {
+      ad_stage_probe_arm_pending.store(false, std::memory_order_release);
+      SetBffcAdStageObserver(true);
+      ad_stage_probe_capture.store(1.f, std::memory_order_release);
+      renodx::utils::log::i("DL2 AD stage probe active for next frame (BFFC staging ready)");
+    }
+  }
+
   if (IsProxySourceProbeCaptureRequested()) {
     std::scoped_lock probe_lock(proxy_source_probe_mutex);
     if (!proxy_source_probe_state.captured && !proxy_source_probe_state.logged) {
@@ -6557,17 +6602,15 @@ void OnDownstreamDrawCapturePresent(
 
   if (IsAdStageProbeCaptureRequested()) {
     std::scoped_lock lock(ad_stage_probe_mutex);
-    if (!ad_stage_probe_state.captured && !ad_stage_probe_state.copy_submitted
-        && !ad_stage_probe_state.logged && ad_stage_probe_state.bffc_staging_pool_count == 0u) {
-      PrepareBffcAdStageStaging(queue != nullptr ? queue->get_device() : nullptr,
-                                ad_stage_probe_state);
-    }
     if (ad_stage_probe_state.captured && !ad_stage_probe_state.copy_submitted && !ad_stage_probe_state.logged) {
       BeginAdStageProbeReadback(queue, ad_stage_probe_state);
     } else if (ad_stage_probe_state.copy_submitted && !ad_stage_probe_state.logged) {
       CompleteAdStageProbeReadback(queue, ad_stage_probe_state);
     }
-    if (ad_stage_probe_state.logged) ad_stage_probe_capture.store(0.f, std::memory_order_release);
+    if (ad_stage_probe_state.logged) {
+      ad_stage_probe_capture.store(0.f, std::memory_order_release);
+      SetBffcAdStageObserver(false);
+    }
   }
 
   {
@@ -8554,14 +8597,14 @@ renodx::utils::settings::Settings settings = {
             std::scoped_lock lock(ad_stage_probe_mutex);
             ad_stage_probe_state = {};
           }
-          SetBffcAdStageObserver(true);
+          SetBffcAdStageObserver(false);
           {
             std::scoped_lock lock(center_probe_mutex);
             center_probe_state = {};
             center_probe_state.arm_serial = arm;
           }
           center_probe_capture.store(1.f, std::memory_order_release);
-          ad_stage_probe_capture.store(1.f, std::memory_order_release);
+          ad_stage_probe_arm_pending.store(true, std::memory_order_release);
           renodx::utils::log::i(
               (std::string("DL2 paired 0x268/AD probe armed (deferred readback), debug60=")
                + (shader_injection.debug_mode > 59.5f && shader_injection.debug_mode < 60.5f ? "1" : "0"))
