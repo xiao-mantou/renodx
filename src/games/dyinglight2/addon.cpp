@@ -2304,9 +2304,17 @@ struct BffcAdChainAuditState {
   uint64_t ad_present = 0u;
   uint64_t ad_draw_serial = 0u;
   GammaAuditResource bffc_output = {};
+  BffcAdChainEvent bffc_pre_ad_first = {};
+  BffcAdChainEvent bffc_pre_ad_last = {};
+  BffcAdChainEvent bffc_pre_ad_match_first = {};
+  BffcAdChainEvent bffc_pre_ad_match_last = {};
+  uint32_t bffc_pre_ad_count = 0u;
+  uint32_t bffc_pre_ad_match_count = 0u;
   GammaAuditResource ad_output = {};
   GammaAuditResource ad_input = {};
   BffcAdChainEvent ad_input_pre_writer = {};
+  BffcAdChainEvent ad_input_pre_first_writer = {};
+  uint32_t ad_input_pre_writer_count = 0u;
   bool ad_input_pre_writer_seen = false;
 };
 
@@ -2513,7 +2521,15 @@ static void RecordBffcAdChainEvent(
     audit.ad_draw_serial = draw_serial;
     audit.ad_output = output;
     audit.ad_input = input;
+    audit.bffc_pre_ad_first = {};
+    audit.bffc_pre_ad_last = {};
+    audit.bffc_pre_ad_match_first = {};
+    audit.bffc_pre_ad_match_last = {};
+    audit.bffc_pre_ad_count = 0u;
+    audit.bffc_pre_ad_match_count = 0u;
     audit.ad_input_pre_writer = {};
+    audit.ad_input_pre_first_writer = {};
+    audit.ad_input_pre_writer_count = 0u;
     audit.ad_input_pre_writer_seen = false;
   }
 
@@ -2545,8 +2561,22 @@ static void RecordBffcAdChainEvent(
         || (audit.ad_draw_serial != 0u && candidate.draw_serial >= audit.ad_draw_serial)) {
       return;
     }
+    if (candidate.shader_hash == 0xBFFC45ACu) {
+      if (audit.bffc_pre_ad_count == 0u) audit.bffc_pre_ad_first = candidate;
+      audit.bffc_pre_ad_last = candidate;
+      ++audit.bffc_pre_ad_count;
+      if (BffcAdChainEventWritesResource(candidate, audit.ad_input)) {
+        if (audit.bffc_pre_ad_match_count == 0u) audit.bffc_pre_ad_match_first = candidate;
+        audit.bffc_pre_ad_match_last = candidate;
+        ++audit.bffc_pre_ad_match_count;
+      }
+    }
     if (BffcAdChainEventWritesResource(candidate, audit.ad_input)) {
+      if (!audit.ad_input_pre_writer_seen) {
+        audit.ad_input_pre_first_writer = candidate;
+      }
       audit.ad_input_pre_writer = candidate;
+      ++audit.ad_input_pre_writer_count;
       audit.ad_input_pre_writer_seen = true;
     }
   };
@@ -6582,6 +6612,14 @@ void OnDownstreamDrawCapturePresent(
                << "=>" << static_cast<uint32_t>(resource.effective_view_format)
                << " size=" << resource.width << "x" << resource.height;
       };
+      const auto append_event_summary = [&](std::ostringstream& stream,
+                                            const char* label,
+                                            const BffcAdChainEvent& event) {
+        stream << " " << label << "=serial=" << event.draw_serial
+               << " present=" << event.present
+               << " shader=0x" << std::hex << std::uppercase << event.shader_hash << std::dec;
+        append_resource(stream, "out", event.output);
+      };
       std::ostringstream stream;
       stream << "DL2 BFFC->AD clone chain audit: capture=" << audit.capture_id
              << " generation=" << audit.start_generation << "=>"
@@ -6592,16 +6630,29 @@ void OnDownstreamDrawCapturePresent(
              << " bffc_seen=" << (audit.bffc_seen ? 1 : 0)
              << " ad_seen=" << (audit.ad_seen ? 1 : 0)
              << " ad_draw=present=" << audit.ad_present
-             << " serial=" << audit.ad_draw_serial;
+             << " serial=" << audit.ad_draw_serial
+             << " ad_input_pre_writers=" << audit.ad_input_pre_writer_count
+             << " bffc_pre_ad=" << audit.bffc_pre_ad_count
+             << " bffc_pre_ad_matches=" << audit.bffc_pre_ad_match_count;
       append_resource(stream, "bffc_output", audit.bffc_output);
       append_resource(stream, "ad_t0", audit.ad_input);
       append_resource(stream, "ad_output", audit.ad_output);
+      if (audit.bffc_pre_ad_count != 0u) {
+        append_event_summary(stream, "bffc_pre_first", audit.bffc_pre_ad_first);
+        append_event_summary(stream, "bffc_pre_last", audit.bffc_pre_ad_last);
+      }
+      if (audit.bffc_pre_ad_match_count != 0u) {
+        append_event_summary(stream, "bffc_pre_match_first", audit.bffc_pre_ad_match_first);
+        append_event_summary(stream, "bffc_pre_match_last", audit.bffc_pre_ad_match_last);
+      }
       if (audit.ad_input_pre_writer_seen) {
         const auto& writer = audit.ad_input_pre_writer;
         stream << " ad_input_pre_writer=present=" << writer.present
                << " gen=" << writer.generation
                << " serial=" << writer.draw_serial
                << " order=" << writer.draw_serial
+               << " count=" << audit.ad_input_pre_writer_count
+               << " first_serial=" << audit.ad_input_pre_first_writer.draw_serial
                << " " << (writer.is_compute ? "CS" : "PS")
                << " shader=0x" << std::hex << std::uppercase << writer.shader_hash
                << " cmd=0x" << writer.command_list
