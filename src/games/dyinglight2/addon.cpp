@@ -131,6 +131,9 @@ inline constexpr bool kEnableDl2ShaderHooks = true;
 inline constexpr bool kEnableDl2ShaderLayoutHooks = true;
 // Keep clone/RTV hot-swap disabled while testing replacement layout binding.
 inline constexpr bool kEnableDl2TargetHotSwap = false;
+// BFFC is the late normal-path producer for the resource consumed by 0xAD.
+// Keep its target activation separate from the crash-isolated 0x3E/0x268 hook.
+inline constexpr bool kEnableDl2BffcTargetActivation = true;
 inline constexpr bool kEnableDl2ShaderReplacements = true;
 bool dlss_fg_tag_clone_logged = false;
 bool dlss_fg_color_tag_suppression_logged = false;
@@ -262,6 +265,8 @@ std::atomic_uint32_t dlss_fg_execute_candidate_remaining = 0u;
 std::atomic_uint32_t dlss_fg_final_copy_diagnostic_count = 0u;
 std::atomic_uint32_t dlss_fg_final_copy_match_diagnostic_count = 0u;
 std::atomic_uint64_t dlss_fg_swapchain_generation = 1u;
+std::atomic_bool dl2_hdr_target_activation_ready = false;
+std::atomic_uint64_t dl2_hdr_target_activation_generation = 0u;
 
 struct DlssFgTaggedResourceSnapshot {
   uint64_t resource = 0u;
@@ -1892,8 +1897,19 @@ static void ResetBffcAdChainAudit();
 static void ResetAdStageProbeOnSwapchainDestroy();
 static void SetBffcAdStageObserver(bool enabled);
 
+// This callback only invalidates the normal-path target activation gate. The
+// heavier DLSS/FG teardown callback below remains disabled during crash
+// isolation; clone activation must never run against a retiring generation.
+void OnDl2HdrActivationDestroySwapchain(reshade::api::swapchain*, bool) {
+  dl2_hdr_target_activation_ready.store(false, std::memory_order_release);
+  const uint64_t generation =
+      dlss_fg_swapchain_generation.fetch_add(1u, std::memory_order_acq_rel) + 1u;
+  dl2_hdr_target_activation_generation.store(generation, std::memory_order_release);
+}
+
 void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) {
   auto* device = swapchain != nullptr ? swapchain->get_device() : nullptr;
+  dl2_hdr_target_activation_ready.store(false, std::memory_order_release);
   ResetProxySourceProbeOnSwapchainDestroy();
   ResetBffcAdChainAudit();
   ResetAdStageProbeOnSwapchainDestroy();
@@ -2394,7 +2410,13 @@ void OnTypelessAuditInitSwapchain(reshade::api::swapchain* swapchain, bool) {
       dlss_fg_active_swapchain.store(reinterpret_cast<uintptr_t>(swapchain), std::memory_order_release);
     }
   }
-  const auto desc = device->get_resource_desc(swapchain->get_current_back_buffer());
+  const auto back_buffer = swapchain->get_current_back_buffer();
+  const auto desc = device->get_resource_desc(back_buffer);
+  const uint64_t generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
+  dl2_hdr_target_activation_generation.store(generation, std::memory_order_release);
+  dl2_hdr_target_activation_ready.store(
+      back_buffer.handle != 0u && desc.texture.width != 0u && desc.texture.height != 0u,
+      std::memory_order_release);
   std::scoped_lock lock(typeless_creation_audit_mutex);
   typeless_creation_indices.clear();
   typeless_creation_width = desc.texture.width;
@@ -7498,6 +7520,35 @@ bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
   return true;
 }
 
+bool OnDl2BffcHdrTargetDraw(reshade::api::command_list* cmd_list) {
+  // Observe the native bindings before the formal HDR activation rewrites
+  // them; the observer itself remains mutation-free and keeps mutation=0.
+  const bool result = OnDl2BffcProbeDraw(cmd_list);
+  if constexpr (kEnableDl2BffcTargetActivation) {
+    const uint64_t generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
+    const bool hdr_mode = shader_injection.tone_map_type >= 1.f;
+    const bool generation_ready = dl2_hdr_target_activation_ready.load(std::memory_order_acquire)
+                                  && dl2_hdr_target_activation_generation.load(std::memory_order_acquire)
+                                         == generation;
+    bool live_rtv = false;
+    if (hdr_mode && generation_ready && cmd_list != nullptr) {
+      for (const auto& rtv : renodx::utils::swapchain::GetRenderTargets(cmd_list)) {
+        if (rtv.handle == 0u) continue;
+        renodx::utils::resource::GetLiveResourceViewInfo(
+            rtv,
+            [&live_rtv](const renodx::utils::resource::ResourceViewInfo& info) {
+              live_rtv = live_rtv || (!info.destroyed && info.device != nullptr);
+            });
+        if (live_rtv) break;
+      }
+    }
+    if (hdr_mode && generation_ready && live_rtv) {
+      ActivateDl2HdrTarget(cmd_list);
+    }
+  }
+  return result;
+}
+
 void OnDl2BffcProbeDrawn(reshade::api::command_list* cmd_list) {
   if (!upscaler_color_path_audit_state.active
       && !upscaler_input_audit_state.active
@@ -7524,10 +7575,10 @@ void OnDl2BffcProbeDrawn(reshade::api::command_list* cmd_list) {
 renodx::mods::shader::CustomShader CreateDl2BffcProbeShader() {
   auto shader = renodx::mods::shader::CreateDirectXShader(
       0xBFFC45ACu, __0xBFFC45AC_dx11, __0xBFFC45AC_dx12);
-  shader.on_draw = &OnDl2BffcProbeDraw;
-  // This entry is an observer only. The diagnostic arm below enables its
-  // on_drawn callback for one capture; on_replace remains false so normal
-  // BFFC rendering never binds the copied probe pipeline.
+  shader.on_draw = &OnDl2BffcHdrTargetDraw;
+  // The on_draw callback owns the formal HDR target activation and then runs
+  // the read-only observer. The diagnostic arm below enables only on_drawn
+  // for one capture; on_replace remains false for native BFFC rendering.
   shader.on_replace = [](reshade::api::command_list*) { return false; };
   return shader;
 }
@@ -7564,9 +7615,8 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     // 0x268 is temporarily isolated below; keep only the upstream 0x3E
     // replacement while the layout-compatible LUT replacement is tested.
     TargetedDl2HdrShader(0x268BAB6D),
-    // BFFC is registered as an observer-only entry. It never replaces the
-    // native pipeline; its post-draw callback is enabled only by the one-shot
-    // AD stage probe below.
+    // BFFC keeps native rendering and uses a separate normal-path activation
+    // wrapper; its observer remains read-only and post-draw is one-shot.
     {0xBFFC45ACu, CreateDl2BffcProbeShader()},
     // UI replacements remain disabled during startup crash isolation.
     // 0xAD remains audit-only. Its copied HDR template is not safe to register
@@ -8829,6 +8879,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // bridge. Reset their cache on resize without freeing tables until
       // device teardown, so stale post-resize bindings cannot be reused.
       reshade::register_event<reshade::addon_event::destroy_swapchain>(
+          OnDl2HdrActivationDestroySwapchain);
+      reshade::register_event<reshade::addon_event::destroy_swapchain>(
           renodx::games::dyinglight2::descriptor_override::OnDestroySwapchain);
       if constexpr (kEnableDl2FgHooks) {
         reshade::register_event<reshade::addon_event::destroy_device>(OnDestroyDl2Device);
@@ -9051,6 +9103,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         reshade::unregister_event<reshade::addon_event::destroy_command_queue>(UnregisterDlssFgNativeQueue);
       }
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
+      reshade::unregister_event<reshade::addon_event::destroy_swapchain>(
+          OnDl2HdrActivationDestroySwapchain);
       reshade::unregister_event<reshade::addon_event::destroy_swapchain>(
           renodx::games::dyinglight2::descriptor_override::OnDestroySwapchain);
       if constexpr (kEnableDl2FgHooks) {
