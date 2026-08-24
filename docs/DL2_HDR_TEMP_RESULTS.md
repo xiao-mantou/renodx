@@ -120,3 +120,27 @@ Follow-up review: the first runtime attempt installed the Present hooks only aft
 - Runtime comparison: low/mid-tone pixels in HDR/RenoDRT now pixel-level match Vanilla/Off in RGB and perceived luminance.
 - The prior low/mid fog desaturation/darkening is no longer present in this comparison.
 - Do not reintroduce A2 or change ToneMap/Proxy parameters based on the low/mid-tone issue; the effective fix is the duplicate inverse-sRGB decode removal.
+
+## H1 hybrid LUT bridge (2026-08-24)
+
+- Commit `ff20c90` adds the H1 HDR-only 0x268 bridge. Vanilla/Off remains the
+  original saturated DL2 curve; 0x3E, 0xAD, Proxy, ToneMap settings, and the
+  single inverse-sRGB decode are unchanged.
+- HDR computes the unclipped DL2 curve `E`, then uses one scalar per pixel:
+  `scale = (max(E) > 1) ? 1/max(E) : 1`; LUT input is `E * scale`.
+- The same `scale` is kept through the complete native grading chain and only
+  then restored with `DivideSafe(graded_lut, scale)` before the standalone HDR
+  ToneMapPass. No per-channel clamp is used, so hue ratios are preserved.
+- `max(E) <= 1` is exactly the Vanilla reference (C0 at the threshold); C1 is
+  intentionally not claimed because strict Vanilla identity and immediate
+  post-threshold compression cannot share the same derivative.
+- Earlier runtime logs showing `DL2 build: 48c7646` were the previous package
+  and did not test H1. The H1 package must identify itself as `ff20c90` before
+  judging the bridge.
+- User confirmed the current H1 package is now usable for validation. No
+  visual regression details were inferred beyond that confirmation.
+
+Cleanup can proceed as a separate change. Keep the normal 0x3E/0x268 HDR path,
+the confirmed `4c4bc99` decode fix, and any resource-lifecycle code that still
+guards runtime stability. Remove diagnostic/probe code only in small audited
+batches, with a build/test boundary after each batch.
