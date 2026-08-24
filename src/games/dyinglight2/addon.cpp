@@ -135,6 +135,10 @@ inline constexpr bool kEnableDl2TargetHotSwap = false;
 // path. The BFFC->AD audit is diagnostic only and does not define this policy.
 inline constexpr bool kEnableDl2BffcTargetActivation = true;
 inline constexpr bool kEnableDl2ShaderReplacements = true;
+// Performance A/B: addon-owned draw/transfer/state observers are diagnostic
+// only. Keep this independent from HDR shader replacements and swapchain proxy
+// so CPU observer cost can be measured without changing the GPU path.
+inline constexpr bool kEnableDl2CpuObservers = false;
 bool dlss_fg_tag_clone_logged = false;
 bool dlss_fg_color_tag_suppression_logged = false;
 std::atomic_int32_t dlss_fg_aux_tag_mode_logged = -1;
@@ -7466,7 +7470,10 @@ bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
 bool OnDl2BffcHdrTargetDraw(reshade::api::command_list* cmd_list) {
   // Observe the native bindings before the formal HDR activation rewrites
   // them; the observer itself remains mutation-free and keeps mutation=0.
-  const bool result = OnDl2BffcProbeDraw(cmd_list);
+  bool result = true;
+  if constexpr (kEnableDl2CpuObservers) {
+    result = OnDl2BffcProbeDraw(cmd_list);
+  }
   if constexpr (kEnableDl2BffcTargetActivation) {
     const uint64_t generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
     const bool hdr_mode = shader_injection.tone_map_type >= 1.f;
@@ -8629,16 +8636,18 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::utils::constants::Use(fdw_reason);
       renodx::utils::state::Use(fdw_reason);
 
-      renodx::utils::command_action::Register(
-          OnDownstreamDrawCapture,
-          {.shader_hash = 0u,
-           .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW
-                            | renodx::utils::command_action::COMMAND_TYPE_DIRECT_DISPATCH
-                            | renodx::utils::command_action::COMMAND_TYPE_INDIRECT});
-      renodx::utils::command_action::Register(
-          OnGammaDrawAudit,
-          {.shader_hash = 0xAD085E81u,
-           .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+      if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
+        renodx::utils::command_action::Register(
+            OnDownstreamDrawCapture,
+            {.shader_hash = 0u,
+             .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW
+                              | renodx::utils::command_action::COMMAND_TYPE_DIRECT_DISPATCH
+                              | renodx::utils::command_action::COMMAND_TYPE_INDIRECT});
+        renodx::utils::command_action::Register(
+            OnGammaDrawAudit,
+            {.shader_hash = 0xAD085E81u,
+             .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+      }
       if constexpr (renodx::games::dyinglight2::descriptor_override::kEnableTargetOverrides) {
         renodx::utils::command_action::Register(
             renodx::games::dyinglight2::descriptor_override::OnTargetOutputDraw,
@@ -8677,9 +8686,15 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           "DL2 shader replacements: ",
           kEnableDl2ShaderReplacements ? "enabled" : "disabled",
           " for crash A/B");
-      reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
-      reshade::register_event<reshade::addon_event::clear_render_target_view>(
-          OnDownstreamClearRenderTargetView);
+      renodx::utils::log::i(
+          "DL2 CPU observers: ",
+          kEnableDl2CpuObservers ? "enabled" : "disabled",
+          " for performance A/B");
+      if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
+        reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
+        reshade::register_event<reshade::addon_event::clear_render_target_view>(
+            OnDownstreamClearRenderTargetView);
+      }
       if constexpr (kEnableDl2ShaderHooks) {
         reshade::register_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
       }
@@ -8688,14 +8703,16 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         reshade::register_event<reshade::addon_event::destroy_command_queue>(UnregisterDlssFgNativeQueue);
       }
       reshade::register_event<reshade::addon_event::init_swapchain>(OnTypelessAuditInitSwapchain);
-      reshade::register_event<reshade::addon_event::init_resource>(OnTypelessAuditInitResource);
-      reshade::register_event<reshade::addon_event::destroy_resource>(OnTypelessAuditDestroyResource);
-      reshade::register_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
-      reshade::register_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
-      reshade::register_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
-      reshade::register_event<reshade::addon_event::push_descriptors>(OnGammaAuditPushDescriptors);
-      reshade::register_event<reshade::addon_event::map_buffer_region>(OnUpscalerMapBufferRegion);
-      reshade::register_event<reshade::addon_event::unmap_buffer_region>(OnUpscalerUnmapBufferRegion);
+      if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
+        reshade::register_event<reshade::addon_event::init_resource>(OnTypelessAuditInitResource);
+        reshade::register_event<reshade::addon_event::destroy_resource>(OnTypelessAuditDestroyResource);
+        reshade::register_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
+        reshade::register_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
+        reshade::register_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
+        reshade::register_event<reshade::addon_event::push_descriptors>(OnGammaAuditPushDescriptors);
+        reshade::register_event<reshade::addon_event::map_buffer_region>(OnUpscalerMapBufferRegion);
+        reshade::register_event<reshade::addon_event::unmap_buffer_region>(OnUpscalerUnmapBufferRegion);
+      }
       if constexpr (kEnableDl2FgHooks) {
         reshade::register_event<reshade::addon_event::reset_command_list>(OnDlssFgResetCommandList);
         reshade::register_event<reshade::addon_event::execute_command_list>(OnDlssFgExecuteCommandList);
@@ -8899,33 +8916,41 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       break;
     }
     case DLL_PROCESS_DETACH:
-      renodx::utils::command_action::Unregister(OnDownstreamDrawCapture);
-      renodx::utils::command_action::Unregister(OnGammaDrawAudit);
+      if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
+        renodx::utils::command_action::Unregister(OnDownstreamDrawCapture);
+        renodx::utils::command_action::Unregister(OnGammaDrawAudit);
+      }
       if constexpr (renodx::games::dyinglight2::descriptor_override::kEnableTargetOverrides) {
         renodx::utils::command_action::Unregister(
             renodx::games::dyinglight2::descriptor_override::OnTargetOutputDraw);
         renodx::utils::command_action::Unregister(
             renodx::games::dyinglight2::descriptor_override::OnTargetDraw);
       }
-      reshade::unregister_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
+      if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
+        reshade::unregister_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
+      }
       if constexpr (kEnableDl2FgHooks) {
         reshade::unregister_event<reshade::addon_event::barrier>(OnDlssFgBackbufferBarrier);
       }
-      reshade::unregister_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
-      reshade::unregister_event<reshade::addon_event::clear_render_target_view>(
-          OnDownstreamClearRenderTargetView);
+      if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
+        reshade::unregister_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
+        reshade::unregister_event<reshade::addon_event::clear_render_target_view>(
+            OnDownstreamClearRenderTargetView);
+      }
       if constexpr (kEnableDl2ShaderHooks) {
         reshade::unregister_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
       }
       reshade::unregister_event<reshade::addon_event::init_swapchain>(OnTypelessAuditInitSwapchain);
-      reshade::unregister_event<reshade::addon_event::init_resource>(OnTypelessAuditInitResource);
-      reshade::unregister_event<reshade::addon_event::destroy_resource>(OnTypelessAuditDestroyResource);
-      reshade::unregister_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
-      reshade::unregister_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
-      reshade::unregister_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
-      reshade::unregister_event<reshade::addon_event::push_descriptors>(OnGammaAuditPushDescriptors);
-      reshade::unregister_event<reshade::addon_event::map_buffer_region>(OnUpscalerMapBufferRegion);
-      reshade::unregister_event<reshade::addon_event::unmap_buffer_region>(OnUpscalerUnmapBufferRegion);
+      if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
+        reshade::unregister_event<reshade::addon_event::init_resource>(OnTypelessAuditInitResource);
+        reshade::unregister_event<reshade::addon_event::destroy_resource>(OnTypelessAuditDestroyResource);
+        reshade::unregister_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
+        reshade::unregister_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
+        reshade::unregister_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
+        reshade::unregister_event<reshade::addon_event::push_descriptors>(OnGammaAuditPushDescriptors);
+        reshade::unregister_event<reshade::addon_event::map_buffer_region>(OnUpscalerMapBufferRegion);
+        reshade::unregister_event<reshade::addon_event::unmap_buffer_region>(OnUpscalerUnmapBufferRegion);
+      }
       if constexpr (kEnableDl2FgHooks) {
         reshade::unregister_event<reshade::addon_event::reset_command_list>(OnDlssFgResetCommandList);
         reshade::unregister_event<reshade::addon_event::execute_command_list>(OnDlssFgExecuteCommandList);
@@ -8970,7 +8995,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   // Register after the swapchain proxy so the one-shot capture includes any
   // proxy copy/resolve work issued from its own Present callback.
   if (fdw_reason == DLL_PROCESS_ATTACH) {
-    reshade::register_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
+    if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
+      reshade::register_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
+    }
     if constexpr (kEnableDl2FgHooks) {
       reshade::register_event<reshade::addon_event::barrier>(OnDlssFgBackbufferBarrier);
     }

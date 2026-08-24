@@ -167,3 +167,16 @@ batches, with a build/test boundary after each batch.
   Game=203, WhiteClip=100) still measured about 242 nit.
 - This build is intended to isolate CPU-side tracing overhead from the separate
   RenoDRT brightness issue.
+
+## Performance A/B 2 (2026-08-25)
+
+- Added compile-time `kEnableDl2CpuObservers=false`.
+- Disabled addon-owned command/draw, copy/resolve/bind, descriptor push,
+  map/unmap, resource-audit, clear, and Present snapshot observers.
+- Kept `state::Use`, `OnTypelessAuditInitSwapchain`, HDR shader replacements,
+  BFFC HDR target activation, swapchain proxy, clone/RTV lifetime, and all HDR
+  math/settings unchanged.
+- `kEnableDl2FgHooks` remains false; FG-required callbacks stay gated by that
+  independent switch.
+- Test goal: compare frame pacing against Performance A/B 1 and no-addon. A
+  change here is CPU observer cost only; GPU-pass cost is tested separately.
