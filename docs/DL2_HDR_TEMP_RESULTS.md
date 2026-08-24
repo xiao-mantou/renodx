@@ -113,3 +113,10 @@ Follow-up review: the first runtime attempt installed the Present hooks only aft
 - DL2 then applies `scene_linear = source * 0.6`, so a red source near 4 becomes about 2.4, or roughly 487 nits at the fixed 203-nit intermediate unit before tone mapping.
 - Raising highlight exposure retention from 75 to 100 and its clamp from 2 to 4 produced no meaningful brightness change. Switching Daniele to Neutwo also produced no meaningful change.
 - Next probe: `DL2 HDR Expansion Grid` repeats the image in four quadrants: current baseline, no 0.6 calibration, fixed highlight-only gain, and Peak-driven highlight-only gain. It does not alter the normal path.
+
+## Clean HDR LUT Decode Baseline (ed97c21)
+
+- Path: HDR/RenoDRT normal path; A2 extended-curve bridge reverted; `4c4bc99` single inverse-sRGB decode retained.
+- Runtime comparison: low/mid-tone pixels in HDR/RenoDRT now pixel-level match Vanilla/Off in RGB and perceived luminance.
+- The prior low/mid fog desaturation/darkening is no longer present in this comparison.
+- Do not reintroduce A2 or change ToneMap/Proxy parameters based on the low/mid-tone issue; the effective fix is the duplicate inverse-sRGB decode removal.

@@ -7381,7 +7381,6 @@ renodx::mods::shader::CustomShader CreateDl2HdrShader(
 #if !defined(RENODX_DL2_MINIMAL_DIAGNOSTIC_BUILD) || defined(RENODX_DL2_BFFC_STAGE_PROBE)
 bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
   const bool stage_probe = IsAdStageProbeCaptureRequested();
-  if (!stage_probe) ActivateDl2HdrTarget(cmd_list);
   {
     std::scoped_lock lock(downstream_draw_capture_mutex);
     const bool chain_capture = bffc_ad_chain_audit_state.active;
@@ -7393,19 +7392,10 @@ bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
 
   auto* state = renodx::utils::shader::GetCurrentState(cmd_list);
   uint64_t native_pipeline = 0u;
-  uint64_t replacement_pipeline = 0u;
-  bool build_ok = false;
   if (state != nullptr) {
     auto* pixel_state = renodx::utils::shader::GetCurrentPixelState(state);
     renodx::utils::shader::PopulateStageState(pixel_state);
-    if (pixel_state->pipeline_details != nullptr) {
-      native_pipeline = pixel_state->pipeline.handle;
-      build_ok = renodx::utils::shader::BuildReplacementPipeline(pixel_state->pipeline_details);
-      replacement_pipeline = pixel_state->pipeline_details->replacement_pipeline.handle;
-      if (replacement_pipeline != 0u) {
-        cmd_list->bind_pipeline(pixel_state->applied_stage, {replacement_pipeline});
-      }
-    }
+    native_pipeline = pixel_state->pipeline.handle;
   }
   GammaAuditResource input = {};
   GammaAuditResource output = {};
@@ -7473,7 +7463,7 @@ bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
     RecordBffcAdChainEvent(cmd_list, 0xBFFC45ACu, false, input, output, {});
   }
   std::ostringstream resources;
-  resources << "DL2 BFFC replacement resources: cmd=0x" << std::hex
+  resources << "DL2 BFFC observer resources: cmd=0x" << std::hex
             << reinterpret_cast<uintptr_t>(cmd_list)
             << " epoch=" << std::dec << epoch
             << " t0=0x" << std::hex << input.resource << "=>0x" << input.effective
@@ -7499,11 +7489,10 @@ bool OnDl2BffcProbeDraw(reshade::api::command_list* cmd_list) {
     });
   }
   std::ostringstream stream;
-  stream << "DL2 BFFC replacement probe: cmd=0x" << std::hex
+  stream << "DL2 BFFC observer probe: cmd=0x" << std::hex
          << reinterpret_cast<uintptr_t>(cmd_list)
          << " native=0x" << native_pipeline
-         << " replacement=0x" << replacement_pipeline
-         << " build=" << std::dec << (build_ok ? 1 : 0)
+         << " mutation=0"
          << " capture=" << upscaler_color_path_audit_state.capture_id;
   renodx::utils::log::i(stream.str().c_str());
   return true;
