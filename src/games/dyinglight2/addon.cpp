@@ -131,9 +131,10 @@ inline constexpr bool kEnableDl2ShaderHooks = true;
 inline constexpr bool kEnableDl2ShaderLayoutHooks = true;
 // Keep clone/RTV hot-swap disabled while testing replacement layout binding.
 inline constexpr bool kEnableDl2TargetHotSwap = false;
-// BFFC is the late normal-path producer for the resource consumed by 0xAD.
-// Keep its target activation separate from the crash-isolated 0x3E/0x268 hook.
-inline constexpr bool kEnableDl2BffcTargetActivation = true;
+// Temporary A/B isolation: keep BFFC observation active, but do not rewrite
+// its RTVs. The audit showed BFFC output does not match the later 0xAD input;
+// this must not be treated as the final HDR-path policy.
+inline constexpr bool kEnableDl2BffcTargetActivation = false;
 inline constexpr bool kEnableDl2ShaderReplacements = true;
 bool dlss_fg_tag_clone_logged = false;
 bool dlss_fg_color_tag_suppression_logged = false;
