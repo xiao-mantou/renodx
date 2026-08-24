@@ -8620,12 +8620,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       addon_module = h_module;
       if (!reshade::register_addon(h_module)) return FALSE;
 
-      // This bounded diagnostic needs the D3D12 descriptor heap and command
-      // state mirrors to identify fullscreen color inputs across DLSS modes.
-      // The existing constant cache lets the 0x3E audit compare the original
-      // two-float4 SDR curve without mapping or reading GPU textures.
-      renodx::utils::descriptor::trace_descriptor_tables = true;
-      renodx::utils::constants::capture_constant_buffers = true;
+      // Keep the normal runtime path idle when no diagnostic capture is armed.
+      // Global descriptor/constant tracing was useful during investigation, but
+      // it adds per-update locking and buffer copies throughout the game.
+      renodx::utils::descriptor::trace_descriptor_tables = false;
+      renodx::utils::constants::capture_constant_buffers = false;
       renodx::utils::descriptor::Use(fdw_reason);
       renodx::utils::constants::Use(fdw_reason);
       renodx::utils::state::Use(fdw_reason);

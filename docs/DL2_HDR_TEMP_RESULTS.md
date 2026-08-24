@@ -156,3 +156,14 @@ batches, with a build/test boundary after each batch.
 - This batch is intentionally source-conservative: the now-unreachable probe
   state/readback helpers remain for a later audited deletion after a successful
   build/test boundary.
+
+## Performance A/B 1 (2026-08-25)
+
+- Disabled global `descriptor::trace_descriptor_tables` and
+  `constants::capture_constant_buffers` during addon initialization.
+- Kept `state::Use`, HDR shader replacements, BFFC activation, clone/RTV
+  lifetime, swapchain handling, RenoDRT math, and all output settings unchanged.
+- Baseline from runtime build `7acd910`: RenoDRT (`ToneMapType=3`, Peak=1000,
+  Game=203, WhiteClip=100) still measured about 242 nit.
+- This build is intended to isolate CPU-side tracing overhead from the separate
+  RenoDRT brightness issue.
