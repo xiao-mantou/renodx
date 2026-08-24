@@ -3999,7 +3999,6 @@ inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
                                          shader_state, renodx::utils::shader::PIXEL_INDEX)
                                    : 0u;
   if (shader_hash == 0xAD085E81u) {
-    CaptureAdStageProbeResources(context.cmd_list);
     if constexpr (std::is_same_v<Context, renodx::utils::command_action::CommandContext<
                                               renodx::utils::command_action::DrawArguments>>) {
       return {.post_callback = DlssFgAdPostDraw, .replay = true};
@@ -6547,35 +6546,6 @@ void OnDownstreamDrawCapturePresent(
   CaptureReshadeSwapchainSnapshot(queue, swapchain);
   if constexpr (kEnableDl2FgHooks) TryInstallStreamlineHook();
 
-  // Allocate the tiny BFFC staging pool before enabling the observer. The
-  // button may be clicked after the frame's BFFC draw has already started;
-  // arming at Present guarantees the next frame has a valid copy destination.
-  if (ad_stage_probe_arm_pending.load(std::memory_order_acquire)) {
-    std::scoped_lock probe_lock(ad_stage_probe_mutex);
-    if (PrepareBffcAdStageStaging(queue != nullptr ? queue->get_device() : nullptr,
-                                  ad_stage_probe_state)) {
-      ad_stage_probe_arm_pending.store(false, std::memory_order_release);
-      SetBffcAdStageObserver(true);
-      ad_stage_probe_capture.store(1.f, std::memory_order_release);
-      renodx::utils::log::i("DL2 AD stage probe active for next frame (BFFC staging ready)");
-    }
-  }
-
-  if (IsProxySourceProbeCaptureRequested()) {
-    std::scoped_lock probe_lock(proxy_source_probe_mutex);
-    if (!proxy_source_probe_state.captured && !proxy_source_probe_state.logged) {
-      CaptureProxySourceProbeResource(swapchain);
-    }
-    if (proxy_source_probe_state.captured && !proxy_source_probe_state.copy_submitted
-        && !proxy_source_probe_state.logged) {
-      BeginProxySourceProbeReadback(queue, proxy_source_probe_state);
-    } else if (proxy_source_probe_state.copy_submitted && !proxy_source_probe_state.logged) {
-      CompleteProxySourceProbeReadback(queue, proxy_source_probe_state);
-    }
-    if (proxy_source_probe_state.logged) {
-      proxy_source_probe_capture.store(0.f, std::memory_order_release);
-    }
-  }
   // One-shot, first-Present only. Reports the final presentation state so an
   // HDR10 black screen can be told apart from a wrong-encoding black screen.
   // It reads descriptors and handles only: no readback, dump, or redirection.
@@ -6606,33 +6576,6 @@ void OnDownstreamDrawCapturePresent(
     s << ", swap_chain_use_hdr10=" << swap_chain_use_hdr10;
     s << ")";
     reshade::log::message(reshade::log::level::info, s.str().c_str());
-  }
-
-  // DebugMode 60 readback: submit at the first Present after the draw, then
-  // map one Present later. This path never waits for the GPU.
-  if (IsCenterProbeCaptureRequested()) {
-    std::scoped_lock lock(center_probe_mutex);
-    if (center_probe_state.captured && !center_probe_state.copy_submitted && !center_probe_state.logged) {
-      BeginCenterProbeReadback(queue, center_probe_state);
-    } else if (center_probe_state.copy_submitted && !center_probe_state.logged) {
-      CompleteCenterProbeReadback(queue, center_probe_state);
-    }
-    if (center_probe_state.logged) {
-      center_probe_capture.store(0.f, std::memory_order_release);
-    }
-  }
-
-  if (IsAdStageProbeCaptureRequested()) {
-    std::scoped_lock lock(ad_stage_probe_mutex);
-    if (ad_stage_probe_state.captured && !ad_stage_probe_state.copy_submitted && !ad_stage_probe_state.logged) {
-      BeginAdStageProbeReadback(queue, ad_stage_probe_state);
-    } else if (ad_stage_probe_state.copy_submitted && !ad_stage_probe_state.logged) {
-      CompleteAdStageProbeReadback(queue, ad_stage_probe_state);
-    }
-    if (ad_stage_probe_state.logged) {
-      ad_stage_probe_capture.store(0.f, std::memory_order_release);
-      SetBffcAdStageObserver(false);
-    }
   }
 
   {
@@ -8538,118 +8481,6 @@ renodx::utils::settings::Settings settings = {
           downstream_draw_capture_state = {};
           renodx::utils::log::i("DL2 post-LUT transfer capture armed.");
           return false; },
-        .is_visible = []() { return current_settings_mode >= 2; },
-    },
-    new renodx::utils::settings::Setting{
-        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
-        .label = "Capture 0x268 Center Probe",
-        .section = "Debug",
-        .tooltip = "One-shot diagnostic: reads full RGB I/N/L/B from the FP16 linear 0x268 RTV after two Presents. Values come from one fixed source sample at (0.5,0.5). No tone-map or brightness changes.",
-        .on_click = []() {
-          const uint64_t arm = ++dl2_probe_arm_serial;
-          {
-            std::scoped_lock lock(center_probe_mutex);
-            center_probe_state = {};
-            center_probe_state.arm_serial = arm;
-          }
-          center_probe_capture.store(1.f, std::memory_order_release);
-          renodx::utils::log::i("DL2 0x268 center probe capture armed (deferred FP16 readback).");
-          return false; },
-        .is_visible = []() { return current_settings_mode >= 2; },
-    },
-    new renodx::utils::settings::Setting{
-        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
-        .label = "Capture Proxy Source Pixel",
-        .section = "Debug",
-        .tooltip = "One-shot diagnostic: reads five RGB pixels (four quadrant centers plus center) from the FP16 clone actually sampled by the final Proxy. Uses delayed tiny staging and a fence; no HDR or Proxy math changes.",
-        .on_click = []() {
-          const uint64_t arm = ++dl2_probe_arm_serial;
-          {
-            std::scoped_lock lock(proxy_source_probe_mutex);
-            proxy_source_probe_state = {};
-            proxy_source_probe_state.arm_serial = arm;
-          }
-          proxy_source_probe_capture.store(1.f, std::memory_order_release);
-          renodx::utils::log::i("DL2 proxy source pixel probe armed (deferred 1x5 readback).");
-          return false;
-        },
-        .is_visible = []() { return current_settings_mode >= 2; },
-    },
-    new renodx::utils::settings::Setting{
-        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
-        .label = "Capture 0x268 Producer Consumer Chain",
-        .section = "Debug",
-        .tooltip = "One-shot combined audit: captures the 0x268 RTV, same-Present consumer draws, and CopyResource/CopyTexture/Resolve operations with resource, clone, proxy, format, and size metadata. No readback or rendering changes.",
-        .on_click = []() {
-          const uint64_t arm = ++dl2_probe_arm_serial;
-          std::scoped_lock lock(downstream_draw_capture_mutex);
-          downstream_draw_capture = 1.f;
-          downstream_transfer_capture = 1.f;
-          downstream_draw_capture_state = {};
-          downstream_capture_rtvs.clear();
-          downstream_capture_t0_views.clear();
-          {
-            std::scoped_lock probe_lock(proxy_source_probe_mutex);
-            proxy_source_probe_state = {};
-            proxy_source_probe_state.arm_serial = arm;
-          }
-          proxy_source_probe_capture.store(1.f, std::memory_order_release);
-          renodx::utils::log::i("DL2 0x268 producer/consumer chain capture armed.");
-          return false;
-        },
-        .is_visible = []() { return current_settings_mode >= 2; },
-    },
-    new renodx::utils::settings::Setting{
-        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
-        .label = "Capture 0x268 ToneMapPass + Proxy Range",
-        .section = "Debug",
-        .tooltip = "One-shot paired read-only probe. Reads TL/TR/BL/BR/C from the 0x268 ToneMapPass RTV and the FP16 Proxy source with the same UVs, using delayed tiny staging resources. No HDR or Proxy math changes.",
-        .on_click = []() {
-          const uint64_t arm = ++dl2_probe_arm_serial;
-          {
-            std::scoped_lock lock(center_probe_mutex);
-            center_probe_state = {};
-            center_probe_state.range_mode = true;
-            center_probe_state.arm_serial = arm;
-          }
-          {
-            std::scoped_lock lock(proxy_source_probe_mutex);
-            proxy_source_probe_state = {};
-            proxy_source_probe_state.arm_serial = arm;
-          }
-          center_probe_capture.store(1.f, std::memory_order_release);
-          proxy_source_probe_capture.store(1.f, std::memory_order_release);
-          renodx::utils::log::i(
-              "DL2 paired 0x268 ToneMapPass/Proxy range probe armed (deferred 1x5 readback).");
-          return false;
-        },
-        .is_visible = []() { return current_settings_mode >= 2; },
-    },
-    new renodx::utils::settings::Setting{
-        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
-        .label = "Capture 0xAD Stage Probe",
-        .section = "Debug",
-        .tooltip = "One-shot paired read-only probe. Snapshots matching BFFC output immediately after its draw, then reads 0xAD input/output with delayed tiny staging resources. Set Legacy Debug Mode=60 for the existing 0x268 probe; no HDR logic changes.",
-        .on_click = []() {
-          const uint64_t arm = ++dl2_probe_arm_serial;
-          {
-            std::scoped_lock lock(ad_stage_probe_mutex);
-            ad_stage_probe_state = {};
-          }
-          SetBffcAdStageObserver(false);
-          {
-            std::scoped_lock lock(center_probe_mutex);
-            center_probe_state = {};
-            center_probe_state.arm_serial = arm;
-          }
-          center_probe_capture.store(1.f, std::memory_order_release);
-          ad_stage_probe_arm_pending.store(true, std::memory_order_release);
-          renodx::utils::log::i(
-              (std::string("DL2 paired 0x268/AD probe armed (deferred readback), debug60=")
-               + (shader_injection.debug_mode > 59.5f && shader_injection.debug_mode < 60.5f ? "1" : "0"))
-                  .c_str());
-          return false;
-        },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{

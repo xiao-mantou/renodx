@@ -144,3 +144,15 @@ Cleanup can proceed as a separate change. Keep the normal 0x3E/0x268 HDR path,
 the confirmed `4c4bc99` decode fix, and any resource-lifecycle code that still
 guards runtime stability. Remove diagnostic/probe code only in small audited
 batches, with a build/test boundary after each batch.
+
+## Probe cleanup batch 1 (2026-08-24)
+
+- Removed the UI and runtime trigger paths for the Center/Proxy Source/AD-stage
+  readback probes and the combined 0x268 producer-consumer/range probe buttons.
+- Removed the AD-stage capture call from the normal 0xAD draw audit and removed
+  the Present-time staging/readback submission paths.
+- Preserved BFFC target activation, FG bridge callbacks, clone/RTV lifetime,
+  swapchain generation handling, and the remaining resource-chain observers.
+- This batch is intentionally source-conservative: the now-unreachable probe
+  state/readback helpers remain for a later audited deletion after a successful
+  build/test boundary.
