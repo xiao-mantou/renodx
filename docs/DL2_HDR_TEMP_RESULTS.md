@@ -204,3 +204,14 @@ batches, with a build/test boundary after each batch.
   are also disabled.
 - Test goal: compare against A/B 2. This isolates generic state mirror cost
   with the Proxy pass enabled. It is not a brightness test.
+
+## Performance conclusion (2026-08-25)
+
+- User result: A/B 3 (Proxy disabled) felt clearly smoother during movement.
+- User result: A/B 4 (Proxy enabled, generic state mirror disabled) showed no
+  clear additional improvement.
+- Conclusion: the dominant remaining dynamic cost is the final Proxy pass /
+  handoff; generic `state::Use` is not a useful optimization target here.
+- Stable baseline restores generic state tracking for lifecycle safety, keeps
+  Proxy enabled, and keeps addon-owned CPU observers disabled.
+- Performance A/B is closed; subsequent work returns to HDR brightness only.

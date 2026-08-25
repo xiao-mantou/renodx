@@ -139,10 +139,11 @@ inline constexpr bool kEnableDl2ShaderReplacements = true;
 // only. Keep this independent from HDR shader replacements and swapchain proxy
 // so CPU observer cost can be measured without changing the GPU path.
 inline constexpr bool kEnableDl2CpuObservers = false;
-// Performance A/B D: restore the final proxy render while isolating the
-// optional generic state mirror. The DL2 CPU observers remain disabled.
+// Stable performance baseline: keep the final proxy render and generic state
+// mirror enabled for normal lifecycle/state safety. The DL2 CPU observers stay
+// disabled because their dynamic overhead was measurable.
 inline constexpr bool kEnableDl2SwapchainProxyRender = true;
-inline constexpr bool kEnableDl2StateTracking = false;
+inline constexpr bool kEnableDl2StateTracking = true;
 bool dlss_fg_tag_clone_logged = false;
 bool dlss_fg_color_tag_suppression_logged = false;
 std::atomic_int32_t dlss_fg_aux_tag_mode_logged = -1;
