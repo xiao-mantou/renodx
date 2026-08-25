@@ -3343,21 +3343,31 @@ inline void OnBarrier(
     const reshade::api::resource_usage* new_states) {
   if (count == 0u) return;
 
-  std::unordered_set<uint64_t> checked_resources;
-  std::vector<std::pair<int, utils::resource::ResourceInfo*>> infos;
-
-  for (uint32_t i = 0; i < count; ++i) {
-    if (old_states[i] == reshade::api::resource_usage::undefined) continue;
+  const auto mirror_barrier = [&](uint32_t i) {
+    if (old_states[i] == reshade::api::resource_usage::undefined) return;
     const auto& resource = resources[i];
-    if (resource.handle == 0u) continue;
-    bool checked = !checked_resources.insert(resource.handle).second;
-    if (checked) continue;
+    if (resource.handle == 0u) return;
     auto* info = utils::resource::GetResourceInfo(resource);
-    if (info == nullptr) continue;
-    if (info->destroyed) continue;
+    if (info == nullptr) return;
+    if (info->destroyed) return;
     auto clone = GetResourceClone(info);
-    if (clone.handle == 0u) continue;
+    if (clone.handle == 0u) return;
     cmd_list->barrier(clone, old_states[i], new_states[i]);
+  };
+
+  // Most D3D12 barrier callbacks carry one resource. Avoid constructing a
+  // hash set for that hot path while preserving the duplicate suppression used
+  // for batched barriers below.
+  if (count == 1u) {
+    mirror_barrier(0u);
+    return;
+  }
+
+  std::unordered_set<uint64_t> checked_resources;
+  checked_resources.reserve(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!checked_resources.insert(resources[i].handle).second) continue;
+    mirror_barrier(i);
   }
 }
 
