@@ -146,7 +146,7 @@ inline constexpr bool kEnableDl2SwapchainProxyRender = true;
 inline constexpr bool kEnableDl2StateTracking = true;
 // Temporary performance A/B. This intentionally produces invalid display
 // encoding and must never be used as the normal HDR path.
-inline constexpr bool kEnableDl2SwapchainProxyCopyOnly = true;
+inline constexpr bool kEnableDl2SwapchainProxyCopyOnly = false;
 bool dlss_fg_tag_clone_logged = false;
 bool dlss_fg_color_tag_suppression_logged = false;
 std::atomic_int32_t dlss_fg_aux_tag_mode_logged = -1;

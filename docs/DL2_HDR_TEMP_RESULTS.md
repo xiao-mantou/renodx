@@ -239,3 +239,10 @@ batches, with a build/test boundary after each batch.
 - Compare movement frame time against the current Proxy-enabled baseline. The
   delta estimates the fullscreen proxy draw/encoding cost separately from clone
   selection and handoff bookkeeping. Revert this switch after the test.
+- User result: `5545ed9` copy-only remained about 63 FPS, with no meaningful
+  improvement over the normal Proxy-enabled build. This keeps the same clone
+  selection and full-size handoff, so the result points to clone/resource
+  synchronization or the full-size transfer itself, not the Proxy shader's
+  gamut/encoding ALU. Do not repeat shader-only A/B tests.
+- The copy-only switch was reverted immediately after the measurement; the
+  normal Proxy draw is restored for the next build.
