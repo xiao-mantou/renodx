@@ -215,3 +215,14 @@ batches, with a build/test boundary after each batch.
 - Stable baseline restores generic state tracking for lifecycle safety, keeps
   Proxy enabled, and keeps addon-owned CPU observers disabled.
 - Performance A/B is closed; subsequent work returns to HDR brightness only.
+
+## Performance A/B 5 (2026-08-25)
+
+- A temporary scRGB-only proxy shader variant bypassed the generic BT.709 ->
+  BT.2020 gamut-compression round trip while preserving the same fullscreen
+  proxy draw, scaling, and scRGB encoding.
+- User result: no meaningful FPS or motion improvement; addon remained around
+  63 FPS versus about 68 FPS without the addon.
+- Conclusion: the dominant cost is the per-Present proxy draw/handoff and
+  resource synchronization, not the proxy gamut-compression math. The
+  variant was reverted; the validated color baseline is restored.
