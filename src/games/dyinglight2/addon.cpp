@@ -8774,7 +8774,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::swapchain::swapchain_proxy_compatibility_mode = false;
       renodx::mods::swapchain::force_borderless = false;
       renodx::mods::swapchain::use_resource_cloning = true;
-      renodx::mods::swapchain::enable_swapchain_proxy_render = kEnableDl2SwapchainProxyRender;
+      renodx::mods::swapchain::v1::enable_swapchain_proxy_render = kEnableDl2SwapchainProxyRender;
       // Proxy source audit: allow the real game swapchain through so the
       // final proxy source/resource diagnostic can observe the live path.
       // 初始用 DX11 shader，OnInitDevice 会根据 device API 动态切换
