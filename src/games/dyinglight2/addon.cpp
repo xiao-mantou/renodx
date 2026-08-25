@@ -139,9 +139,10 @@ inline constexpr bool kEnableDl2ShaderReplacements = true;
 // only. Keep this independent from HDR shader replacements and swapchain proxy
 // so CPU observer cost can be measured without changing the GPU path.
 inline constexpr bool kEnableDl2CpuObservers = false;
-// Performance A/B C: keep resource upgrades and clone lifecycle active, but
-// skip only the final fullscreen swapchain proxy render.
-inline constexpr bool kEnableDl2SwapchainProxyRender = false;
+// Performance A/B D: restore the final proxy render while isolating the
+// optional generic state mirror. The DL2 CPU observers remain disabled.
+inline constexpr bool kEnableDl2SwapchainProxyRender = true;
+inline constexpr bool kEnableDl2StateTracking = false;
 bool dlss_fg_tag_clone_logged = false;
 bool dlss_fg_color_tag_suppression_logged = false;
 std::atomic_int32_t dlss_fg_aux_tag_mode_logged = -1;
@@ -8637,7 +8638,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::utils::constants::capture_constant_buffers = false;
       renodx::utils::descriptor::Use(fdw_reason);
       renodx::utils::constants::Use(fdw_reason);
-      renodx::utils::state::Use(fdw_reason);
+      if constexpr (kEnableDl2StateTracking) {
+        renodx::utils::state::Use(fdw_reason);
+      }
 
       if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
         renodx::utils::command_action::Register(
@@ -8696,6 +8699,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::utils::log::i(
           "DL2 swapchain proxy render: ",
           kEnableDl2SwapchainProxyRender ? "enabled" : "disabled",
+          " for performance A/B");
+      renodx::utils::log::i(
+          "DL2 generic state tracking: ",
+          kEnableDl2StateTracking ? "enabled" : "disabled",
           " for performance A/B");
       if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
         reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
@@ -8979,7 +8986,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         RemoveDlssFgNativeExecuteHook();
         RemoveStreamlineHook();
       }
-      renodx::utils::state::Use(fdw_reason);
+      if constexpr (kEnableDl2StateTracking) {
+        renodx::utils::state::Use(fdw_reason);
+      }
       renodx::utils::constants::Use(fdw_reason);
       renodx::utils::descriptor::Use(fdw_reason);
       reshade::unregister_addon(h_module);

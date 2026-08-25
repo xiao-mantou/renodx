@@ -191,3 +191,16 @@ batches, with a build/test boundary after each batch.
 - Test goal: compare moving-scene frame pacing against A/B 2. Any improvement
   identifies the per-frame final Proxy pass/handoff as the remaining cost; it
   does not provide a valid final HDR brightness result.
+
+## Performance A/B 4 (2026-08-25)
+
+- Restored the final swapchain Proxy render.
+- Added `kEnableDl2StateTracking=false`, disabling only the generic
+  `utils::state::Use` mirror. The swapchain module's own RTV tracking,
+  resource upgrades, clone lifecycle, HDR shaders, RenoDRT, and CPU observers
+  remain independently controlled.
+- Current safety condition: `swapchain_proxy_revert_state` is false, so the
+  Proxy does not require generic state save/restore; DL2 diagnostic observers
+  are also disabled.
+- Test goal: compare against A/B 2. This isolates generic state mirror cost
+  with the Proxy pass enabled. It is not a brightness test.
