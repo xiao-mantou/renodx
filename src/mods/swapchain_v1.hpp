@@ -149,6 +149,9 @@ static float copy_swapchain_back_buffer_before_proxy = 0.f;
 // still runs normally.
 static std::atomic_bool skip_next_proxy_draw = false;
 static bool swapchain_proxy_revert_state = false;
+// Game-specific performance A/B may disable only the final proxy draw while
+// retaining swapchain/resource lifecycle and clone bookkeeping.
+static bool enable_swapchain_proxy_render = true;
 static bool use_device_proxy = false;
 static void* last_device_proxy_shared_handle = nullptr;
 static reshade::api::resource last_device_proxy_shared_resource = {0u};
@@ -3520,6 +3523,7 @@ inline void OnPresent(
     const reshade::api::rect* dest_rect,
     uint32_t dirty_rect_count,
     const reshade::api::rect* dirty_rects) {
+  if (!enable_swapchain_proxy_render) return;
   auto* device = swapchain->get_device();
 
   if (use_device_proxy && device != proxy_device_reshade) {

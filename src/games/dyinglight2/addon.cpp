@@ -139,6 +139,9 @@ inline constexpr bool kEnableDl2ShaderReplacements = true;
 // only. Keep this independent from HDR shader replacements and swapchain proxy
 // so CPU observer cost can be measured without changing the GPU path.
 inline constexpr bool kEnableDl2CpuObservers = false;
+// Performance A/B C: keep resource upgrades and clone lifecycle active, but
+// skip only the final fullscreen swapchain proxy render.
+inline constexpr bool kEnableDl2SwapchainProxyRender = false;
 bool dlss_fg_tag_clone_logged = false;
 bool dlss_fg_color_tag_suppression_logged = false;
 std::atomic_int32_t dlss_fg_aux_tag_mode_logged = -1;
@@ -8690,6 +8693,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           "DL2 CPU observers: ",
           kEnableDl2CpuObservers ? "enabled" : "disabled",
           " for performance A/B");
+      renodx::utils::log::i(
+          "DL2 swapchain proxy render: ",
+          kEnableDl2SwapchainProxyRender ? "enabled" : "disabled",
+          " for performance A/B");
       if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
         reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
         reshade::register_event<reshade::addon_event::clear_render_target_view>(
@@ -8767,6 +8774,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::swapchain::swapchain_proxy_compatibility_mode = false;
       renodx::mods::swapchain::force_borderless = false;
       renodx::mods::swapchain::use_resource_cloning = true;
+      renodx::mods::swapchain::enable_swapchain_proxy_render = kEnableDl2SwapchainProxyRender;
       // Proxy source audit: allow the real game swapchain through so the
       // final proxy source/resource diagnostic can observe the live path.
       // 初始用 DX11 shader，OnInitDevice 会根据 device API 动态切换

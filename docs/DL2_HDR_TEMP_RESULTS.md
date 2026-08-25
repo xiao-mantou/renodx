@@ -180,3 +180,14 @@ batches, with a build/test boundary after each batch.
   independent switch.
 - Test goal: compare frame pacing against Performance A/B 1 and no-addon. A
   change here is CPU observer cost only; GPU-pass cost is tested separately.
+
+## Performance A/B 3 (2026-08-25)
+
+- Added `kEnableDl2SwapchainProxyRender=false` for the isolated Proxy test.
+- This skips only the final `DrawSwapChainProxy` call from `OnPresent`.
+- Resource upgrades, clone creation/lifecycle, swapchain resize handling,
+  0x3E/0x268 HDR replacements, RenoDRT, and all brightness settings remain
+  enabled. CPU observers remain disabled as in Performance A/B 2.
+- Test goal: compare moving-scene frame pacing against A/B 2. Any improvement
+  identifies the per-frame final Proxy pass/handoff as the remaining cost; it
+  does not provide a valid final HDR brightness result.
