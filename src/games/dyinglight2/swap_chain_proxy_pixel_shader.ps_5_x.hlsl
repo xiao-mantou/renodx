@@ -26,16 +26,6 @@ float4 main(float4 vpos : SV_POSITION, float2 uv : TEXCOORD0)
   config.swap_chain_output_preset = RENODX_SWAP_CHAIN_USE_HDR10
                                         ? renodx::draw::SWAP_CHAIN_OUTPUT_PRESET_HDR10
                                         : renodx::draw::SWAP_CHAIN_OUTPUT_PRESET_SCRGB;
-  // DL2's scRGB swapchain is already a linear BT.709 container. The generic
-  // scRGB preset performs a BT.709 -> BT.2020 gamut-compression round trip,
-  // which is unnecessary for this BT.709 scene and costs work every Present.
-  // Keep the HDR10/PQ path unchanged; only the scRGB A/B bypasses that pass.
-  if (!RENODX_SWAP_CHAIN_USE_HDR10) {
-    config.swap_chain_output_preset = renodx::draw::SWAP_CHAIN_OUTPUT_PRESET_NONE;
-    config.swap_chain_compress_color_space = renodx::color::convert::COLOR_SPACE_NONE;
-    config.swap_chain_encoding_color_space = renodx::color::convert::COLOR_SPACE_BT709;
-    config.swap_chain_encoding = renodx::draw::ENCODING_SCRGB;
-  }
   if (RENODX_SWAP_CHAIN_SOURCE_OVERRIDE) {
     const uint source_semantic = (uint)(RENODX_DLSS_FG_SOURCE_SEMANTIC + 0.5f);
     const bool source_is_pq = source_semantic == 1u;

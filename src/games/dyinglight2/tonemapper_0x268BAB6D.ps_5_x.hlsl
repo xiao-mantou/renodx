@@ -21,6 +21,16 @@ float3 ApplyDL2SDRCurve(float3 color, float4 curve0, float4 curve1) {
   return saturate((a * color) / (b * color + curve1.xxx));
 }
 
+// H1 HDR LUT reference: preserve the exact DL2 curve below its SDR ceiling,
+// but leave the upper result available for one shared pixel-local compression
+// scale. The lower clamp matches the non-negative scene domain; there is no
+// upper saturate here because HDR highlights must remain recoverable.
+float3 ApplyDL2SDRCurveExtended(float3 color, float4 curve0, float4 curve1) {
+  const float3 a = curve0.xxx * color + curve0.yyy;
+  const float3 b = curve0.zzz * color + curve0.www;
+  return max((a * color) / (b * color + curve1.xxx), 0.0);
+}
+
 // 5x7 pixel glyphs (bit k set = column k from the left, 1 = lit).
 // Index 0-9 = digits, 10 = decimal point.
 uint DebugGlyph(int digit, int row) {
@@ -157,18 +167,21 @@ void main(
     const float strengths[4] = {0.0, 0.25, 0.5, 0.75};
     input_hdr = lerp(input_hdr, renodx::color::srgb::DecodeSafe(input_hdr), strengths[quadrant]);
   }
-  // Vanilla keeps DL2's original SDR curve. HDR uses Wobbly's max-channel
-  // proxy: compress the original scene signal with one shared scale before
-  // the SDR LUT, then carry that scale through native grading and restore it
-  // afterward. This preserves hue and keeps the full HDR input available to
-  // the standalone ToneMapPass instead of limiting highlights to the DL2
-  // curve's finite asymptote.
+  // Vanilla keeps DL2's original SDR curve. HDR uses the same curve without
+  // its upper saturate, then applies one shared pixel-local scale only when
+  // the curve result exceeds the LUT domain. This makes every pixel with
+  // max(E)<=1 bit-for-bit Vanilla while retaining a reversible highlight
+  // scale through the native grading below.
   const float4 sdr_curve0 = float4(2.27, 0.17, 1.69, 0.8);
   const float4 sdr_curve1 = float4(0.14, 0.0, 0.0, 0.0);
-  const float hdr_proxy_scale = renodx::tonemap::neutwo::ComputeMaxChannelScale(input_hdr);
+  const float3 hdr_curve = ApplyDL2SDRCurveExtended(input_hdr, sdr_curve0, sdr_curve1);
+  const float hdr_curve_max = max(hdr_curve.r, max(hdr_curve.g, hdr_curve.b));
+  const float hdr_proxy_scale = hdr_curve_max > 1.0
+                                    ? rcp(max(hdr_curve_max, 1e-6))
+                                    : 1.0;
   const float3 neutral_sdr = RENODX_TONE_MAP_TYPE == 0.0
                                  ? ApplyDL2SDRCurve(input_hdr, sdr_curve0, sdr_curve1)
-                                 : input_hdr * hdr_proxy_scale;
+                                 : hdr_curve * hdr_proxy_scale;
   if (RENODX_TONE_MAP_TYPE != 0.0 || probe59) {
     r1.xyz = neutral_sdr;
   }
