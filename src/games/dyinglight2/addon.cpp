@@ -144,6 +144,9 @@ inline constexpr bool kEnableDl2CpuObservers = false;
 // disabled because their dynamic overhead was measurable.
 inline constexpr bool kEnableDl2SwapchainProxyRender = true;
 inline constexpr bool kEnableDl2StateTracking = true;
+// Temporary performance A/B. This intentionally produces invalid display
+// encoding and must never be used as the normal HDR path.
+inline constexpr bool kEnableDl2SwapchainProxyCopyOnly = true;
 bool dlss_fg_tag_clone_logged = false;
 bool dlss_fg_color_tag_suppression_logged = false;
 std::atomic_int32_t dlss_fg_aux_tag_mode_logged = -1;
@@ -8783,6 +8786,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::swapchain::force_borderless = false;
       renodx::mods::swapchain::use_resource_cloning = true;
       renodx::mods::swapchain::v1::enable_swapchain_proxy_render = kEnableDl2SwapchainProxyRender;
+      renodx::mods::swapchain::v1::enable_swapchain_proxy_copy_only = kEnableDl2SwapchainProxyCopyOnly;
       // Proxy source audit: allow the real game swapchain through so the
       // final proxy source/resource diagnostic can observe the live path.
       // 初始用 DX11 shader，OnInitDevice 会根据 device API 动态切换

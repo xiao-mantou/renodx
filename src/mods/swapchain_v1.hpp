@@ -152,6 +152,10 @@ static bool swapchain_proxy_revert_state = false;
 // Game-specific performance A/B may disable only the final proxy draw while
 // retaining swapchain/resource lifecycle and clone bookkeeping.
 static bool enable_swapchain_proxy_render = true;
+// Performance A/B only: keep clone/resource handoff alive but replace the
+// fullscreen encoding draw with a same-format copy. Output color is invalid;
+// use only to estimate the draw/encoding cost versus resource synchronization.
+static bool enable_swapchain_proxy_copy_only = false;
 static bool use_device_proxy = false;
 static void* last_device_proxy_shared_handle = nullptr;
 static reshade::api::resource last_device_proxy_shared_resource = {0u};
@@ -1176,6 +1180,14 @@ inline void DrawSwapChainProxy(reshade::api::swapchain* swapchain, reshade::api:
     // Ignore if not activated yet
     if (resource_info->clone.handle == 0u) return;
     swapchain_clone = resource_info->clone;
+  }
+
+  if (enable_swapchain_proxy_copy_only) {
+    cmd_list->copy_resource(swapchain_clone, current_back_buffer);
+    if (!use_device_proxy && device->get_api() != reshade::api::device_api::d3d12) {
+      queue->flush_immediate_command_list();
+    }
+    return;
   }
 
   std::stringstream s;

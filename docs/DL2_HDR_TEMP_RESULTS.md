@@ -226,3 +226,16 @@ batches, with a build/test boundary after each batch.
 - Conclusion: the dominant cost is the per-Present proxy draw/handoff and
   resource synchronization, not the proxy gamut-compression math. The
   variant was reverted; the validated color baseline is restored.
+
+## Performance A/B 6 (temporary, 2026-08-25)
+
+- Added compile-time `kEnableDl2SwapchainProxyCopyOnly=true`.
+- The final Proxy still selects the live clone and preserves clone/resource
+  lifecycle, but replaces the fullscreen `SwapChainPass` draw with a same-format
+  clone -> backbuffer `copy_resource`.
+- Output encoding/color is intentionally invalid; this build is only a frame
+  pacing cost probe. It does not change 0x3E/0x268, ToneMap, Game, Peak, or HDR
+  shader math.
+- Compare movement frame time against the current Proxy-enabled baseline. The
+  delta estimates the fullscreen proxy draw/encoding cost separately from clone
+  selection and handoff bookkeeping. Revert this switch after the test.
