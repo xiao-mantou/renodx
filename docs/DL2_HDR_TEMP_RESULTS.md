@@ -246,3 +246,14 @@ batches, with a build/test boundary after each batch.
   gamut/encoding ALU. Do not repeat shader-only A/B tests.
 - The copy-only switch was reverted immediately after the measurement; the
   normal Proxy draw is restored for the next build.
+
+## HDR brightness bridge (first validation, 2026-08-26)
+
+- Added a 0x268 HDR-only hybrid proxy. `input_max <= 1.275` remains the exact
+  audited DL2 curve; `1.275..2.0` smoothly transitions toward exposed scene
+  input, then uses one shared scale through native grading and restores it.
+- Vanilla/Off, 0x3E, 0xAD, Proxy, Game, and Peak settings are unchanged.
+- Goal: retain pixel-level low/mid color while restoring highlight headroom
+  currently limited near ~242 nit by the finite DL2 curve asymptote.
+- First build is a visual A/B only: ground, sky, shadow/fog, and highlight
+  detail versus Vanilla. Do not retune Game/Peak from this test.

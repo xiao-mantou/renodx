@@ -167,21 +167,33 @@ void main(
     const float strengths[4] = {0.0, 0.25, 0.5, 0.75};
     input_hdr = lerp(input_hdr, renodx::color::srgb::DecodeSafe(input_hdr), strengths[quadrant]);
   }
-  // Vanilla keeps DL2's original SDR curve. HDR uses the same curve without
-  // its upper saturate, then applies one shared pixel-local scale only when
-  // the curve result exceeds the LUT domain. This makes every pixel with
-  // max(E)<=1 bit-for-bit Vanilla while retaining a reversible highlight
-  // scale through the native grading below.
+  // Vanilla keeps DL2's original SDR curve. HDR uses a hybrid proxy: below
+  // the recovered SDR-white input it is exactly the same curve; above that
+  // boundary it smoothly expands toward the exposed scene value so highlights
+  // are not limited by the curve's finite ~1.34 asymptote. The proxy is then
+  // compressed with one shared pixel-local scale, carried through the entire
+  // native grade, and restored after grading.
   const float4 sdr_curve0 = float4(2.27, 0.17, 1.69, 0.8);
   const float4 sdr_curve1 = float4(0.14, 0.0, 0.0, 0.0);
   const float3 hdr_curve = ApplyDL2SDRCurveExtended(input_hdr, sdr_curve0, sdr_curve1);
-  const float hdr_curve_max = max(hdr_curve.r, max(hdr_curve.g, hdr_curve.b));
-  const float hdr_proxy_scale = hdr_curve_max > 1.0
-                                    ? rcp(max(hdr_curve_max, 1e-6))
+  // Solving ApplyDL2SDRCurve(x)=1 with the audited constants gives ~1.275.
+  // The existing exit@2 diagnostics provide a conservative upper end for the
+  // transition; below the first value the LUT reference remains unchanged.
+  const float dl2_sdr_white_input = 1.275f;
+  const float dl2_hdr_expansion_end = 2.0f;
+  const float input_max = max(input_hdr.r, max(input_hdr.g, input_hdr.b));
+  const float expansion = smoothstep(
+      dl2_sdr_white_input,
+      dl2_hdr_expansion_end,
+      input_max);
+  const float3 hdr_proxy = lerp(hdr_curve, input_hdr, expansion);
+  const float hdr_proxy_max = max(hdr_proxy.r, max(hdr_proxy.g, hdr_proxy.b));
+  const float hdr_proxy_scale = hdr_proxy_max > 1.0
+                                    ? rcp(max(hdr_proxy_max, 1e-6))
                                     : 1.0;
   const float3 neutral_sdr = RENODX_TONE_MAP_TYPE == 0.0
                                  ? ApplyDL2SDRCurve(input_hdr, sdr_curve0, sdr_curve1)
-                                 : hdr_curve * hdr_proxy_scale;
+                                 : hdr_proxy * hdr_proxy_scale;
   if (RENODX_TONE_MAP_TYPE != 0.0 || probe59) {
     r1.xyz = neutral_sdr;
   }
