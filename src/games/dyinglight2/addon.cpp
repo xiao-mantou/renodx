@@ -8678,10 +8678,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       addon_module = h_module;
       if (!reshade::register_addon(h_module)) return FALSE;
 
-      // Keep the normal runtime path idle when no diagnostic capture is armed.
-      // Global descriptor/constant tracing was useful during investigation, but
-      // it adds per-update locking and buffer copies throughout the game.
-      renodx::utils::descriptor::trace_descriptor_tables = false;
+      // Descriptor heap mirrors are needed by the one-shot draw-time binding
+      // audit. Keep them disabled for the normal performance build, but enable
+      // them with the temporary CPU observer diagnostic so FindGraphics...
+      // can resolve D3D12 descriptor-table t0 bindings at the actual draw.
+      renodx::utils::descriptor::trace_descriptor_tables = kEnableDl2CpuObservers;
       renodx::utils::constants::capture_constant_buffers = false;
       renodx::utils::descriptor::Use(fdw_reason);
       renodx::utils::constants::Use(fdw_reason);
