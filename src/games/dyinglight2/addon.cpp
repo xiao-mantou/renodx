@@ -135,13 +135,13 @@ inline constexpr bool kEnableDl2TargetHotSwap = false;
 // path. The BFFC->AD audit is diagnostic only and does not define this policy.
 inline constexpr bool kEnableDl2BffcTargetActivation = true;
 inline constexpr bool kEnableDl2ShaderReplacements = true;
-// Performance A/B: addon-owned draw/transfer/state observers are diagnostic
-// only. Keep this independent from HDR shader replacements and swapchain proxy
-// so CPU observer cost can be measured without changing the GPU path.
-inline constexpr bool kEnableDl2CpuObservers = false;
+// Temporary diagnostic build: enable the existing draw/binding observers so
+// the one-shot 0xAD native t0 audit can run. This does not alter HDR or proxy
+// rendering; disable again after the runtime capture is complete.
+inline constexpr bool kEnableDl2CpuObservers = true;
 // Stable performance baseline: keep the final proxy render and generic state
-// mirror enabled for normal lifecycle/state safety. The DL2 CPU observers stay
-// disabled because their dynamic overhead was measurable.
+// mirror enabled for normal lifecycle/state safety. CPU observers are enabled
+// only in this temporary diagnostic build.
 inline constexpr bool kEnableDl2SwapchainProxyRender = true;
 inline constexpr bool kEnableDl2StateTracking = true;
 // Temporary performance A/B. This intentionally produces invalid display
@@ -4010,17 +4010,29 @@ inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
                                    ? renodx::utils::shader::GetCurrentShaderHash(
                                          shader_state, renodx::utils::shader::PIXEL_INDEX)
                                    : 0u;
-  if (shader_hash == 0xAD085E81u) {
+  const bool is_ad_draw = shader_hash == 0xAD085E81u;
+  const bool needs_fg_post_callback = is_ad_draw && kEnableDl2FgHooks;
+  const auto make_fg_post_callback = [&]()
+      -> renodx::utils::command_action::CallbackResult<Context> {
     if constexpr (std::is_same_v<Context, renodx::utils::command_action::CommandContext<
                                               renodx::utils::command_action::DrawArguments>>) {
       return {.post_callback = DlssFgAdPostDraw, .replay = true};
     } else if constexpr (std::is_same_v<Context, renodx::utils::command_action::CommandContext<
                                                      renodx::utils::command_action::DrawIndexedArguments>>) {
       return {.post_callback = DlssFgAdPostDrawIndexed, .replay = true};
+    } else {
+      return {};
     }
-  }
+  };
 
-  if (!gamma_draw_audit_capture && !gamma_native_input_audit_capture) return {};
+  // The native binding audit must run before the optional FG post-callback.
+  // Previously the 0xAD branch returned immediately, making the
+  // "Capture Gamma Bindings" button silently capture nothing.
+  if (!gamma_draw_audit_capture && !gamma_native_input_audit_capture
+      && !needs_fg_post_callback) return {};
+  if (needs_fg_post_callback && !gamma_draw_audit_capture && !gamma_native_input_audit_capture) {
+    return make_fg_post_callback();
+  }
 
   std::scoped_lock lock(downstream_draw_capture_mutex);
   if (gamma_native_input_audit_capture && !gamma_native_input_audit_state.consumed) {
@@ -4069,13 +4081,22 @@ inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
     gamma_native_input_audit_state.active = true;
   }
   auto& audit = gamma_draw_audit_state;
-  if (audit.consumed || audit.count >= audit.draws.size()) return {};
+  if (audit.consumed || audit.count >= audit.draws.size()) {
+    return needs_fg_post_callback ? make_fg_post_callback()
+                                  : renodx::utils::command_action::CallbackResult<Context>{};
+  }
 
   auto* device = context.cmd_list->get_device();
-  if (device == nullptr) return {};
+  if (device == nullptr) {
+    return needs_fg_post_callback ? make_fg_post_callback()
+                                  : renodx::utils::command_action::CallbackResult<Context>{};
+  }
   const auto input = gamma_audit_t0_views.find(context.cmd_list);
   const auto output = downstream_capture_rtvs.find(context.cmd_list);
-  if (output == downstream_capture_rtvs.end()) return {};
+  if (output == downstream_capture_rtvs.end()) {
+    return needs_fg_post_callback ? make_fg_post_callback()
+                                  : renodx::utils::command_action::CallbackResult<Context>{};
+  }
 
   auto& draw = audit.draws[audit.count];
   draw.input = input != gamma_audit_t0_views.end()
@@ -4093,7 +4114,8 @@ inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
   }
   ++audit.count;
   audit.active = true;
-  return {};
+  return needs_fg_post_callback ? make_fg_post_callback()
+                                : renodx::utils::command_action::CallbackResult<Context>{};
 };
 
 static void Capture268CenterProbeResource(reshade::api::command_list* cmd_list);
