@@ -3200,6 +3200,17 @@ static bool PrepareBffcAdStageStaging(reshade::api::device* device, AdStageProbe
 static void CaptureBffcAdStageSnapshot(reshade::api::command_list* cmd_list) {
   if (!IsAdStageProbeCaptureRequested() || cmd_list == nullptr) return;
 
+  // Copy the target view while holding the downstream lock, then release it
+  // before touching the probe state. OnDownstreamDrawCapture already holds
+  // downstream_draw_capture_mutex when it calls the AD capture path, so taking
+  // the locks in the opposite order here can deadlock concurrent callbacks.
+  reshade::api::resource_view target_view = {};
+  {
+    std::scoped_lock lock(downstream_draw_capture_mutex);
+    const auto target_it = downstream_capture_rtvs.find(cmd_list);
+    if (target_it != downstream_capture_rtvs.end()) target_view = target_it->second;
+  }
+
   std::scoped_lock probe_lock(ad_stage_probe_mutex);
   auto& state = ad_stage_probe_state;
   if (state.captured || state.logged) return;
@@ -3209,12 +3220,6 @@ static void CaptureBffcAdStageSnapshot(reshade::api::command_list* cmd_list) {
     renodx::utils::log::w(message.c_str());
   };
 
-  reshade::api::resource_view target_view = {};
-  {
-    std::scoped_lock lock(downstream_draw_capture_mutex);
-    const auto target_it = downstream_capture_rtvs.find(cmd_list);
-    if (target_it != downstream_capture_rtvs.end()) target_view = target_it->second;
-  }
   if (target_view.handle == 0u) {
     const auto* command_state = renodx::utils::state::GetCurrentState(cmd_list);
     if (command_state != nullptr && !command_state->render_targets.empty()) {
