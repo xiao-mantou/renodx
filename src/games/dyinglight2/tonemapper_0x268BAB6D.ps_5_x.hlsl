@@ -36,16 +36,16 @@ float3 ApplyDL2SDRCurveExtended(float3 color, float4 curve0, float4 curve1) {
 uint DebugGlyph(int digit, int row) {
   const int k = clamp(digit, 0, 10);
   const uint patterns[11][7] = {
-      {14, 17, 17, 17, 17, 17, 14},  // 0
-      {4, 4, 4, 4, 4, 4, 4},         // 1
-      {14, 17, 1, 14, 16, 16, 14},   // 2
-      {14, 17, 1, 14, 1, 17, 14},    // 3
-      {17, 17, 17, 14, 1, 1, 1},     // 4
-      {14, 16, 16, 14, 1, 1, 14},    // 5
-      {14, 16, 16, 14, 17, 17, 14},  // 6
-      {14, 1, 1, 1, 1, 1, 1},        // 7
-      {14, 17, 17, 14, 17, 17, 14},  // 8
-      {14, 17, 17, 14, 1, 1, 14},    // 9
+      {31, 17, 17, 17, 17, 17, 31},  // 0
+      {4, 12, 4, 4, 4, 4, 14},       // 1
+      {31, 16, 16, 31, 1, 1, 31},     // 2
+      {31, 16, 16, 31, 16, 16, 31},   // 3
+      {17, 17, 17, 31, 16, 16, 16},   // 4
+      {31, 1, 1, 31, 16, 16, 31},     // 5
+      {31, 1, 1, 31, 17, 17, 31},     // 6
+      {31, 16, 16, 16, 16, 16, 16},   // 7
+      {31, 17, 17, 31, 17, 17, 31},   // 8
+      {31, 17, 17, 31, 16, 16, 31},   // 9
       {0, 0, 0, 0, 0, 4, 4},         // .
   };
   return patterns[k][clamp(row, 0, 6)];
@@ -376,10 +376,10 @@ void main(
     if (all(abs(v1.xy - float2(0.30, 0.88)) < float2(0.0015, 0.0015))) o0.rgb = probe_tonemapped;
     // Four values stacked vertically, top to bottom: I, L, R, T.
     const float label_x = 0.44;
-    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.58, v_in, 0.006);
-    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.68, v_l, 0.006);
-    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.78, v_r, 0.006);
-    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.88, v_t, 0.006);
+    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.58, v_in, 0.008);
+    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.68, v_l, 0.008);
+    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.78, v_r, 0.008);
+    o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.88, v_t, 0.008);
     o0.a = 1.0;
     return;
   }

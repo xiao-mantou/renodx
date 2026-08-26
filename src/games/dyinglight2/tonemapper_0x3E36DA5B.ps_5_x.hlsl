@@ -77,16 +77,16 @@ float3 DebugDarkSceneLinear(float value) {
 uint DebugGlyph(int digit, int row) {
   const int k = clamp(digit, 0, 10);
   const uint patterns[11][7] = {
-      {14, 17, 17, 17, 17, 17, 14},  // 0
-      {4, 4, 4, 4, 4, 4, 4},         // 1
-      {14, 17, 1, 14, 16, 16, 14},   // 2
-      {14, 17, 1, 14, 1, 17, 14},    // 3
-      {17, 17, 17, 14, 1, 1, 1},     // 4
-      {14, 16, 16, 14, 1, 1, 14},    // 5
-      {14, 16, 16, 14, 17, 17, 14},  // 6
-      {14, 1, 1, 1, 1, 1, 1},        // 7
-      {14, 17, 17, 14, 17, 17, 14},  // 8
-      {14, 17, 17, 14, 1, 1, 14},    // 9
+      {31, 17, 17, 17, 17, 17, 31},  // 0
+      {4, 12, 4, 4, 4, 4, 14},       // 1
+      {31, 16, 16, 31, 1, 1, 31},     // 2
+      {31, 16, 16, 31, 16, 16, 31},   // 3
+      {17, 17, 17, 31, 16, 16, 16},   // 4
+      {31, 1, 1, 31, 16, 16, 31},     // 5
+      {31, 1, 1, 31, 17, 17, 31},     // 6
+      {31, 16, 16, 16, 16, 16, 16},   // 7
+      {31, 17, 17, 31, 17, 17, 31},   // 8
+      {31, 17, 17, 31, 16, 16, 31},   // 9
       {0, 0, 0, 0, 0, 4, 4},         // .
   };
   return patterns[k][clamp(row, 0, 6)];
@@ -100,7 +100,7 @@ uint DebugGlyph(int digit, int row) {
 // is rendered.
 float3 DebugExposureOverlay(float2 uv, float exposure) {
   const float2 chip0 = float2(0.015, 0.012);
-  const float2 chip1 = float2(0.24, 0.06);
+  const float2 chip1 = float2(0.24, 0.075);
   if (uv.x < chip0.x || uv.x > chip1.x || uv.y < chip0.y || uv.y > chip1.y) {
     return float3(0.0, 0.0, 0.0);
   }
@@ -109,7 +109,7 @@ float3 DebugExposureOverlay(float2 uv, float exposure) {
   // Cells: 'E', digit(whole), '.', digit(tenth).
   const int glyphs[4] = {11, whole, 10, tenth};
   const float cell_x = 0.011;
-  const float cell_y = 0.006;
+  const float cell_y = 0.008;
   for (int i = 0; i < 4; ++i) {
     const float x0 = chip0.x + i * (5.0 * cell_x + 0.014);
     const float x1 = x0 + 5.0 * cell_x;
