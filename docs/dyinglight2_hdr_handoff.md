@@ -474,3 +474,21 @@ needs the original root-signature adaptation rather than clone activation.
 the replacement without pipeline-layout adaptation. The next minimal A/B adds
 only the `0x268` shader target and registration; `0xAD`, UI, BFFC, and target
 hot-swap remain disabled.
+
+## 2026-08-27: AD stage readback
+
+Build `04e85d9`; command list `0x213FF8BCA48`. The safe five-point readback
+matched BFFC output to the active AD input resource:
+`bffc_resource=0x2145FF10C80`, `copy_input=0x2145FF10C80`, FP16 linear staging.
+`cb0[0].x=1.0` (`0x3F800000`). AD input `A` and output `G` were identical at
+every point, so `0xAD085E81` was an identity transform in this capture.
+
+Values (BT.709 Y):
+
+- C: `A=G=(1.00195,1.00195,1.00098)`, `Y=1.00188`; BFFC `Y=5.08474`.
+- TL: `A=G=(0.0522156,0.0767822,0.0789795)`, `Y=0.071718`; BFFC same.
+- TR: `A=G=(0.0779419,0.144531,0.237915)`, `Y=0.137117`; BFFC same.
+- BL: `A=G=(0.015213,0.0226898,0.0190887)`, `Y=0.0208403`; BFFC same.
+- BR: `A=G=(0.00518417,0.00904846,0.00611496)`, `Y=0.00801512`; BFFC same.
+
+This rules out AD power/gamma as the first brightness-loss point for this frame.

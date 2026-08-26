@@ -3132,17 +3132,25 @@ struct AdStageProbeState {
     reshade::api::resource resource = {};
     GammaAuditResource binding = {};
     reshade::api::resource staging = {};
+    reshade::api::resource source = {};
+    GammaAuditResource source_binding = {};
+    reshade::api::resource source_staging = {};
+    bool source_copy_recorded = false;
     uint64_t present = 0u;
     uint64_t draw_serial = 0u;
     uint64_t command_list = 0u;
     std::array<uint32_t, 5> copy_x = {};
     std::array<uint32_t, 5> copy_y = {};
+    std::array<uint32_t, 5> source_copy_x = {};
+    std::array<uint32_t, 5> source_copy_y = {};
   };
   std::array<BffcSnapshot, 4> bffc_snapshots = {};
   uint32_t bffc_snapshot_count = 0u;
   uint64_t bffc_draw_serial = 0u;
   std::array<reshade::api::resource, 4> bffc_staging_pool = {};
   uint32_t bffc_staging_pool_count = 0u;
+  std::array<reshade::api::resource, 4> bffc_source_staging_pool = {};
+  uint32_t bffc_source_staging_pool_count = 0u;
   bool bffc_skip_logged = false;
 };
 static std::atomic<float> ad_stage_probe_capture{0.f};
@@ -3169,27 +3177,39 @@ static void DestroyBffcAdStageStaging(reshade::api::device* device, AdStageProbe
   for (auto& snapshot : state.bffc_snapshots) {
     if (snapshot.staging.handle != 0u) device->destroy_resource(snapshot.staging);
     snapshot.staging = {};
+    if (snapshot.source_staging.handle != 0u) device->destroy_resource(snapshot.source_staging);
+    snapshot.source_staging = {};
   }
   for (auto& staging : state.bffc_staging_pool) {
     if (staging.handle != 0u) device->destroy_resource(staging);
     staging = {};
   }
   state.bffc_staging_pool_count = 0u;
+  for (auto& staging : state.bffc_source_staging_pool) {
+    if (staging.handle != 0u) device->destroy_resource(staging);
+    staging = {};
+  }
+  state.bffc_source_staging_pool_count = 0u;
 }
 
 static bool PrepareBffcAdStageStaging(reshade::api::device* device, AdStageProbeState& state) {
-  if (device == nullptr || state.bffc_staging_pool_count != 0u) return true;
+  if (device == nullptr
+      || (state.bffc_staging_pool_count != 0u && state.bffc_source_staging_pool_count != 0u)) return true;
   const reshade::api::resource_desc staging_desc(
       5u, 1u, 1u, 1, reshade::api::format::r16g16b16a16_float, 1,
       reshade::api::memory_heap::gpu_to_cpu, reshade::api::resource_usage::copy_dest);
   for (uint32_t index = 0u; index < state.bffc_staging_pool.size(); ++index) {
     if (!device->create_resource(
             staging_desc, nullptr, reshade::api::resource_usage::copy_dest,
-            &state.bffc_staging_pool[index])) {
+            &state.bffc_staging_pool[index])
+        || !device->create_resource(
+            staging_desc, nullptr, reshade::api::resource_usage::copy_dest,
+            &state.bffc_source_staging_pool[index])) {
       DestroyBffcAdStageStaging(device, state);
       return false;
     }
     ++state.bffc_staging_pool_count;
+    ++state.bffc_source_staging_pool_count;
   }
   return true;
 }
@@ -3244,64 +3264,116 @@ static void CaptureBffcAdStageSnapshot(reshade::api::command_list* cmd_list) {
     log_skip("DL2 BFFC stage snapshot skipped: no device");
     return;
   }
+  GammaAuditResource input = {};
+  const auto* command_state = renodx::utils::state::GetCurrentState(cmd_list);
+  DescriptorBindingAudit t0 = {};
+  FindGraphicsDescriptorBinding(
+      device, command_state, 0u,
+      reshade::api::descriptor_type::texture_shader_resource_view, &t0);
+  if (t0.found) input = DescribeGammaAuditView(device, t0.slot.resource_view);
   const auto output = DescribeGammaAuditView(device, target_view);
-  const uint64_t source_handle = output.effective != 0u ? output.effective : output.resource;
-  if (source_handle == 0u) return;
-  const reshade::api::resource source = {source_handle};
-  const auto source_desc = device->get_resource_desc(source);
-  if (source_desc.type != reshade::api::resource_type::texture_2d
-      || source_desc.texture.width == 0u || source_desc.texture.height == 0u
-      || source_desc.texture.format != reshade::api::format::r16g16b16a16_float) {
+  const uint64_t output_handle = output.effective != 0u ? output.effective : output.resource;
+  const uint64_t input_handle = input.effective != 0u ? input.effective : input.resource;
+  if (output_handle == 0u) return;
+  const reshade::api::resource output_resource = {output_handle};
+  const reshade::api::resource input_resource = {input_handle};
+  const auto output_desc = device->get_resource_desc(output_resource);
+  reshade::api::resource_desc input_desc = {};
+  if (input_handle != 0u) input_desc = device->get_resource_desc(input_resource);
+  if (output_desc.type != reshade::api::resource_type::texture_2d
+      || output_desc.texture.width == 0u || output_desc.texture.height == 0u
+      || output_desc.texture.format != reshade::api::format::r16g16b16a16_float) {
     std::ostringstream message;
-    message << "DL2 BFFC stage snapshot skipped: source=0x" << std::hex << source_handle
-            << " format=" << std::dec << static_cast<uint32_t>(source_desc.texture.format)
+    message << "DL2 BFFC stage snapshot skipped: output=0x" << std::hex << output_handle
+            << " format=" << std::dec << static_cast<uint32_t>(output_desc.texture.format)
             << " view=" << static_cast<uint32_t>(output.effective_view_format)
-            << " size=" << source_desc.texture.width << "x" << source_desc.texture.height;
+            << " size=" << output_desc.texture.width << "x" << output_desc.texture.height;
     log_skip(message.str());
     return;
   }
 
   AdStageProbeState::BffcSnapshot* snapshot = nullptr;
   for (uint32_t index = 0u; index < state.bffc_snapshot_count; ++index) {
-    if (state.bffc_snapshots[index].resource.handle == source_handle) {
+    if (state.bffc_snapshots[index].resource.handle == output_handle) {
       snapshot = &state.bffc_snapshots[index];
       break;
     }
   }
   if (snapshot == nullptr) {
     if (state.bffc_snapshot_count >= state.bffc_snapshots.size()
-        || state.bffc_staging_pool_count == 0u) {
+        || state.bffc_staging_pool_count == 0u
+        || (input_handle != 0u && state.bffc_source_staging_pool_count == 0u)) {
       log_skip("DL2 BFFC stage snapshot skipped: no staging slot");
       return;
     }
     snapshot = &state.bffc_snapshots[state.bffc_snapshot_count++];
-    snapshot->resource = source;
+    snapshot->resource = output_resource;
     snapshot->binding = output;
     snapshot->staging = state.bffc_staging_pool[state.bffc_staging_pool_count - 1u];
     state.bffc_staging_pool[state.bffc_staging_pool_count - 1u] = {};
     --state.bffc_staging_pool_count;
+    if (input_handle != 0u) {
+      snapshot->source = input_resource;
+      snapshot->source_binding = input;
+      snapshot->source_staging =
+          state.bffc_source_staging_pool[state.bffc_source_staging_pool_count - 1u];
+      state.bffc_source_staging_pool[state.bffc_source_staging_pool_count - 1u] = {};
+      --state.bffc_source_staging_pool_count;
+    }
+  } else if (input_handle != 0u && snapshot->source_staging.handle == 0u
+             && state.bffc_source_staging_pool_count != 0u) {
+    snapshot->source = input_resource;
+    snapshot->source_binding = input;
+    snapshot->source_staging =
+        state.bffc_source_staging_pool[state.bffc_source_staging_pool_count - 1u];
+    state.bffc_source_staging_pool[state.bffc_source_staging_pool_count - 1u] = {};
+    --state.bffc_source_staging_pool_count;
   }
 
   constexpr float sample_uvs[5][2] = {
       {0.50f, 0.50f}, {0.25f, 0.25f}, {0.75f, 0.25f}, {0.25f, 0.75f}, {0.75f, 0.75f}};
+  if (snapshot->source_staging.handle != 0u && input_desc.type == reshade::api::resource_type::texture_2d
+      && input_desc.texture.format == reshade::api::format::r16g16b16a16_float
+      && input_desc.texture.width != 0u && input_desc.texture.height != 0u) {
+    cmd_list->barrier(
+        input_resource, reshade::api::resource_usage::shader_resource,
+        reshade::api::resource_usage::copy_source);
+    for (uint32_t index = 0u; index < 5u; ++index) {
+      const uint32_t x = std::min(
+          input_desc.texture.width - 1u,
+          static_cast<uint32_t>(sample_uvs[index][0] * input_desc.texture.width));
+      const uint32_t y = std::min(
+          input_desc.texture.height - 1u,
+          static_cast<uint32_t>(sample_uvs[index][1] * input_desc.texture.height));
+      snapshot->source_copy_x[index] = x;
+      snapshot->source_copy_y[index] = y;
+      const reshade::api::subresource_box source_box = {x, y, 0u, x + 1u, y + 1u, 1u};
+      const reshade::api::subresource_box dest_box = {index, 0u, 0u, index + 1u, 1u, 1u};
+      cmd_list->copy_texture_region(input_resource, 0, &source_box, snapshot->source_staging, 0, &dest_box);
+    }
+    cmd_list->barrier(
+        input_resource, reshade::api::resource_usage::copy_source,
+        reshade::api::resource_usage::shader_resource);
+    snapshot->source_copy_recorded = true;
+  }
   cmd_list->barrier(
-      source, reshade::api::resource_usage::render_target,
+      output_resource, reshade::api::resource_usage::render_target,
       reshade::api::resource_usage::copy_source);
   for (uint32_t index = 0u; index < 5u; ++index) {
     const uint32_t x = std::min(
-        source_desc.texture.width - 1u,
-        static_cast<uint32_t>(sample_uvs[index][0] * source_desc.texture.width));
+        output_desc.texture.width - 1u,
+        static_cast<uint32_t>(sample_uvs[index][0] * output_desc.texture.width));
     const uint32_t y = std::min(
-        source_desc.texture.height - 1u,
-        static_cast<uint32_t>(sample_uvs[index][1] * source_desc.texture.height));
+        output_desc.texture.height - 1u,
+        static_cast<uint32_t>(sample_uvs[index][1] * output_desc.texture.height));
     snapshot->copy_x[index] = x;
     snapshot->copy_y[index] = y;
     const reshade::api::subresource_box source_box = {x, y, 0u, x + 1u, y + 1u, 1u};
     const reshade::api::subresource_box dest_box = {index, 0u, 0u, index + 1u, 1u, 1u};
-    cmd_list->copy_texture_region(source, 0, &source_box, snapshot->staging, 0, &dest_box);
+    cmd_list->copy_texture_region(output_resource, 0, &source_box, snapshot->staging, 0, &dest_box);
   }
   cmd_list->barrier(
-      source, reshade::api::resource_usage::copy_source,
+      output_resource, reshade::api::resource_usage::copy_source,
       reshade::api::resource_usage::render_target);
   snapshot->captured = true;
   snapshot->copy_recorded = true;
@@ -3562,6 +3634,7 @@ static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdS
                : format;
   };
   float bffc_values[5][3] = {};
+  float bffc_input_values[5][3] = {};
   int32_t bffc_match_index = -1;
   const uint64_t ad_input_resource = state.input_binding.effective != 0u
                                          ? state.input_binding.effective
@@ -3576,6 +3649,11 @@ static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdS
     for (uint32_t point = 0u; point < 5u; ++point) {
       if (!read_one(snapshot.staging, reshade::api::format::r16g16b16a16_float,
                     bffc_values[point], point)) {
+        return false;
+      }
+      if (snapshot.source_copy_recorded
+          && !read_one(snapshot.source_staging, reshade::api::format::r16g16b16a16_float,
+                       bffc_input_values[point], point)) {
         return false;
       }
     }
@@ -3607,18 +3685,24 @@ static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdS
   const auto output_copy_height = state.output_copy_height;
   uint64_t bffc_resource = 0u;
   uint64_t bffc_staging = 0u;
+  uint64_t bffc_input_resource = 0u;
+  uint64_t bffc_input_staging = 0u;
   uint64_t bffc_present = 0u;
   uint64_t bffc_draw_serial = 0u;
   uint64_t bffc_command_list = 0u;
   GammaAuditResource bffc_binding = {};
+  GammaAuditResource bffc_input_binding = {};
   if (bffc_match_index >= 0) {
     const auto& snapshot = state.bffc_snapshots[static_cast<uint32_t>(bffc_match_index)];
     bffc_resource = snapshot.resource.handle;
     bffc_staging = snapshot.staging.handle;
+    bffc_input_resource = snapshot.source.handle;
+    bffc_input_staging = snapshot.source_copy_recorded ? snapshot.source_staging.handle : 0u;
     bffc_present = snapshot.present;
     bffc_draw_serial = snapshot.draw_serial;
     bffc_command_list = snapshot.command_list;
     bffc_binding = snapshot.binding;
+    bffc_input_binding = snapshot.source_binding;
   }
   for (auto& staging : state.input_stagings) {
     device->destroy_resource(staging);
@@ -3681,6 +3765,13 @@ static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdS
          << " bffc_match=" << (bffc_match_index >= 0 ? 1 : 0)
          << " bffc_resource=0x" << std::hex << bffc_resource
          << " bffc_staging=0x" << bffc_staging
+         << " bffc_input_resource=0x" << bffc_input_resource
+         << " bffc_input_staging=0x" << bffc_input_staging
+         << " bffc_input_captured=" << (bffc_input_staging != 0u ? 1 : 0)
+         << " bffc_input_fmt=" << std::dec << static_cast<uint32_t>(bffc_input_binding.format)
+         << "=>" << static_cast<uint32_t>(bffc_input_binding.effective_format)
+         << " bffc_input_view=" << static_cast<uint32_t>(bffc_input_binding.view_format)
+         << "=>" << static_cast<uint32_t>(bffc_input_binding.effective_view_format)
          << " bffc_present=" << std::dec << bffc_present
          << " bffc_draw_serial=" << bffc_draw_serial
          << " bffc_cmd=0x" << std::hex << bffc_command_list
@@ -3700,7 +3791,13 @@ static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdS
            << " G=(" << values[index][1][0] << "," << values[index][1][1] << "," << values[index][1][2]
            << ") Y=" << CenterProbeLuminance(values[index][1]);
     if (bffc_match_index >= 0) {
-      stream << " BFFC=(" << bffc_values[index][0] << "," << bffc_values[index][1]
+      if (bffc_input_staging != 0u) {
+        stream << " BFFC_T=(" << bffc_input_values[index][0] << "," << bffc_input_values[index][1]
+               << "," << bffc_input_values[index][2] << ") Y=" << CenterProbeLuminance(bffc_input_values[index]);
+      } else {
+        stream << " BFFC_T=unavailable";
+      }
+      stream << " BFFC_A=(" << bffc_values[index][0] << "," << bffc_values[index][1]
              << "," << bffc_values[index][2] << ") Y=" << CenterProbeLuminance(bffc_values[index]);
     }
   }
