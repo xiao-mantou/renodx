@@ -4249,20 +4249,23 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       } else if (command_state != nullptr && !command_state->render_targets.empty()) {
         output = DescribeGammaAuditView(device, command_state->render_targets[0]);
       }
-      const auto input_it = downstream_capture_t0_views.find(context.cmd_list);
-      if (input_it != downstream_capture_t0_views.end()) {
+      // Resolve the binding from the current draw first. The push-descriptor
+      // cache may still contain a previous pass' t0 when the game reuses a
+      // descriptor table, which made the chain log AD consume the wrong
+      // resource. Keep the cached view only as a fallback for APIs where the
+      // live table cannot be resolved.
+      DescriptorBindingAudit t0_binding = {};
+      FindGraphicsDescriptorBinding(
+          device,
+          renodx::utils::state::GetCurrentState(context.cmd_list),
+          0u,
+          reshade::api::descriptor_type::texture_shader_resource_view,
+          &t0_binding);
+      if (t0_binding.found) {
+        input = DescribeGammaAuditView(device, t0_binding.slot.resource_view);
+      } else if (const auto input_it = downstream_capture_t0_views.find(context.cmd_list);
+                 input_it != downstream_capture_t0_views.end()) {
         input = DescribeGammaAuditView(device, input_it->second);
-      } else {
-        DescriptorBindingAudit t0_binding = {};
-        FindGraphicsDescriptorBinding(
-            device,
-            renodx::utils::state::GetCurrentState(context.cmd_list),
-            0u,
-            reshade::api::descriptor_type::texture_shader_resource_view,
-            &t0_binding);
-        if (t0_binding.found) {
-          input = DescribeGammaAuditView(device, t0_binding.slot.resource_view);
-        }
       }
       if (shader_hash == 0xAD085E81u) {
         DescriptorBindingAudit cb0_binding = {};
@@ -4483,10 +4486,24 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       auto* device = context.cmd_list->get_device();
       const auto output = DescribeGammaAuditView(device, target->second);
       if (output.width >= 128u && output.height >= 128u) {
-        const auto input_it = downstream_capture_t0_views.find(context.cmd_list);
-        auto input = input_it != downstream_capture_t0_views.end()
-                         ? DescribeGammaAuditView(device, input_it->second)
-                         : GammaAuditResource{};
+        // Prefer the descriptor bound for this exact draw. Reused descriptor
+        // tables can leave a stale cached t0 from an earlier pass, which would
+        // misidentify the producer/consumer chain. Fall back to the cache only
+        // when the live table is unavailable.
+        auto input = GammaAuditResource{};
+        DescriptorBindingAudit current_t0_binding = {};
+        FindGraphicsDescriptorBinding(
+            device,
+            renodx::utils::state::GetCurrentState(context.cmd_list),
+            0u,
+            reshade::api::descriptor_type::texture_shader_resource_view,
+            &current_t0_binding);
+        if (current_t0_binding.found) {
+          input = DescribeGammaAuditView(device, current_t0_binding.slot.resource_view);
+        } else if (const auto input_it = downstream_capture_t0_views.find(context.cmd_list);
+                   input_it != downstream_capture_t0_views.end()) {
+          input = DescribeGammaAuditView(device, input_it->second);
+        }
         uint32_t input_table = UINT_MAX;
         uint32_t input_binding = UINT_MAX;
         uint32_t viewport_width = 0u;
