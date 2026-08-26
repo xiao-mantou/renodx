@@ -3402,6 +3402,8 @@ static bool BeginAdStageProbeReadback(reshade::api::command_queue* queue, AdStag
   if (device == nullptr || device->get_api() != reshade::api::device_api::d3d12) {
     renodx::utils::log::w("DL2 AD stage probe skipped: D3D12 fence synchronization required");
     state.logged = true;
+    ad_stage_probe_capture.store(0.f, std::memory_order_release);
+    SetBffcAdStageObserver(false);
     return false;
   }
   const auto destroy_bffc_stagings = [&]() {
@@ -3498,6 +3500,9 @@ static bool BeginAdStageProbeReadback(reshade::api::command_queue* queue, AdStag
     destroy_bffc_stagings();
     state.copy_fence.Reset();
     renodx::utils::log::w("DL2 AD stage probe skipped: fence setup failed");
+    state.logged = true;
+    ad_stage_probe_capture.store(0.f, std::memory_order_release);
+    SetBffcAdStageObserver(false);
     return false;
   }
   state.copy_fence_value = 1u;
@@ -3621,6 +3626,7 @@ static bool CompleteAdStageProbeReadback(reshade::api::command_queue* queue, AdS
   DestroyBffcAdStageStaging(device, state);
   state.copy_fence.Reset();
   state.logged = true;
+  ad_stage_probe_capture.store(0.f, std::memory_order_release);
   std::ostringstream stream;
   stream << "DL2 AD stage probe readback: shader=0x" << std::hex << std::uppercase << state.shader_hash
          << " cmd=0x" << state.command_list << " native_cmd=0x" << state.command_list_native
@@ -4180,6 +4186,12 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   const uint32_t shader_hash = renodx::utils::shader::GetCurrentShaderHash(
       shader_state, is_compute ? renodx::utils::shader::COMPUTE_INDEX
                                : renodx::utils::shader::PIXEL_INDEX);
+
+  // Capture the AD bindings at the actual draw. The pixel copies are deferred
+  // to Present, after the draw has completed and the queue can be fenced.
+  if (!is_compute && shader_hash == 0xAD085E81u && capture_ad_stage_probe) {
+    CaptureAdStageProbeResources(context.cmd_list);
+  }
 
   if (capture_center_probe && !is_compute) {
     RecordCenterProbeDraw(context.cmd_list, shader_hash);
@@ -6663,6 +6675,19 @@ void OnDownstreamDrawCapturePresent(
     renodx::mods::swapchain::skip_next_proxy_draw.store(false, std::memory_order_release);
   }
 
+  // The AD probe captures only tiny 1x1 regions. Submit those copies after the
+  // captured draw has completed, then consume them on a later Present once the
+  // D3D12 fence is complete; never map or read the live render target here.
+  if (IsAdStageProbeCaptureRequested()) {
+    std::scoped_lock probe_lock(ad_stage_probe_mutex);
+    auto& probe = ad_stage_probe_state;
+    if (probe.captured && !probe.copy_submitted && !probe.logged) {
+      BeginAdStageProbeReadback(queue, probe);
+    } else if (probe.copy_submitted && !probe.logged) {
+      CompleteAdStageProbeReadback(queue, probe);
+    }
+  }
+
   std::scoped_lock lock(downstream_draw_capture_mutex);
   if (upscaler_input_audit_state.active) {
     auto& audit = upscaler_input_audit_state;
@@ -7570,7 +7595,13 @@ void OnDl2BffcProbeDrawn(reshade::api::command_list* cmd_list) {
   // The shader framework invokes on_drawn after the BFFC command has completed.
   // Use this existing post-draw hook for the one-shot AD-stage snapshot so the
   // generic command observer does not replay BFFC or mutate its command list.
-  if (IsAdStageProbeCaptureRequested()) CaptureBffcAdStageSnapshot(cmd_list);
+  if (IsAdStageProbeCaptureRequested()) {
+    {
+      std::scoped_lock probe_lock(ad_stage_probe_mutex);
+      PrepareBffcAdStageStaging(cmd_list != nullptr ? cmd_list->get_device() : nullptr, ad_stage_probe_state);
+    }
+    CaptureBffcAdStageSnapshot(cmd_list);
+  }
 }
 
 renodx::mods::shader::CustomShader CreateDl2BffcProbeShader() {
@@ -8550,6 +8581,24 @@ renodx::utils::settings::Settings settings = {
         .label = "Clamp Swapchain Output (Test)",
         .section = "Compatibility",
         .tooltip = "Experimental. Clips final proxy output to [0,1] range. If this stops DLSS-G flicker, it confirms extended-range values are causing Streamline interpolation errors.",
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture 0xAD Stage Values (5 points)",
+        .section = "Debug",
+        .tooltip = "One-shot delayed readback of five 1x1 samples from the actual 0xAD input and output resources. Uses small FP16/typed staging resources and a D3D12 fence; does not read or mutate the live render target.",
+        .on_click = []() {
+          {
+            std::scoped_lock lock(ad_stage_probe_mutex);
+            ad_stage_probe_state = {};
+          }
+          ad_stage_probe_capture.store(1.f, std::memory_order_release);
+          ad_stage_probe_arm_pending.store(true, std::memory_order_release);
+          SetBffcAdStageObserver(true);
+          renodx::utils::log::i("DL2 AD stage probe armed: deferred 5-point input/output readback.");
+          return false;
+        },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
