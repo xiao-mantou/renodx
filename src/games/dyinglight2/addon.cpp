@@ -4102,6 +4102,27 @@ inline constexpr auto OnGammaDrawAudit = []<typename Context>(Context& context)
   draw.input = input != gamma_audit_t0_views.end()
                    ? DescribeGammaAuditView(device, input->second)
                    : GammaAuditResource{};
+  // D3D12 commonly binds the 0xAD t0 through a descriptor table before the
+  // one-shot audit is armed, so no push-descriptor update reaches the cache.
+  // Resolve the currently bound table at draw time, without rebinding or
+  // mutating any descriptor.
+  if (draw.input.resource == 0u) {
+    const auto* current_state = renodx::utils::state::GetCurrentState(context.cmd_list);
+    DescriptorBindingAudit t0_binding = {};
+    FindGraphicsDescriptorBinding(
+        device, current_state, 0u,
+        reshade::api::descriptor_type::texture_shader_resource_view,
+        &t0_binding);
+    if (!t0_binding.found) {
+      FindGraphicsDescriptorBinding(
+          device, current_state, 0u,
+          reshade::api::descriptor_type::sampler_with_resource_view,
+          &t0_binding);
+    }
+    if (t0_binding.found && t0_binding.slot.resource_view.handle != 0u) {
+      draw.input = DescribeGammaAuditView(device, t0_binding.slot.resource_view);
+    }
+  }
   draw.output = DescribeGammaAuditView(device, output->second);
   for (uint32_t index = 0u; index < audit.count; ++index) {
     const auto& prior_output = audit.draws[index].output;
