@@ -3543,7 +3543,9 @@ static bool BeginAdStageProbeReadback(reshade::api::command_queue* queue, AdStag
     return false;
   }
   constexpr std::array<std::array<float, 2>, 5> sample_points = {{
-      {0.50f, 0.50f},
+      // Avoid the gameplay reticle at the exact center while staying on the
+      // same nearby scene region as the center probe.
+      {0.48f, 0.50f},
       {0.25f, 0.25f},
       {0.75f, 0.25f},
       {0.25f, 0.75f},
