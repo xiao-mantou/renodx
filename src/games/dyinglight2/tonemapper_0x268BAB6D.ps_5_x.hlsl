@@ -373,15 +373,19 @@ void main(
     float grade_luma = saturate(dot(float3(0.212500006, 0.715399981, 0.0720999986), probe_grade));
     probe_grade = probe_grade + -grade_luma;
     probe_grade = cb0[1].xxx * probe_grade + grade_luma;
-    const float3 probe_reconstructed = RENODX_TONE_MAP_TYPE == 0.0
-                                           ? probe_grade
-                                           : renodx::math::DivideSafe(
-                                                 probe_grade,
-                                                 probe_proxy_scale.xxx,
-                                                 probe_grade);
+    // The normal HDR path has no explicit post-LUT DivideSafe reconstruction.
+    // Its reference-aware three-argument ToneMapPass consumes the original
+    // input, the native graded SDR result, and the same neutral_sdr proxy.
+    // Keep the legacy R slot equal to the native grade for layout compatibility,
+    // but compute T with the exact normal-path overload so this probe cannot
+    // report the retired single-argument architecture.
+    const float3 probe_reconstructed = probe_grade;
     const float3 probe_tonemapped = RENODX_TONE_MAP_TYPE == 0.0
-                                        ? probe_reconstructed
-                                        : renodx::draw::ToneMapPass(probe_reconstructed);
+                                        ? probe_grade
+                                        : renodx::draw::ToneMapPass(
+                                              probe_hdr,
+                                              probe_grade,
+                                              probe_neutral);
     const float v_in = dot(probe_hdr, float3(0.2126, 0.7152, 0.0722));
     const float v_l = dot(probe_grade, float3(0.2126, 0.7152, 0.0722));
     const float v_r = dot(probe_reconstructed, float3(0.2126, 0.7152, 0.0722));
