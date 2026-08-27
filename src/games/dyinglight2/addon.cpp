@@ -3566,10 +3566,18 @@ static bool BeginAdStageProbeReadback(reshade::api::command_queue* queue, AdStag
     cmd_list->barrier(source, reshade::api::resource_usage::copy_source, old_usage);
   };
   for (uint32_t index = 0u; index < sample_points.size(); ++index) {
+    // Keep the center sample in the same scene area while moving it exactly
+    // ten pixels left of the gameplay reticle at each resource's resolution.
+    const float input_x = index == 0u
+                              ? 0.5f - 10.f / static_cast<float>(std::max(1u, in_desc.texture.width))
+                              : sample_points[index][0];
+    const float output_x = index == 0u
+                               ? 0.5f - 10.f / static_cast<float>(std::max(1u, out_desc.texture.width))
+                               : sample_points[index][0];
     copy_one(state.input, in_desc, state.input_stagings[index], reshade::api::resource_usage::shader_resource,
-             &state.input_copy_x[index], &state.input_copy_y[index], sample_points[index][0], sample_points[index][1]);
+             &state.input_copy_x[index], &state.input_copy_y[index], input_x, sample_points[index][1]);
     copy_one(state.output, out_desc, state.output_stagings[index], reshade::api::resource_usage::render_target,
-             &state.output_copy_x[index], &state.output_copy_y[index], sample_points[index][0], sample_points[index][1]);
+             &state.output_copy_x[index], &state.output_copy_y[index], output_x, sample_points[index][1]);
   }
   queue->flush_immediate_command_list();
   auto* native_device = reinterpret_cast<ID3D12Device*>(static_cast<uintptr_t>(device->get_native()));
