@@ -513,3 +513,40 @@ to `AD input A Y=1.00188` before AD; AD is still an identity transform.
 This places the first observed highlight loss after the BFFC draw and before
 the AD draw, on the shared AD-input resource. The exact intervening writer
 must be resolved with the producer-chain audit for the same generation.
+
+## 2026-08-27: BFFC -> AD producer-chain audit
+
+Build `eb51e83`; capture `1`, generation `5`, Present `8680`, AD draw serial
+`16302`, command list `0x1C7DC3186D8`, epoch `0`. The audit reports
+`bffc_pre_ad=6`, `bffc_pre_ad_matches=2`, and `ad_input_pre_writers=44`.
+
+The AD input is the clone `0x1C7DD091BB0` of source resource
+`0x1C7DD08E250`, resource format `27` with effective/view format `10`,
+`2560x1440`. BFFC writes this clone at serial `16184` and again at serial
+`16200` (same Present/generation and full viewport); this confirms a BFFC
+producer-to-AD-clone relationship, but not that BFFC is the final value seen
+by AD.
+
+The last recorded writer before AD is serial `16301`, shader `0xF34DDC49`,
+same command list/epoch/Present/generation, full `2560x1440` viewport and
+scissor, writing RTV `0x1C7DD091BB0` format/view `10`. It is immediately
+before AD serial `16302`, so it is the current best explanation for the
+intervening overwrite. The hash is not classified as UI by this audit alone;
+shader/pass identification remains a separate static step.
+
+Static dump verification resolves that classification:
+`renodx-dev/dump/0xF34DDC49.ps_5_0.hlsl` is a texture-times-vertex-color
+shader, and `docs/DL2_LIVE_SHADER_LOG.md` identifies this hash as a known
+popup/UI alpha-blend shader. Therefore this writer is an overlay composite,
+not a scene HDR/tonemap producer; AD-stage center readback after this write is
+not valid evidence for scene luminance.
+
+The summary's `bffc_output=0x1C7DD04D560` is a later BFFC event after the AD
+draw and must not be treated as the pre-AD producer. No HDR/ToneMap/Proxy or
+normal resource-lifetime code was changed.
+
+The I/R/T probe's 0x268 `on_drawn` callback is now dynamically attached only
+when the button arms a capture, and detached after completion or swapchain
+destroy. Normal 0x268 draws therefore do not incur the probe post-callback or
+command replay path. The callback copies four 1x1 FP16 pixels after the armed
+draw; Present only fences and maps the tiny staging resource on a later frame.

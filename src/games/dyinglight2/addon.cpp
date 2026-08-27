@@ -1907,6 +1907,7 @@ void RemoveStreamlineHook() {
 static void ResetProxySourceProbeOnSwapchainDestroy();
 static void ResetBffcAdChainAudit();
 static void ResetAdStageProbeOnSwapchainDestroy();
+static void ResetCenterProbeOnSwapchainDestroy();
 static void SetBffcAdStageObserver(bool enabled);
 
 // This callback only invalidates the normal-path target activation gate. The
@@ -1923,6 +1924,7 @@ void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) {
   auto* device = swapchain != nullptr ? swapchain->get_device() : nullptr;
   dl2_hdr_target_activation_ready.store(false, std::memory_order_release);
   ResetProxySourceProbeOnSwapchainDestroy();
+  ResetCenterProbeOnSwapchainDestroy();
   ResetBffcAdChainAudit();
   ResetAdStageProbeOnSwapchainDestroy();
   dlss_fg_active_swapchain.store(0u, std::memory_order_release);
@@ -6239,20 +6241,30 @@ static bool TryLogT1Baseline(reshade::api::command_queue* queue, reshade::api::r
 
 struct CenterProbeCaptureState {
   bool captured = false;
+  bool copy_recorded = false;
   bool copy_submitted = false;
   bool logged = false;
+  bool aborted = false;
   bool range_mode = false;
+  bool debug_mode_overridden = false;
   uint64_t arm_serial = 0u;
   uint64_t capture_present_serial = 0u;
   uint64_t capture_draw_serial = 0u;
   uint64_t capture_generation = 0u;
   uint64_t copy_present_serial = 0u;
   uint64_t complete_present_serial = 0u;
+  float captured_peak_nits = 0.f;
+  float captured_game_nits = 0.f;
+  float captured_curve = 0.f;
+  float captured_white_clip = 0.f;
+  float captured_tone_map_type = 0.f;
+  float saved_debug_mode = 0.f;
   uint64_t writes_after_capture = 0u;
   uint64_t writes_at_copy = 0u;
   uint64_t last_write_draw_serial = 0u;
   reshade::api::resource resource = {};
   reshade::api::resource staging = {};
+  reshade::api::format resource_format = reshade::api::format::unknown;
   reshade::api::format view_format = reshade::api::format::unknown;
   Microsoft::WRL::ComPtr<ID3D12Fence> copy_fence;
   uint64_t copy_fence_value = 0u;
@@ -6260,6 +6272,8 @@ struct CenterProbeCaptureState {
 static std::atomic<float> center_probe_capture{0.f};
 static CenterProbeCaptureState center_probe_state = {};
 static std::mutex center_probe_mutex;
+static void OnDl2ToneMapProbeDrawn(reshade::api::command_list* cmd_list);
+static void SetCenterProbeObserver(bool enabled);
 
 // One-shot read-only sample of the resource used as the final proxy SRV.
 // This intentionally mirrors the existing deferred center probe, but only
@@ -6311,6 +6325,25 @@ static void ResetProxySourceProbeOnSwapchainDestroy() {
 
 static bool IsCenterProbeCaptureRequested() {
   return center_probe_capture.load(std::memory_order_acquire) != 0.f;
+}
+
+static void ResetCenterProbeOnSwapchainDestroy() {
+  center_probe_capture.store(0.f, std::memory_order_release);
+  SetCenterProbeObserver(false);
+  std::scoped_lock probe_lock(center_probe_mutex);
+  if (center_probe_state.debug_mode_overridden) {
+    shader_injection.debug_mode = center_probe_state.saved_debug_mode;
+  }
+  // A copy recorded on the command list may still be in flight. Do not touch
+  // its staging resource during ResizeBuffers; retire it on a later Present.
+  if (center_probe_state.copy_recorded || center_probe_state.copy_submitted) {
+    center_probe_state.aborted = true;
+    center_probe_state.captured = false;
+    center_probe_state.resource = {};
+    center_probe_state.debug_mode_overridden = false;
+  } else {
+    center_probe_state = {};
+  }
 }
 
 static void RecordCenterProbeDraw(reshade::api::command_list* cmd_list, uint32_t shader_hash) {
@@ -6729,12 +6762,168 @@ static void Capture268CenterProbeResource(reshade::api::command_list* cmd_list) 
   const auto resource = device->get_resource_from_view(selected_view);
   if (resource.handle == 0u) return;
   center_probe_state.resource = resource;
+  center_probe_state.resource_format = device->get_resource_desc(resource).texture.format;
   center_probe_state.view_format = device->get_resource_view_desc(selected_view).format;
   center_probe_state.capture_present_serial = dl2_probe_present_serial;
   center_probe_state.capture_draw_serial = dl2_probe_draw_serial;
   center_probe_state.capture_generation =
       dlss_fg_swapchain_generation.load(std::memory_order_acquire);
   center_probe_state.captured = true;
+}
+
+// The 0x268 draw writes the diagnostic values before any later UI/overlay pass
+// can touch the target. Copy only the four 1x1 pixels emitted by DebugMode 60
+// on the same command list; no full render target readback is performed.
+static bool RecordCenterProbeCopyAfterDraw(
+    reshade::api::command_list* cmd_list, CenterProbeCaptureState& state) {
+  if (cmd_list == nullptr || !state.captured || state.copy_recorded || state.aborted
+      || state.resource.handle == 0u) {
+    return false;
+  }
+  auto* device = cmd_list->get_device();
+  if (device == nullptr || device->get_api() != reshade::api::device_api::d3d12) {
+    state.logged = true;
+    return false;
+  }
+  const auto desc = device->get_resource_desc(state.resource);
+  const bool fp16 = desc.texture.format == reshade::api::format::r16g16b16a16_float
+                    || desc.texture.format == reshade::api::format::r16g16b16a16_typeless;
+  const bool fp16_view = state.view_format == reshade::api::format::r16g16b16a16_float
+                         || state.view_format == reshade::api::format::r16g16b16a16_typeless;
+  if (desc.type != reshade::api::resource_type::texture_2d || !fp16 || !fp16_view
+      || desc.texture.width == 0u || desc.texture.height == 0u) {
+    renodx::utils::log::w("DL2 0x268 I/R/T probe skipped: target is not an FP16 RTV");
+    state.logged = true;
+    return false;
+  }
+
+  constexpr float probe_uvs[4][2] = {
+      {0.30f, 0.58f}, {0.30f, 0.68f}, {0.30f, 0.78f}, {0.30f, 0.88f}};
+  reshade::api::resource staging = {};
+  const reshade::api::resource_desc staging_desc(
+      4u, 1u, 1u, 1, reshade::api::format::r16g16b16a16_float, 1,
+      reshade::api::memory_heap::gpu_to_cpu, reshade::api::resource_usage::copy_dest);
+  if (!device->create_resource(
+          staging_desc, nullptr, reshade::api::resource_usage::copy_dest, &staging)) {
+    renodx::utils::log::w("DL2 0x268 I/R/T probe: staging create failed");
+    return false;
+  }
+  const uint32_t width = std::max(1u, desc.texture.width);
+  const uint32_t height = std::max(1u, desc.texture.height);
+  cmd_list->barrier(
+      state.resource, reshade::api::resource_usage::render_target,
+      reshade::api::resource_usage::copy_source);
+  for (uint32_t index = 0u; index < 4u; ++index) {
+    const uint32_t x = std::min(width - 1u, static_cast<uint32_t>(probe_uvs[index][0] * width));
+    const uint32_t y = std::min(height - 1u, static_cast<uint32_t>(probe_uvs[index][1] * height));
+    const reshade::api::subresource_box source_box = {x, y, 0u, x + 1u, y + 1u, 1u};
+    const reshade::api::subresource_box dest_box = {index, 0u, 0u, index + 1u, 1u, 1u};
+    cmd_list->copy_texture_region(state.resource, 0, &source_box, staging, 0, &dest_box);
+  }
+  cmd_list->barrier(
+      state.resource, reshade::api::resource_usage::copy_source,
+      reshade::api::resource_usage::render_target);
+  state.staging = staging;
+  state.copy_recorded = true;
+  state.writes_at_copy = state.writes_after_capture;
+  return true;
+}
+
+static void OnDl2ToneMapProbeDrawn(reshade::api::command_list* cmd_list) {
+  if (!IsCenterProbeCaptureRequested()) return;
+  std::scoped_lock probe_lock(center_probe_mutex);
+  RecordCenterProbeCopyAfterDraw(cmd_list, center_probe_state);
+}
+
+static bool SignalCenterProbeReadback(
+    reshade::api::command_queue* queue, CenterProbeCaptureState& state) {
+  if (queue == nullptr || !state.copy_recorded || state.copy_submitted) return false;
+  auto* device = queue->get_device();
+  if (device == nullptr || device->get_api() != reshade::api::device_api::d3d12) return false;
+  auto* native_device = reinterpret_cast<ID3D12Device*>(
+      static_cast<uintptr_t>(device->get_native()));
+  auto* native_queue = reinterpret_cast<ID3D12CommandQueue*>(
+      static_cast<uintptr_t>(queue->get_native()));
+  if (native_device == nullptr || native_queue == nullptr
+      || FAILED(native_device->CreateFence(
+          0u, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&state.copy_fence)))) {
+    renodx::utils::log::w("DL2 0x268 I/R/T probe: fence creation failed");
+    return false;
+  }
+  state.copy_fence_value = 1u;
+  if (FAILED(native_queue->Signal(state.copy_fence.Get(), state.copy_fence_value))) {
+    state.copy_fence.Reset();
+    state.copy_fence_value = 0u;
+    renodx::utils::log::w("DL2 0x268 I/R/T probe: fence signal failed");
+    return false;
+  }
+  state.copy_present_serial = dl2_probe_present_serial;
+  state.copy_submitted = true;
+  return true;
+}
+
+static bool CompleteCenterProbeSmallReadback(
+    reshade::api::command_queue* queue, CenterProbeCaptureState& state) {
+  if (queue == nullptr || !state.copy_submitted || state.staging.handle == 0u || state.logged) {
+    return false;
+  }
+  if (state.copy_fence == nullptr
+      || state.copy_fence->GetCompletedValue() < state.copy_fence_value) {
+    return false;
+  }
+  auto* device = queue->get_device();
+  if (device == nullptr) return false;
+  reshade::api::subresource_data data = {};
+  if (!device->map_texture_region(
+          state.staging, 0, nullptr, reshade::api::map_access::read_only, &data)) {
+    renodx::utils::log::w("DL2 0x268 I/R/T probe: map failed");
+    return false;
+  }
+  float values[4][3] = {};
+  if (data.data != nullptr) {
+    constexpr uint32_t bytes_per_pixel = 8u;
+    const auto* base = static_cast<const uint8_t*>(data.data);
+    for (uint32_t index = 0u; index < 4u; ++index) {
+      const auto* pixel = base + static_cast<size_t>(index) * bytes_per_pixel;
+      for (uint32_t channel = 0u; channel < 3u; ++channel) {
+        uint16_t half = 0u;
+        std::memcpy(&half, pixel + channel * sizeof(uint16_t), sizeof(uint16_t));
+        values[index][channel] = HalfToFloat(half);
+      }
+    }
+  }
+  device->unmap_texture_region(state.staging, 0);
+  device->destroy_resource(state.staging);
+  state.staging = {};
+  state.copy_fence.Reset();
+  state.copy_fence_value = 0u;
+  state.complete_present_serial = dl2_probe_present_serial;
+  state.logged = true;
+  if (state.aborted) return true;
+
+  constexpr const char* names[4] = {"I", "L", "R", "T"};
+  std::ostringstream stream;
+  stream << "DL2 0x268 I/R/T probe: draw=" << state.capture_draw_serial
+         << " arm=" << state.arm_serial
+         << " capture_present=" << state.capture_present_serial
+         << " copy_present=" << state.copy_present_serial
+         << " complete_present=" << state.complete_present_serial
+         << " generation=" << state.capture_generation
+         << " resource=0x" << std::hex << std::uppercase << state.resource.handle << std::dec
+         << " resource_format=" << static_cast<uint32_t>(state.resource_format)
+         << " view_format=" << static_cast<uint32_t>(state.view_format)
+         << " sample_uv=0.30,0.58|0.30,0.68|0.30,0.78|0.30,0.88"
+         << " peak=" << state.captured_peak_nits
+         << " game=" << state.captured_game_nits
+         << " curve=" << state.captured_curve
+         << " white_clip=" << state.captured_white_clip
+         << " tone_map_type=" << state.captured_tone_map_type;
+  for (uint32_t index = 0u; index < 4u; ++index) {
+    stream << " " << names[index] << "=(" << values[index][0] << "," << values[index][1]
+           << "," << values[index][2] << ") Y=" << CenterProbeLuminance(values[index]);
+  }
+  renodx::utils::log::i(stream.str().c_str());
+  return true;
 }
 
 void OnDownstreamDrawCapturePresent(
@@ -6747,6 +6936,27 @@ void OnDownstreamDrawCapturePresent(
   ++dl2_probe_present_serial;
   CaptureReshadeSwapchainSnapshot(queue, swapchain);
   if constexpr (kEnableDl2FgHooks) TryInstallStreamlineHook();
+
+  // The 0x268 probe records its tiny copies on the 0x268 command list itself,
+  // before any UI overlay can overwrite the target. Present only signals the
+  // fence and consumes the staging resource on a later Present.
+  {
+    std::scoped_lock probe_lock(center_probe_mutex);
+    auto& probe = center_probe_state;
+    if (probe.copy_recorded && !probe.copy_submitted && !probe.logged) {
+      SignalCenterProbeReadback(queue, probe);
+    } else if (probe.copy_submitted && !probe.logged) {
+      CompleteCenterProbeSmallReadback(queue, probe);
+    }
+    if (probe.logged) {
+      SetCenterProbeObserver(false);
+      if (probe.debug_mode_overridden && !probe.aborted) {
+        shader_injection.debug_mode = probe.saved_debug_mode;
+      }
+      center_probe_capture.store(0.f, std::memory_order_release);
+      probe = {};
+    }
+  }
 
   // One-shot, first-Present only. Reports the final presentation state so an
   // HDR10 black screen can be told apart from a wrong-encoding black screen.
@@ -7806,6 +8016,16 @@ static void SetBffcAdStageObserver(bool enabled) {
                                 : std::function<void(reshade::api::command_list*)>();
 }
 
+static void SetCenterProbeObserver(bool enabled) {
+  auto& runtime_shaders = renodx::mods::shader::custom_shaders;
+  const auto it = runtime_shaders.find(0x268BAB6Du);
+  if (it == runtime_shaders.end()) return;
+  it->second.on_drawn = enabled
+                            ? std::function<void(reshade::api::command_list*)>(
+                                  &OnDl2ToneMapProbeDrawn)
+                            : std::function<void(reshade::api::command_list*)>();
+}
+
 float current_settings_mode = 0;
 // Quick Debug Probe stores its own index; on change it forwards the mapped
 // mode number into debug_mode. Keeping a separate binding avoids two settings
@@ -8643,6 +8863,34 @@ renodx::utils::settings::Settings settings = {
                  << previous_mode << "=>" << current_mode
                  << " submission_logs=32";
           renodx::utils::log::i(stream.str().c_str()); },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture 0x268 I/R/T Probe",
+        .section = "Debug",
+        .tooltip = "One-shot, armed-only 0x268 diagnostic. Forces DebugMode 60 for one draw, copies four 1x1 FP16 pixels immediately after that draw, and logs input_hdr/native grade/reconstructed/ToneMap output plus draw and HDR settings. No AD, BFFC, Proxy, or normal HDR math changes.",
+        .on_click = []() {
+          std::scoped_lock lock(center_probe_mutex);
+          if (center_probe_state.copy_recorded || center_probe_state.copy_submitted) {
+            renodx::utils::log::w("DL2 0x268 I/R/T probe is still in flight");
+            return false;
+          }
+          center_probe_state = {};
+          center_probe_state.arm_serial = ++dl2_probe_arm_serial;
+          center_probe_state.captured_peak_nits = shader_injection.peak_white_nits;
+          center_probe_state.captured_game_nits = shader_injection.diffuse_white_nits;
+          center_probe_state.captured_curve = shader_injection.renodrt_tone_map_method;
+          center_probe_state.captured_white_clip = shader_injection.tone_map_white_clip;
+          center_probe_state.captured_tone_map_type = shader_injection.tone_map_type;
+          center_probe_state.saved_debug_mode = shader_injection.debug_mode;
+          center_probe_state.debug_mode_overridden = true;
+          shader_injection.debug_mode = 60.f;
+          SetCenterProbeObserver(true);
+          center_probe_capture.store(1.f, std::memory_order_release);
+          renodx::utils::log::i("DL2 0x268 I/R/T probe armed for one draw at sample UV 0.5,0.5");
+          return false;
+        },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{

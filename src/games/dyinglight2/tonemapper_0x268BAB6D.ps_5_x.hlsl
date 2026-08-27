@@ -327,8 +327,16 @@ void main(
     const float2 probe_uv = float2(0.5, 0.5);
     const float4 probe_src = t0.SampleLevel(s0_s, probe_uv, 0);
     const float3 probe_hdr = max(probe_src.rgb, 0.0);
-    const float probe_proxy_scale = renodx::tonemap::neutwo::ComputeMaxChannelScale(probe_hdr);
-    const float3 probe_neutral = probe_hdr * probe_proxy_scale;
+    const float3 probe_hdr_curve = ApplyDL2SDRCurveExtended(probe_hdr, sdr_curve0, sdr_curve1);
+    const float probe_input_max = max(probe_hdr.r, max(probe_hdr.g, probe_hdr.b));
+    const float probe_expansion = smoothstep(
+        dl2_sdr_white_input, dl2_hdr_expansion_end, probe_input_max);
+    const float3 probe_proxy = lerp(probe_hdr_curve, probe_hdr, probe_expansion);
+    const float probe_proxy_max = max(probe_proxy.r, max(probe_proxy.g, probe_proxy.b));
+    const float probe_proxy_scale = probe_proxy_max > 1.0
+                                        ? rcp(max(probe_proxy_max, 1e-6))
+                                        : 1.0;
+    const float3 probe_neutral = probe_proxy * probe_proxy_scale;
     float3 lut_gamma;
     float3 lut_gamma_lin = probe_neutral * float3(12.9200001, 12.9200001, 12.9200001);
     float3 lut_gamma_srgb = exp2(float3(0.416666657, 0.416666657, 0.416666657) * log2(abs(probe_neutral)));
@@ -336,8 +344,14 @@ void main(
     lut_gamma = cmp(float3(0.00313080009, 0.00313080009, 0.00313080009) >= probe_neutral) ? lut_gamma_lin : lut_gamma_srgb;
     lut_gamma = lut_gamma * float3(0.96875, 0.96875, 0.96875) + float3(0.015625, 0.015625, 0.015625);
     float3 probe_lut = t1.SampleLevel(s1_s, lut_gamma, 0).xyz;
-    probe_lut = probe_lut * float3(0.947867274, 0.947867274, 0.947867274) + float3(0.0521326996, 0.0521326996, 0.0521326996);
-    probe_lut = renodx::color::srgb::DecodeSafe(probe_lut);
+    const float3 probe_lut_linear = probe_lut * float3(0.947867274, 0.947867274, 0.947867274)
+                                    + float3(0.0521326996, 0.0521326996, 0.0521326996);
+    const float3 probe_lut_linear_pow = exp2(
+        float3(2.4000001, 2.4000001, 2.4000001) * log2(abs(probe_lut_linear)));
+    const float3 probe_lut_linear_low = probe_lut * float3(0.0773993805, 0.0773993805, 0.0773993805);
+    probe_lut = probe_lut <= float3(0.0404499993, 0.0404499993, 0.0404499993)
+                    ? probe_lut_linear_low
+                    : probe_lut_linear_pow;
     float3 temp_adjusted = probe_lut * r0.xyz;
     float temp_luma = dot(temp_adjusted, float3(0.212599993, 0.715200007, 0.0722000003));
     temp_luma = max(9.99999975e-005, temp_luma);
