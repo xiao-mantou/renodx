@@ -4342,9 +4342,25 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
       GammaAuditResource output = {};
       if (const auto target_it = downstream_capture_rtvs.find(context.cmd_list);
           target_it != downstream_capture_rtvs.end()) {
-        output = DescribeGammaAuditView(device, target_it->second);
+        auto target_view = target_it->second;
+        // The BFFC draw may bind the native RTV while its HDR clone is the
+        // resource later consumed by AD. Resolve the clone for diagnostics so
+        // producer matching uses the same effective view as the safe stage
+        // snapshot path, without rebinding or mutating the draw.
+        renodx::utils::resource::GetResourceViewInfo(
+            target_view,
+            [&target_view](const renodx::utils::resource::ResourceViewInfo& info) {
+              if (info.clone_enabled && info.clone.handle != 0u) target_view = info.clone;
+            });
+        output = DescribeGammaAuditView(device, target_view);
       } else if (command_state != nullptr && !command_state->render_targets.empty()) {
-        output = DescribeGammaAuditView(device, command_state->render_targets[0]);
+        auto target_view = command_state->render_targets[0];
+        renodx::utils::resource::GetResourceViewInfo(
+            target_view,
+            [&target_view](const renodx::utils::resource::ResourceViewInfo& info) {
+              if (info.clone_enabled && info.clone.handle != 0u) target_view = info.clone;
+            });
+        output = DescribeGammaAuditView(device, target_view);
       }
       // Resolve the binding from the current draw first. The push-descriptor
       // cache may still contain a previous pass' t0 when the game reuses a

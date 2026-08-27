@@ -492,3 +492,24 @@ Values (BT.709 Y):
 - BR: `A=G=(0.00518417,0.00904846,0.00611496)`, `Y=0.00801512`; BFFC same.
 
 This rules out AD power/gamma as the first brightness-loss point for this frame.
+
+## 2026-08-27: BFFC input/output and AD input correlation
+
+Build `8d47a71`; the correct `Capture 0xAD Stage Values (5 points)` capture
+completed at Present `42888`. The BFFC snapshot matched the later AD input
+resource: BFFC output/effective resource and AD input/effective resource were
+both `0x29B7A6C7600`, FP16 linear (`resource_format=27`, effective/view format
+`10`). BFFC source input was `0x29B79F27390`.
+
+At the BFFC draw, `BFFC_T` and `BFFC_A` were identical at all five points,
+including the highlight: C `Y=5.09756`, TL `0.0752426`, TR `0.137117`, BL
+`0.0250289`, BR `0.00637133`. Therefore BFFC itself does not reduce the
+signal.
+
+By the later `0xAD085E81` draw, the same resource was read as `A` with
+`cb0[0].x=1.0` and `G=A`: C `Y=1.00188`, TL `0.0752426`, TR `0.137117`, BL
+`0.0250289`, BR `0.00637133`. The highlight changed from `BFFC_A Y=5.09756`
+to `AD input A Y=1.00188` before AD; AD is still an identity transform.
+This places the first observed highlight loss after the BFFC draw and before
+the AD draw, on the shared AD-input resource. The exact intervening writer
+must be resolved with the producer-chain audit for the same generation.
