@@ -376,10 +376,9 @@ void main(
     // The normal HDR path has no explicit post-LUT DivideSafe reconstruction.
     // Its reference-aware three-argument ToneMapPass consumes the original
     // input, the native graded SDR result, and the same neutral_sdr proxy.
-    // Keep the legacy R slot equal to the native grade for layout compatibility,
-    // but compute T with the exact normal-path overload so this probe cannot
-    // report the retired single-argument architecture.
-    const float3 probe_reconstructed = probe_grade;
+    // Use the formerly redundant R slot for neutral_sdr so this probe exposes
+    // the reference value that drives UpgradeToneMap's luminance ratio.
+    const float3 probe_reference = probe_neutral;
     const float3 probe_tonemapped = RENODX_TONE_MAP_TYPE == 0.0
                                         ? probe_grade
                                         : renodx::draw::ToneMapPass(
@@ -388,7 +387,7 @@ void main(
                                               probe_neutral);
     const float v_in = dot(probe_hdr, float3(0.2126, 0.7152, 0.0722));
     const float v_l = dot(probe_grade, float3(0.2126, 0.7152, 0.0722));
-    const float v_r = dot(probe_reconstructed, float3(0.2126, 0.7152, 0.0722));
+    const float v_r = dot(probe_reference, float3(0.2126, 0.7152, 0.0722));
     const float v_t = dot(probe_tonemapped, float3(0.2126, 0.7152, 0.0722));
     o0.rgb = 0.0;
     if (abs(v1.x - 0.5) < 0.002 || abs(v1.y - 0.5) < 0.002) o0.rgb += float3(1.0, 1.0, 1.0);
@@ -397,9 +396,9 @@ void main(
     // point used by the AD probe, not from these output pixel coordinates.
     if (all(abs(v1.xy - float2(0.30, 0.58)) < float2(0.0015, 0.0015))) o0.rgb = probe_hdr;
     if (all(abs(v1.xy - float2(0.30, 0.68)) < float2(0.0015, 0.0015))) o0.rgb = probe_grade;
-    if (all(abs(v1.xy - float2(0.30, 0.78)) < float2(0.0015, 0.0015))) o0.rgb = probe_reconstructed;
+    if (all(abs(v1.xy - float2(0.30, 0.78)) < float2(0.0015, 0.0015))) o0.rgb = probe_reference;
     if (all(abs(v1.xy - float2(0.30, 0.88)) < float2(0.0015, 0.0015))) o0.rgb = probe_tonemapped;
-    // Four values stacked vertically, top to bottom: I, L, R, T.
+    // Four values stacked vertically, top to bottom: I, L, N, T.
     const float label_x = 0.44;
     o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.58, v_in, 0.008);
     o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.68, v_l, 0.008);
