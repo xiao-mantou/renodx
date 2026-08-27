@@ -270,15 +270,17 @@ void main(
   float3 stable_grade = native_lut_grade;
 
   if (RENODX_TONE_MAP_TYPE != 0.0) {
-    // Reconstruct the LUT-graded HDR signal, then apply one standalone HDR
-    // tone map. Do not feed the result back through the three-argument
-    // UpgradeToneMap path.
-    upgraded_grade = renodx::math::DivideSafe(
+    // The LUT grade is a reference-space result built from the same
+    // neutral_sdr proxy above. Let the reference-aware path restore the HDR
+    // luminance delta from input_hdr before the final RenoDRT pass.
+    // Do not divide by hdr_proxy_scale here: that would perform a second,
+    // incompatible reconstruction before UpgradeToneMap.
+    upgraded_grade = native_lut_grade;
+    stable_grade = native_lut_grade;
+    o0.rgb = renodx::draw::ToneMapPass(
+        input_hdr,
         native_lut_grade,
-        hdr_proxy_scale.xxx,
-        native_lut_grade);
-    stable_grade = upgraded_grade;
-    o0.rgb = renodx::draw::ToneMapPass(upgraded_grade);
+        neutral_sdr);
   }
 
   if (RENODX_DEBUG_MODE > 34.5 && RENODX_DEBUG_MODE < 35.5) {
