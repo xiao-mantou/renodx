@@ -318,13 +318,18 @@ void main(
   }
 
   // Numeric probe (mode 60): samples input_hdr / native_lut_grade /
-  // reconstructed at the screen-center pixel and renders their luminance as
-  // glyph digits under a center crosshair. Mode 59's false-color bands are too
-  // coarse to compare exact values across ToneMapType toggles; this gives exact
-  // numbers for one point. 0x3E forces untonemapped for this mode too (same
-  // lut_input_probe range). The vignette is skipped (center pixel, off).
+  // reconstructed at the same ten-pixel-left source point used by the AD
+  // probe and renders their luminance as glyph digits under a center
+  // crosshair. Mode 59's false-color bands are too coarse to compare exact
+  // values across ToneMapType toggles; this gives exact numbers for one point.
+  // 0x3E forces untonemapped for this mode too (same lut_input_probe range).
+  // The vignette is skipped (diagnostic source point is near center, off).
   if (RENODX_DEBUG_MODE > 59.5 && RENODX_DEBUG_MODE < 60.5) {
-    const float2 probe_uv = float2(0.5, 0.5);
+    uint probe_width = 1u;
+    uint probe_height = 1u;
+    t0.GetDimensions(probe_width, probe_height);
+    const float probe_offset_x = 10.0 / max((float)probe_width, 1.0);
+    const float2 probe_uv = float2(0.5 - probe_offset_x, 0.5);
     const float4 probe_src = t0.SampleLevel(s0_s, probe_uv, 0);
     const float3 probe_hdr = max(probe_src.rgb, 0.0);
     const float3 probe_hdr_curve = ApplyDL2SDRCurveExtended(probe_hdr, sdr_curve0, sdr_curve1);
@@ -382,8 +387,8 @@ void main(
     o0.rgb = 0.0;
     if (abs(v1.x - 0.5) < 0.002 || abs(v1.y - 0.5) < 0.002) o0.rgb += float3(1.0, 1.0, 1.0);
     // Raw full-RGB values for the deferred center probe. All four values were
-    // derived from probe_src sampled once at (0.5,0.5), not from these output
-    // pixel coordinates.
+    // derived from probe_src sampled once at the same ten-pixel-left source
+    // point used by the AD probe, not from these output pixel coordinates.
     if (all(abs(v1.xy - float2(0.30, 0.58)) < float2(0.0015, 0.0015))) o0.rgb = probe_hdr;
     if (all(abs(v1.xy - float2(0.30, 0.68)) < float2(0.0015, 0.0015))) o0.rgb = probe_grade;
     if (all(abs(v1.xy - float2(0.30, 0.78)) < float2(0.0015, 0.0015))) o0.rgb = probe_reconstructed;
