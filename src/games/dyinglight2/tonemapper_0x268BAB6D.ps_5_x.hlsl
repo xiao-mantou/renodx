@@ -167,33 +167,21 @@ void main(
     const float strengths[4] = {0.0, 0.25, 0.5, 0.75};
     input_hdr = lerp(input_hdr, renodx::color::srgb::DecodeSafe(input_hdr), strengths[quadrant]);
   }
-  // Vanilla keeps DL2's original SDR curve. HDR uses a hybrid proxy: below
-  // the recovered SDR-white input it is exactly the same curve; above that
-  // boundary it smoothly expands toward the exposed scene value so highlights
-  // are not limited by the curve's finite ~1.34 asymptote. The proxy is then
-  // compressed with one shared pixel-local scale, carried through the entire
-  // native grade, and restored after grading.
+  // Vanilla keeps DL2's original SDR curve. HDR evaluates the same rational
+  // curve without its final saturate, then compresses only values above the
+  // SDR LUT domain with one shared pixel-local scale. That scale is carried
+  // through the complete native grade and restored before the standalone HDR
+  // tone map, preserving Vanilla LUT coordinates for E <= 1.
   const float4 sdr_curve0 = float4(2.27, 0.17, 1.69, 0.8);
   const float4 sdr_curve1 = float4(0.14, 0.0, 0.0, 0.0);
   const float3 hdr_curve = ApplyDL2SDRCurveExtended(input_hdr, sdr_curve0, sdr_curve1);
-  // Solving ApplyDL2SDRCurve(x)=1 with the audited constants gives ~1.275.
-  // The existing exit@2 diagnostics provide a conservative upper end for the
-  // transition; below the first value the LUT reference remains unchanged.
-  const float dl2_sdr_white_input = 1.275f;
-  const float dl2_hdr_expansion_end = 2.0f;
-  const float input_max = max(input_hdr.r, max(input_hdr.g, input_hdr.b));
-  const float expansion = smoothstep(
-      dl2_sdr_white_input,
-      dl2_hdr_expansion_end,
-      input_max);
-  const float3 hdr_proxy = lerp(hdr_curve, input_hdr, expansion);
-  const float hdr_proxy_max = max(hdr_proxy.r, max(hdr_proxy.g, hdr_proxy.b));
-  const float hdr_proxy_scale = hdr_proxy_max > 1.0
-                                    ? rcp(max(hdr_proxy_max, 1e-6))
+  const float hdr_curve_max = max(hdr_curve.r, max(hdr_curve.g, hdr_curve.b));
+  const float hdr_proxy_scale = hdr_curve_max > 1.0
+                                    ? rcp(max(hdr_curve_max, 1e-6))
                                     : 1.0;
   const float3 neutral_sdr = RENODX_TONE_MAP_TYPE == 0.0
                                  ? ApplyDL2SDRCurve(input_hdr, sdr_curve0, sdr_curve1)
-                                 : hdr_proxy * hdr_proxy_scale;
+                                 : hdr_curve * hdr_proxy_scale;
   if (RENODX_TONE_MAP_TYPE != 0.0 || probe59) {
     r1.xyz = neutral_sdr;
   }
@@ -270,17 +258,16 @@ void main(
   float3 stable_grade = native_lut_grade;
 
   if (RENODX_TONE_MAP_TYPE != 0.0) {
-    // The LUT grade is a reference-space result built from the same
-    // neutral_sdr proxy above. Let the reference-aware path restore the HDR
-    // luminance delta from input_hdr before the final RenoDRT pass.
-    // Do not divide by hdr_proxy_scale here: that would perform a second,
-    // incompatible reconstruction before UpgradeToneMap.
-    upgraded_grade = native_lut_grade;
-    stable_grade = native_lut_grade;
-    o0.rgb = renodx::draw::ToneMapPass(
-        input_hdr,
+    // Reconstruct the LUT-graded HDR signal only after every native grading
+    // operation has completed. The normal HDR path then uses the standalone
+    // ToneMapPass, avoiding the incompatible DL2 low/mid Y_hdr/Y_neutral
+    // branch in the generic three-argument UpgradeToneMap path.
+    upgraded_grade = renodx::math::DivideSafe(
         native_lut_grade,
-        neutral_sdr);
+        hdr_proxy_scale.xxx,
+        native_lut_grade);
+    stable_grade = upgraded_grade;
+    o0.rgb = renodx::draw::ToneMapPass(upgraded_grade);
   }
 
   // Separate full-screen stage probe. Zero is the normal rendering path.
@@ -350,15 +337,11 @@ void main(
     const float4 probe_src = t0.SampleLevel(s0_s, probe_uv, 0);
     const float3 probe_hdr = max(probe_src.rgb, 0.0);
     const float3 probe_hdr_curve = ApplyDL2SDRCurveExtended(probe_hdr, sdr_curve0, sdr_curve1);
-    const float probe_input_max = max(probe_hdr.r, max(probe_hdr.g, probe_hdr.b));
-    const float probe_expansion = smoothstep(
-        dl2_sdr_white_input, dl2_hdr_expansion_end, probe_input_max);
-    const float3 probe_proxy = lerp(probe_hdr_curve, probe_hdr, probe_expansion);
-    const float probe_proxy_max = max(probe_proxy.r, max(probe_proxy.g, probe_proxy.b));
-    const float probe_proxy_scale = probe_proxy_max > 1.0
-                                        ? rcp(max(probe_proxy_max, 1e-6))
+    const float probe_curve_max = max(probe_hdr_curve.r, max(probe_hdr_curve.g, probe_hdr_curve.b));
+    const float probe_proxy_scale = probe_curve_max > 1.0
+                                        ? rcp(max(probe_curve_max, 1e-6))
                                         : 1.0;
-    const float3 probe_neutral = probe_proxy * probe_proxy_scale;
+    const float3 probe_neutral = probe_hdr_curve * probe_proxy_scale;
     float3 lut_gamma;
     float3 lut_gamma_lin = probe_neutral * float3(12.9200001, 12.9200001, 12.9200001);
     float3 lut_gamma_srgb = exp2(float3(0.416666657, 0.416666657, 0.416666657) * log2(abs(probe_neutral)));
@@ -388,21 +371,21 @@ void main(
     float grade_luma = saturate(dot(float3(0.212500006, 0.715399981, 0.0720999986), probe_grade));
     probe_grade = probe_grade + -grade_luma;
     probe_grade = cb0[1].xxx * probe_grade + grade_luma;
-    // The normal HDR path has no explicit post-LUT DivideSafe reconstruction.
-    // Its reference-aware three-argument ToneMapPass consumes the original
-    // input, the native graded SDR result, and the same neutral_sdr proxy.
-    // Use the formerly redundant R slot for neutral_sdr so this probe exposes
-    // the reference value that drives UpgradeToneMap's luminance ratio.
-    const float3 probe_reference = probe_neutral;
+    // Match the normal HDR path: restore the shared proxy scale only after
+    // native grading, then feed the reconstructed result to single-argument
+    // ToneMapPass. The R slot exposes the reconstructed value.
+    const float3 probe_reconstructed = RENODX_TONE_MAP_TYPE == 0.0
+                                           ? probe_grade
+                                           : renodx::math::DivideSafe(
+                                                 probe_grade,
+                                                 probe_proxy_scale.xxx,
+                                                 probe_grade);
     const float3 probe_tonemapped = RENODX_TONE_MAP_TYPE == 0.0
                                         ? probe_grade
-                                        : renodx::draw::ToneMapPass(
-                                              probe_hdr,
-                                              probe_grade,
-                                              probe_neutral);
+                                        : renodx::draw::ToneMapPass(probe_reconstructed);
     const float v_in = dot(probe_hdr, float3(0.2126, 0.7152, 0.0722));
     const float v_l = dot(probe_grade, float3(0.2126, 0.7152, 0.0722));
-    const float v_r = dot(probe_reference, float3(0.2126, 0.7152, 0.0722));
+    const float v_r = dot(probe_reconstructed, float3(0.2126, 0.7152, 0.0722));
     const float v_t = dot(probe_tonemapped, float3(0.2126, 0.7152, 0.0722));
     o0.rgb = 0.0;
     if (abs(v1.x - 0.5) < 0.002 || abs(v1.y - 0.5) < 0.002) o0.rgb += float3(1.0, 1.0, 1.0);
@@ -411,9 +394,9 @@ void main(
     // point used by the AD probe, not from these output pixel coordinates.
     if (all(abs(v1.xy - float2(0.30, 0.58)) < float2(0.0015, 0.0015))) o0.rgb = probe_hdr;
     if (all(abs(v1.xy - float2(0.30, 0.68)) < float2(0.0015, 0.0015))) o0.rgb = probe_grade;
-    if (all(abs(v1.xy - float2(0.30, 0.78)) < float2(0.0015, 0.0015))) o0.rgb = probe_reference;
+    if (all(abs(v1.xy - float2(0.30, 0.78)) < float2(0.0015, 0.0015))) o0.rgb = probe_reconstructed;
     if (all(abs(v1.xy - float2(0.30, 0.88)) < float2(0.0015, 0.0015))) o0.rgb = probe_tonemapped;
-    // Four values stacked vertically, top to bottom: I, L, N, T.
+    // Four values stacked vertically, top to bottom: I, L, R, T.
     const float label_x = 0.44;
     o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.58, v_in, 0.008);
     o0.rgb += DebugRenderLabel(v1.xy, label_x, 0.68, v_l, 0.008);
