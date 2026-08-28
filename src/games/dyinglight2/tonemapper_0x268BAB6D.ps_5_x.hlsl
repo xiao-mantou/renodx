@@ -176,9 +176,18 @@ void main(
   const float4 sdr_curve1 = float4(0.14, 0.0, 0.0, 0.0);
   const float3 hdr_curve = ApplyDL2SDRCurveExtended(input_hdr, sdr_curve0, sdr_curve1);
   const float hdr_curve_max = max(hdr_curve.r, max(hdr_curve.g, hdr_curve.b));
+  const float input_hdr_max = max(input_hdr.r, max(input_hdr.g, input_hdr.b));
   const float hdr_proxy_scale = hdr_curve_max > 1.0
                                     ? rcp(max(hdr_curve_max, 1e-6))
                                     : 1.0;
+  // Keep low/mid values on the exact DL2 reference. Once the extended curve
+  // exceeds its SDR white, gradually restore the original HDR magnitude only
+  // after native grading, leaving the LUT proxy and its hue unchanged.
+  const float hdr_headroom_target = hdr_curve_max > 1.0
+                                        ? input_hdr_max / max(hdr_curve_max, 1e-6)
+                                        : 1.0;
+  const float hdr_headroom_activation = smoothstep(1.275f, 2.0f, input_hdr_max);
+  const float hdr_headroom_scale = lerp(1.0, hdr_headroom_target, hdr_headroom_activation);
   const float3 neutral_sdr = RENODX_TONE_MAP_TYPE == 0.0
                                  ? ApplyDL2SDRCurve(input_hdr, sdr_curve0, sdr_curve1)
                                  : hdr_curve * hdr_proxy_scale;
@@ -265,7 +274,7 @@ void main(
     upgraded_grade = renodx::math::DivideSafe(
         native_lut_grade,
         hdr_proxy_scale.xxx,
-        native_lut_grade);
+        native_lut_grade) * hdr_headroom_scale;
     stable_grade = upgraded_grade;
     o0.rgb = renodx::draw::ToneMapPass(upgraded_grade);
   }
@@ -338,9 +347,18 @@ void main(
     const float3 probe_hdr = max(probe_src.rgb, 0.0);
     const float3 probe_hdr_curve = ApplyDL2SDRCurveExtended(probe_hdr, sdr_curve0, sdr_curve1);
     const float probe_curve_max = max(probe_hdr_curve.r, max(probe_hdr_curve.g, probe_hdr_curve.b));
+    const float probe_input_max = max(probe_hdr.r, max(probe_hdr.g, probe_hdr.b));
     const float probe_proxy_scale = probe_curve_max > 1.0
                                         ? rcp(max(probe_curve_max, 1e-6))
                                         : 1.0;
+    const float probe_headroom_target = probe_curve_max > 1.0
+                                            ? probe_input_max / max(probe_curve_max, 1e-6)
+                                            : 1.0;
+    const float probe_headroom_activation = smoothstep(1.275f, 2.0f, probe_input_max);
+    const float probe_headroom_scale = lerp(
+        1.0,
+        probe_headroom_target,
+        probe_headroom_activation);
     const float3 probe_neutral = probe_hdr_curve * probe_proxy_scale;
     float3 lut_gamma;
     float3 lut_gamma_lin = probe_neutral * float3(12.9200001, 12.9200001, 12.9200001);
@@ -379,7 +397,8 @@ void main(
                                            : renodx::math::DivideSafe(
                                                  probe_grade,
                                                  probe_proxy_scale.xxx,
-                                                 probe_grade);
+                                                 probe_grade)
+                                                 * probe_headroom_scale;
     const float3 probe_tonemapped = RENODX_TONE_MAP_TYPE == 0.0
                                         ? probe_grade
                                         : renodx::draw::ToneMapPass(probe_reconstructed);
