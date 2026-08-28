@@ -8005,7 +8005,10 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     // BFFC keeps native rendering and uses a separate normal-path activation
     // wrapper; its observer remains read-only and post-draw is one-shot.
     {0xBFFC45ACu, CreateDl2BffcProbeShader()},
-    // UI replacements remain disabled during startup crash isolation.
+    // Restore the audited popup/UI compositor first. It converts the gamma-
+    // domain UI color into the linear 203-nit scene bridge without touching
+    // the scene HDR path; other UI writers remain disabled for this A/B.
+    CustomDirectXShaders(0xF34DDC49),
     // 0xAD remains audit-only. Its copied HDR template is not safe to register
     // with the crash-isolation layout, and targeted binding was a prior crash
     // boundary. Keep final Gamma untouched while 0x3E/0x268 are tested.
