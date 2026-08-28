@@ -328,13 +328,6 @@ void main(
       // neutral reconstruction that would depend on the real scene.
       const float3 test_output = renodx::draw::ToneMapPass(test_input);
       o0.rgb = test_output;
-    } else {
-      // Label row above the bars shows each input value.
-      const float label_y = 0.26;
-      for (int i = 0; i < 8; ++i) {
-        const float bar_left = 0.06 + (float)i / 8.0 * 0.88;
-        o0.rgb += DebugRenderLabel(v1.xy, bar_left + 0.01, label_y, levels[i]);
-      }
     }
     return;
   }
