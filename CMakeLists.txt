@@ -189,6 +189,7 @@ function(build_shader_target ADDON ADDON_PATH)
       set(DL2_MINIMAL_SHADER_FILES
         "tonemapper_0x3E36DA5B.ps_5_x.hlsl"
         "tonemapper_0x268BAB6D.ps_5_x.hlsl"
+        "ui_0xF34DDC49.ps_5_x.hlsl"
         "blit_0xBFFC45AC.ps_5_x.hlsl"
         "swap_chain_proxy_vertex_shader.vs_5_x.hlsl"
         "swap_chain_proxy_pixel_shader.ps_5_x.hlsl"
