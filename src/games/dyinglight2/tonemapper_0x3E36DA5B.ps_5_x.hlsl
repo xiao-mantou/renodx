@@ -670,11 +670,13 @@ void main(
 
   const bool downstream_color_grid = (RENODX_DEBUG_MODE > 28.5 && RENODX_DEBUG_MODE < 31.5)
       || (RENODX_DEBUG_MODE > 34.5 && RENODX_DEBUG_MODE < 35.5);
+  const bool proxy_gamut_probe = RENODX_DEBUG_MODE > 23.5 && RENODX_DEBUG_MODE < 24.5;
   const bool post_lut_game_probe = RENODX_DEBUG_MODE > 39.5 && RENODX_DEBUG_MODE < 45.5;
   // Modes 59/60 supply the real scene to the 0x268 LUT-input probes below;
   // they must not be blanked by the generic white patch.
   const bool lut_input_probe = RENODX_DEBUG_MODE > 58.5 && RENODX_DEBUG_MODE < 60.5;
-  if (RENODX_DEBUG_MODE > 5.5 && !downstream_color_grid && !post_lut_game_probe && !lut_input_probe) {
+  if (RENODX_DEBUG_MODE > 5.5 && !downstream_color_grid && !proxy_gamut_probe
+      && !post_lut_game_probe && !lut_input_probe) {
     const float target_white = RENODX_PEAK_WHITE_NITS / 203.0;
     o0.rgb = renodx::draw::RenderIntermediatePass(float3(target_white, target_white, target_white));
     o0.a = 1.0;
