@@ -65,14 +65,23 @@ float4 main(float4 vpos : SV_POSITION, float2 uv : TEXCOORD0)
   }
 
   // Diagnostic only: preserve the normal decode, nit scaling, and PQ encode,
-  // but bypass the HDR10 preset's gamut-compression stage. This isolates
-  // whether it magnifies the small chroma difference in DLSS SR output.
+  // but bypass the preset's gamut-compression stage. Keep the actual
+  // swapchain container (HDR10/PQ or scRGB) and clamp converted channels to
+  // non-negative values before encoding; otherwise out-of-gamut BT.2020
+  // components can reach PQ as negative values and produce an all-white/NaN
+  // diagnostic frame.
   if (RENODX_DEBUG_MODE > 23.5 && RENODX_DEBUG_MODE < 24.5) {
     config.swap_chain_output_preset = renodx::draw::SWAP_CHAIN_OUTPUT_PRESET_NONE;
-    config.swap_chain_clamp_color_space = renodx::color::convert::COLOR_SPACE_NONE;
+    config.swap_chain_clamp_color_space = RENODX_SWAP_CHAIN_USE_HDR10
+                                              ? renodx::color::convert::COLOR_SPACE_BT2020
+                                              : renodx::color::convert::COLOR_SPACE_BT709;
     config.swap_chain_compress_color_space = renodx::color::convert::COLOR_SPACE_NONE;
-    config.swap_chain_encoding = renodx::draw::ENCODING_PQ;
-    config.swap_chain_encoding_color_space = renodx::color::convert::COLOR_SPACE_BT2020;
+    config.swap_chain_encoding = RENODX_SWAP_CHAIN_USE_HDR10
+                                     ? renodx::draw::ENCODING_PQ
+                                     : renodx::draw::ENCODING_SCRGB;
+    config.swap_chain_encoding_color_space = RENODX_SWAP_CHAIN_USE_HDR10
+                                                 ? renodx::color::convert::COLOR_SPACE_BT2020
+                                                 : renodx::color::convert::COLOR_SPACE_BT709;
   }
 
   // Six-way final-proxy diagnostic. Each tile repeats the full source image so
