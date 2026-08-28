@@ -71,11 +71,7 @@ float4 main(float4 vpos : SV_POSITION, float2 uv : TEXCOORD0)
   // the clamp-color-space branch here changes the range normalization and can
   // produce an all-white diagnostic frame.
   if (RENODX_DEBUG_MODE > 23.5 && RENODX_DEBUG_MODE < 24.5) {
-    config.swap_chain_output_preset = RENODX_SWAP_CHAIN_USE_HDR10
-                                          ? renodx::draw::SWAP_CHAIN_OUTPUT_PRESET_HDR10
-                                          : renodx::draw::SWAP_CHAIN_OUTPUT_PRESET_SCRGB;
-    config.swap_chain_clamp_color_space = renodx::color::convert::COLOR_SPACE_NONE;
-    config.swap_chain_compress_color_space = renodx::color::convert::COLOR_SPACE_NONE;
+    config.swap_chain_disable_compression = 1.f;
   }
 
   // Six-way final-proxy diagnostic. Each tile repeats the full source image so

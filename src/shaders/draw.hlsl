@@ -57,6 +57,7 @@ struct Config {
   float swap_chain_encoding;                 // 0 = none, 4 = hdr10, 5 = scrgb
   float swap_chain_encoding_color_space;     // -1 = none, bt709, bt2020, ap1
   float swap_chain_output_preset;            // -1 = none, 0 = sdr, 1 = hdr10, 2 = scrgb
+  float swap_chain_disable_compression;      // diagnostic: keep preset, skip gamut compression
   float swap_chain_output_dither_bits;       // 0 = none, 8 = 8-bit, 10 = 10-bit, 12 = 12-bit, etc
   float swap_chain_output_dither_amplitude;  // 0 = none, 8 = 8-bit, 10 = 10-bit, 12 = 12-bit, etc
   float swap_chain_output_dither_seed;       // seed for per-pixel dither
@@ -331,6 +332,11 @@ Config BuildConfig() {
 #endif
   config.swap_chain_output_preset = RENODX_SWAP_CHAIN_OUTPUT_PRESET;
 
+#if !defined(RENODX_SWAP_CHAIN_DISABLE_COMPRESSION)
+#define RENODX_SWAP_CHAIN_DISABLE_COMPRESSION 0.f
+#endif
+  config.swap_chain_disable_compression = RENODX_SWAP_CHAIN_DISABLE_COMPRESSION;
+
 #if !defined(RENODX_SWAP_CHAIN_OUTPUT_DITHER_BITS)
 #define RENODX_SWAP_CHAIN_OUTPUT_DITHER_BITS 0.f
 #endif
@@ -505,6 +511,13 @@ float3 SwapChainPass(float3 color, float2 position, Config config) {
     config.swap_chain_encoding = ENCODING_SCRGB;
   }
 
+  // Apply diagnostic overrides after the preset has filled its defaults.
+  // This keeps the real output container and range path intact while allowing
+  // an armed probe to isolate gamut compression.
+  if (config.swap_chain_disable_compression > 0.5f) {
+    config.swap_chain_compress_color_space = renodx::color::convert::COLOR_SPACE_NONE;
+  }
+
   [branch]
   if (config.swap_chain_custom_color_space == COLOR_SPACE_CUSTOM_BT709D93) {
     color = renodx::color::convert::ColorSpaces(color, config.swap_chain_decoding_color_space, renodx::color::convert::COLOR_SPACE_BT709);
@@ -547,6 +560,14 @@ float3 SwapChainPass(float3 color, float2 position, Config config) {
     } else {
       color = renodx::color::convert::ColorSpaces(color, config.swap_chain_decoding_color_space, config.swap_chain_encoding_color_space);
     }
+  }
+
+  if (config.swap_chain_disable_compression > 0.5f) {
+    // An uncompressed RGB conversion can leave negative out-of-gamut
+    // components. PQ/scRGB encoding cannot represent them; clear only this
+    // diagnostic path's negatives so they do not become NaN and white out the
+    // frame.
+    color = max(0.f, color);
   }
 
   color *= config.swap_chain_scaling_nits;
