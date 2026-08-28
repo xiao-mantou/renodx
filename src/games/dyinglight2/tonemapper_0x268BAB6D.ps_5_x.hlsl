@@ -284,12 +284,16 @@ void main(
   }
 
   // Separate full-screen stage probe. Zero is the normal rendering path.
-  const uint stage_probe = (uint)(RENODX_268_STAGE_PROBE + 0.5);
-  if (stage_probe >= 1u && stage_probe <= 4u) {
-    o0.rgb = stage_probe == 1u ? native_lut_grade
-        : stage_probe == 2u ? upgraded_grade
-        : stage_probe == 3u ? stable_grade
-                            : o0.rgb;
+  const float stage_probe_select = RENODX_268_STAGE_PROBE;
+  if (stage_probe_select > 0.5 && stage_probe_select < 4.5) {
+    if (stage_probe_select < 1.5) {
+      o0.rgb = native_lut_grade;
+    } else if (stage_probe_select < 2.5) {
+      o0.rgb = upgraded_grade;
+    } else if (stage_probe_select < 3.5) {
+      o0.rgb = stable_grade;
+    }
+    // Stage 4 deliberately keeps the ToneMapPass result already in o0.
     o0.a = 1.0;
     return;
   }
