@@ -97,6 +97,7 @@ cbuffer shader_injection : register(b13) {
 #define CUSTOM_LUT_SCALING                     shader_injection.custom_lut_scaling
 #define RENODX_DEBUG_MODE                      shader_injection.debug_mode
 #define RENODX_LUMINANCE_STAGE_PROBE           shader_injection.luminance_stage_probe
+#define RENODX_268_STAGE_PROBE                 shader_injection.luminance_stage_padding_2
 #define RENODX_RENO_DRT_WHITE_CLIP             shader_injection.tone_map_white_clip
 #define RENODX_NIGHT_SCENE_GAIN                shader_injection.night_scene_gain
 

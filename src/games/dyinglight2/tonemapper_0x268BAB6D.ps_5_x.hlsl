@@ -283,6 +283,17 @@ void main(
         neutral_sdr);
   }
 
+  // Separate full-screen stage probe. Zero is the normal rendering path.
+  const uint stage_probe = (uint)(RENODX_268_STAGE_PROBE + 0.5);
+  if (stage_probe >= 1u && stage_probe <= 4u) {
+    o0.rgb = stage_probe == 1u ? native_lut_grade
+        : stage_probe == 2u ? upgraded_grade
+        : stage_probe == 3u ? stable_grade
+                            : o0.rgb;
+    o0.a = 1.0;
+    return;
+  }
+
   if (RENODX_DEBUG_MODE > 34.5 && RENODX_DEBUG_MODE < 35.5) {
     const uint quadrant = (v1.x >= 0.5 ? 1u : 0u) + (v1.y >= 0.5 ? 2u : 0u);
     o0.rgb = quadrant == 0u ? native_lut_grade
