@@ -275,6 +275,32 @@ void main(
         native_lut_grade,
         hdr_proxy_scale.xxx,
         native_lut_grade) * hdr_headroom_scale;
+
+    // Optional artistic enhancement, deliberately outside the LUT/reference
+    // bridge. With the toggle off (the default), the existing HDR path is
+    // unchanged. A single luminance-derived gain preserves RGB ratios while
+    // the smooth activation avoids a threshold discontinuity.
+    if (RENODX_TONE_MAP_TYPE == 3.0
+        && RENODX_HDR_HIGHLIGHT_BOOST > 0.5
+        && RENODX_HDR_HIGHLIGHT_BOOST_STRENGTH > 0.0) {
+      const float boost_y = max(
+          0.0,
+          dot(upgraded_grade, float3(0.2126, 0.7152, 0.0722)));
+      const float boost_start = min(max(RENODX_HDR_HIGHLIGHT_BOOST_START, 0.0), 0.999);
+      const float boost_t = saturate((boost_y - boost_start) / max(1.0 - boost_start, 1e-3));
+      const float boost_weight = boost_t * boost_t * (3.0 - 2.0 * boost_t);
+      const float boost_power = max(RENODX_HDR_HIGHLIGHT_BOOST_POWER, 0.1);
+      const float peak_ratio = RENODX_PEAK_WHITE_NITS
+                               / max(RENODX_DIFFUSE_WHITE_NITS, 1e-3);
+      const float max_gain = max(
+          1.0,
+          min(peak_ratio, max(RENODX_HDR_HIGHLIGHT_BOOST_MAX_GAIN, 1.0)));
+      const float boost_gain = 1.0
+                              + saturate(RENODX_HDR_HIGHLIGHT_BOOST_STRENGTH)
+                                    * (max_gain - 1.0)
+                                    * pow(boost_weight, boost_power);
+      upgraded_grade *= boost_gain;
+    }
     stable_grade = upgraded_grade;
     o0.rgb = renodx::draw::ToneMapPass(upgraded_grade);
   }
