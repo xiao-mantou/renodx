@@ -45,13 +45,12 @@ struct ShaderInjectData {
   float luminance_stage_padding_1;
   float luminance_stage_padding_2;
   float night_scene_gain;
-  // Optional artistic HDR highlight expansion. Appended to preserve all
-  // existing injected-field offsets for older presets and shader paths.
-  float hdr_highlight_boost;
-  float hdr_highlight_boost_strength;
-  float hdr_highlight_boost_start;
-  float hdr_highlight_boost_power;
-  float hdr_highlight_boost_max_gain;
+  // Packed optional artistic HDR highlight expansion. Keep the injection at
+  // 44 floats so D3D12 root-signature cloning stays within its 64-DWORD
+  // budget on pipelines that already have large root signatures.
+  float hdr_highlight_boost_params0;
+  float hdr_highlight_boost_params1;
+  float hdr_highlight_boost_params2;
 };
 
 #ifndef __cplusplus
@@ -107,11 +106,9 @@ cbuffer shader_injection : register(b13) {
 #define RENODX_268_STAGE_PROBE                 shader_injection.luminance_stage_padding_2
 #define RENODX_RENO_DRT_WHITE_CLIP             shader_injection.tone_map_white_clip
 #define RENODX_NIGHT_SCENE_GAIN                shader_injection.night_scene_gain
-#define RENODX_HDR_HIGHLIGHT_BOOST             shader_injection.hdr_highlight_boost
-#define RENODX_HDR_HIGHLIGHT_BOOST_STRENGTH    shader_injection.hdr_highlight_boost_strength
-#define RENODX_HDR_HIGHLIGHT_BOOST_START       shader_injection.hdr_highlight_boost_start
-#define RENODX_HDR_HIGHLIGHT_BOOST_POWER       shader_injection.hdr_highlight_boost_power
-#define RENODX_HDR_HIGHLIGHT_BOOST_MAX_GAIN    shader_injection.hdr_highlight_boost_max_gain
+#define RENODX_HDR_HIGHLIGHT_BOOST_PARAMS0     shader_injection.hdr_highlight_boost_params0
+#define RENODX_HDR_HIGHLIGHT_BOOST_PARAMS1     shader_injection.hdr_highlight_boost_params1
+#define RENODX_HDR_HIGHLIGHT_BOOST_PARAMS2     shader_injection.hdr_highlight_boost_params2
 
 #include "../../shaders/renodx.hlsl"
 

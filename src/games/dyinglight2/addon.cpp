@@ -50,6 +50,28 @@ namespace {
 ShaderInjectData shader_injection;
 HMODULE addon_module = nullptr;
 
+// Keep UI values independent while sending a compact representation to HLSL.
+// This avoids growing every D3D12 root layout for the optional boost.
+float dl2_hdr_highlight_boost = 0.f;
+float dl2_hdr_highlight_boost_strength = 0.f;
+float dl2_hdr_highlight_boost_start = 0.5f;
+float dl2_hdr_highlight_boost_power = 2.5f;
+float dl2_hdr_highlight_boost_max_gain = 2.5f;
+
+void SyncDl2HdrHighlightBoostParams() {
+  const float enabled = dl2_hdr_highlight_boost > 0.5f ? 2.f : 0.f;
+  shader_injection.hdr_highlight_boost_params0 =
+      enabled + std::clamp(dl2_hdr_highlight_boost_strength, 0.f, 1.f);
+  const auto start_code = static_cast<uint32_t>(std::lround(
+      std::clamp(dl2_hdr_highlight_boost_start, 0.f, 0.99f) * 100.f));
+  const auto power_code = static_cast<uint32_t>(std::lround(
+      std::clamp(dl2_hdr_highlight_boost_power, 0.5f, 4.f) * 100.f));
+  shader_injection.hdr_highlight_boost_params1 =
+      static_cast<float>(power_code * 100u + start_code);
+  shader_injection.hdr_highlight_boost_params2 =
+      std::clamp(dl2_hdr_highlight_boost_max_gain, 1.f, 8.f);
+}
+
 bool ArmStreamlinePresentTrace() {
   if (addon_module == nullptr) {
     renodx::utils::log::e("DL2 Streamline Present1 trace arm failed: addon module unavailable");
@@ -135,13 +157,12 @@ inline constexpr bool kEnableDl2TargetHotSwap = false;
 // path. The BFFC->AD audit is diagnostic only and does not define this policy.
 inline constexpr bool kEnableDl2BffcTargetActivation = true;
 inline constexpr bool kEnableDl2ShaderReplacements = true;
-// Temporary diagnostic build: enable the existing draw/binding observers so
-// the one-shot 0xAD native t0 audit can run. This does not alter HDR or proxy
-// rendering; disable again after the runtime capture is complete.
-inline constexpr bool kEnableDl2CpuObservers = true;
+// Keep global draw/binding/resource observers disabled in the normal build.
+// They remain available in source for explicitly requested diagnostics, but
+// must not add per-command CPU work to the shipping HDR path.
+inline constexpr bool kEnableDl2CpuObservers = false;
 // Stable performance baseline: keep the final proxy render and generic state
-// mirror enabled for normal lifecycle/state safety. CPU observers are enabled
-// only in this temporary diagnostic build.
+// mirror enabled for normal lifecycle/state safety.
 inline constexpr bool kEnableDl2SwapchainProxyRender = true;
 inline constexpr bool kEnableDl2StateTracking = true;
 // Temporary performance A/B. This intentionally produces invalid display
@@ -8138,7 +8159,7 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .key = "HDRHighlightBoost",
-        .binding = &shader_injection.hdr_highlight_boost,
+        .binding = &dl2_hdr_highlight_boost,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
         .default_value = 0.f,
         .label = "HDR Highlight Boost",
@@ -8147,22 +8168,24 @@ renodx::utils::settings::Settings settings = {
         .labels = {"Off", "On"},
         .is_enabled = []() { return shader_injection.tone_map_type == 3.f; },
         .is_visible = []() { return current_settings_mode >= 1; },
+        .on_change_value = [](float, float) { SyncDl2HdrHighlightBoostParams(); },
     },
     new renodx::utils::settings::Setting{
         .key = "HDRHighlightBoostStrength",
-        .binding = &shader_injection.hdr_highlight_boost_strength,
+        .binding = &dl2_hdr_highlight_boost_strength,
         .default_value = 0.f,
         .label = "HDR Boost Strength",
         .section = "Tone Mapping",
         .tooltip = "Strength of the optional post-reconstruction highlight gain. 0 is neutral.",
         .max = 100.f,
         .parse = [](float value) { return value * 0.01f; },
-        .is_enabled = []() { return shader_injection.tone_map_type == 3.f && shader_injection.hdr_highlight_boost > 0.5f; },
+        .is_enabled = []() { return shader_injection.tone_map_type == 3.f && dl2_hdr_highlight_boost > 0.5f; },
         .is_visible = []() { return current_settings_mode >= 2 && shader_injection.tone_map_type == 3.f; },
+        .on_change_value = [](float, float) { SyncDl2HdrHighlightBoostParams(); },
     },
     new renodx::utils::settings::Setting{
         .key = "HDRHighlightBoostStart",
-        .binding = &shader_injection.hdr_highlight_boost_start,
+        .binding = &dl2_hdr_highlight_boost_start,
         .default_value = 0.5f,
         .label = "HDR Boost Start",
         .section = "Tone Mapping",
@@ -8170,12 +8193,13 @@ renodx::utils::settings::Settings settings = {
         .min = 0.f,
         .max = 0.99f,
         .format = "%.2f",
-        .is_enabled = []() { return shader_injection.tone_map_type == 3.f && shader_injection.hdr_highlight_boost > 0.5f; },
+        .is_enabled = []() { return shader_injection.tone_map_type == 3.f && dl2_hdr_highlight_boost > 0.5f; },
         .is_visible = []() { return current_settings_mode >= 2 && shader_injection.tone_map_type == 3.f; },
+        .on_change_value = [](float, float) { SyncDl2HdrHighlightBoostParams(); },
     },
     new renodx::utils::settings::Setting{
         .key = "HDRHighlightBoostPower",
-        .binding = &shader_injection.hdr_highlight_boost_power,
+        .binding = &dl2_hdr_highlight_boost_power,
         .default_value = 2.5f,
         .label = "HDR Boost Power",
         .section = "Tone Mapping",
@@ -8183,12 +8207,13 @@ renodx::utils::settings::Settings settings = {
         .min = 0.5f,
         .max = 4.f,
         .format = "%.2f",
-        .is_enabled = []() { return shader_injection.tone_map_type == 3.f && shader_injection.hdr_highlight_boost > 0.5f; },
+        .is_enabled = []() { return shader_injection.tone_map_type == 3.f && dl2_hdr_highlight_boost > 0.5f; },
         .is_visible = []() { return current_settings_mode >= 2 && shader_injection.tone_map_type == 3.f; },
+        .on_change_value = [](float, float) { SyncDl2HdrHighlightBoostParams(); },
     },
     new renodx::utils::settings::Setting{
         .key = "HDRHighlightBoostMaxGain",
-        .binding = &shader_injection.hdr_highlight_boost_max_gain,
+        .binding = &dl2_hdr_highlight_boost_max_gain,
         .default_value = 2.5f,
         .label = "HDR Boost Max Gain",
         .section = "Tone Mapping",
@@ -8196,8 +8221,9 @@ renodx::utils::settings::Settings settings = {
         .min = 1.f,
         .max = 8.f,
         .format = "%.2f",
-        .is_enabled = []() { return shader_injection.tone_map_type == 3.f && shader_injection.hdr_highlight_boost > 0.5f; },
+        .is_enabled = []() { return shader_injection.tone_map_type == 3.f && dl2_hdr_highlight_boost > 0.5f; },
         .is_visible = []() { return current_settings_mode >= 2 && shader_injection.tone_map_type == 3.f; },
+        .on_change_value = [](float, float) { SyncDl2HdrHighlightBoostParams(); },
     },
     new renodx::utils::settings::Setting{
         .key = "GammaCorrection",
@@ -9585,6 +9611,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   }
 
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
+  if (fdw_reason == DLL_PROCESS_ATTACH) {
+    renodx::utils::settings::on_preset_changed_callbacks.emplace_back(
+        &SyncDl2HdrHighlightBoostParams);
+    SyncDl2HdrHighlightBoostParams();
+  }
   renodx::mods::swapchain::Use(fdw_reason, &shader_injection);
   if constexpr (kEnableDl2ShaderHooks) {
     if constexpr (kEnableDl2ShaderLayoutHooks) {

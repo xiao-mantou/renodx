@@ -280,23 +280,29 @@ void main(
     // bridge. With the toggle off (the default), the existing HDR path is
     // unchanged. A single luminance-derived gain preserves RGB ratios while
     // the smooth activation avoids a threshold discontinuity.
+    const float boost_enabled = RENODX_HDR_HIGHLIGHT_BOOST_PARAMS0 >= 1.5f ? 1.0f : 0.0f;
+    const float boost_strength = saturate(
+        RENODX_HDR_HIGHLIGHT_BOOST_PARAMS0 - 2.0f * boost_enabled);
+    const float boost_power_code = floor(RENODX_HDR_HIGHLIGHT_BOOST_PARAMS1 / 100.0f);
+    const float boost_start_code = RENODX_HDR_HIGHLIGHT_BOOST_PARAMS1
+                                   - boost_power_code * 100.0f;
+    const float boost_start = saturate(boost_start_code * 0.01f);
+    const float boost_power = max(boost_power_code * 0.01f, 0.1f);
     if (RENODX_TONE_MAP_TYPE == 3.0
-        && RENODX_HDR_HIGHLIGHT_BOOST > 0.5
-        && RENODX_HDR_HIGHLIGHT_BOOST_STRENGTH > 0.0) {
+        && boost_enabled > 0.5f
+        && boost_strength > 0.0f) {
       const float boost_y = max(
           0.0,
           dot(upgraded_grade, float3(0.2126, 0.7152, 0.0722)));
-      const float boost_start = min(max(RENODX_HDR_HIGHLIGHT_BOOST_START, 0.0), 0.999);
       const float boost_t = saturate((boost_y - boost_start) / max(1.0 - boost_start, 1e-3));
       const float boost_weight = boost_t * boost_t * (3.0 - 2.0 * boost_t);
-      const float boost_power = max(RENODX_HDR_HIGHLIGHT_BOOST_POWER, 0.1);
       const float peak_ratio = RENODX_PEAK_WHITE_NITS
                                / max(RENODX_DIFFUSE_WHITE_NITS, 1e-3);
       const float max_gain = max(
           1.0,
-          min(peak_ratio, max(RENODX_HDR_HIGHLIGHT_BOOST_MAX_GAIN, 1.0)));
+          min(peak_ratio, max(RENODX_HDR_HIGHLIGHT_BOOST_PARAMS2, 1.0)));
       const float boost_gain = 1.0
-                              + saturate(RENODX_HDR_HIGHLIGHT_BOOST_STRENGTH)
+                              + boost_strength
                                     * (max_gain - 1.0)
                                     * pow(boost_weight, boost_power);
       upgraded_grade *= boost_gain;
