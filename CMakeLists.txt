@@ -182,9 +182,8 @@ function(build_shader_target ADDON ADDON_PATH)
     cmake_path(GET FILE FILENAME FILENAME)
     cmake_path(GET FILE PARENT_PATH TARGET_PATH)
 
-    # Temporary DL2 crash-isolation build: compile only the active HDR bridge,
-    # the observer-only BFFC stage probe, and shader binaries still referenced
-    # by the swapchain/bridge plumbing. Keep 0xAD/UI and other probes excluded.
+    # Temporary DL2 focused build: compile the active HDR/UI bridge and
+    # swapchain proxy shaders. Streamline/FG bridge shaders are excluded.
     if(ADDON STREQUAL "dyinglight2")
       set(DL2_MINIMAL_SHADER_FILES
         "tonemapper_0x3E36DA5B.ps_5_x.hlsl"
@@ -205,8 +204,7 @@ function(build_shader_target ADDON ADDON_PATH)
         "ui_0x93053DEF.ps_5_x.hlsl"
         "blit_0xBFFC45AC.ps_5_x.hlsl"
         "swap_chain_proxy_vertex_shader.vs_5_x.hlsl"
-        "swap_chain_proxy_pixel_shader.ps_5_x.hlsl"
-        "dlss_fg_bridge_compute_shader.cs_5_x.hlsl")
+        "swap_chain_proxy_pixel_shader.ps_5_x.hlsl")
       if(NOT FILENAME IN_LIST DL2_MINIMAL_SHADER_FILES)
         continue()
       endif()

@@ -144,8 +144,9 @@ std::atomic_bool dlss_fg_tag_transfer_capture_active = false;
 uint32_t dlss_fg_last_present_tag_serial = 0u;
 bool dlss_fg_hook_installed = false;
 bool dlss_fg_waiting_for_streamline_logged = false;
-// Crash-isolation A/B: leave HDR/resource paths unchanged while disabling
-// addon-owned Streamline and frame-generation hooks.
+// DL2 does not expose a reliable HDR contract for frame generation. Keep all
+// addon-owned Streamline/FG hooks compile-time disabled until the game adds
+// native HDR support for that path.
 inline constexpr bool kEnableDl2FgHooks = false;
 // Diagnostic A/B: keep the original pipeline-layout adaptation available so
 // replacement root signatures can be tested without enabling target hot-swap.
@@ -1931,9 +1932,7 @@ static void ResetAdStageProbeOnSwapchainDestroy();
 static void ResetCenterProbeOnSwapchainDestroy();
 static void SetBffcAdStageObserver(bool enabled);
 
-// This callback only invalidates the normal-path target activation gate. The
-// heavier DLSS/FG teardown callback below remains disabled during crash
-// isolation; clone activation must never run against a retiring generation.
+// Invalidate the normal-path target activation gate before a swapchain retires.
 void OnDl2HdrActivationDestroySwapchain(reshade::api::swapchain*, bool) {
   dl2_hdr_target_activation_ready.store(false, std::memory_order_release);
   const uint64_t generation =
@@ -1941,63 +1940,19 @@ void OnDl2HdrActivationDestroySwapchain(reshade::api::swapchain*, bool) {
   dl2_hdr_target_activation_generation.store(generation, std::memory_order_release);
 }
 
-void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) {
-  auto* device = swapchain != nullptr ? swapchain->get_device() : nullptr;
+void OnDestroySwapchain(reshade::api::swapchain*, bool resize) {
   dl2_hdr_target_activation_ready.store(false, std::memory_order_release);
   ResetProxySourceProbeOnSwapchainDestroy();
   ResetCenterProbeOnSwapchainDestroy();
   ResetBffcAdChainAudit();
   ResetAdStageProbeOnSwapchainDestroy();
-  dlss_fg_active_swapchain.store(0u, std::memory_order_release);
   const uint64_t generation = dlss_fg_swapchain_generation.fetch_add(1u, std::memory_order_acq_rel) + 1u;
-  dlss_fg_handoff_epoch.fetch_add(1u, std::memory_order_acq_rel);
-  {
-    std::scoped_lock candidate_lock(dlss_fg_command_list_candidate_mutex);
-    dlss_fg_command_list_candidates.clear();
-  }
-  {
-    std::scoped_lock lock(dlss_fg_post_execute_mutex);
-    dlss_fg_post_execute_markers.clear();
-  }
   renodx::mods::swapchain::ClearProxyDrawBackBufferSkips();
   renodx::mods::swapchain::ClearProxySourceOverrides();
   std::ostringstream generation_message;
   generation_message << "DL2 swapchain generation advanced to " << generation
-                     << " (resize=" << (resize ? "yes" : "no") << "); stale FG state cleared.";
+                     << " (resize=" << (resize ? "yes" : "no") << "); stale proxy state cleared.";
   renodx::utils::log::i(generation_message.str().c_str());
-  if (!resize) {
-    DestroyDlssFgBridgePasses(device);
-    return;
-  }
-  const uint32_t viewport_value = dlss_fg_viewport.load(std::memory_order_relaxed);
-  bool state_updated = false;
-  if (real_sl_dlssg_get_state != nullptr && viewport_value != UINT_MAX) {
-    sl::DLSSGState state{};
-    if (real_sl_dlssg_get_state(sl::ViewportHandle(viewport_value), state, nullptr) == sl::Result::eOk) {
-      UpdateDlssFgFence(state);
-      state_updated = true;
-    }
-  }
-  uint64_t target = 0u;
-  uint64_t completed = 0u;
-  const auto wait_result = WaitForDlssFgInputs(&target, &completed);
-  std::ostringstream wait_message;
-  wait_message << "DL2 DLSS FG: resize wait result=" << DlssFgWaitResultName(wait_result)
-               << " state_updated=" << (state_updated ? "yes" : "no")
-               << " target=" << target << " completed_before=" << completed;
-  renodx::utils::log::i(wait_message.str().c_str());
-  if (wait_result != DlssFgWaitResult::already_complete
-      && wait_result != DlssFgWaitResult::wait_completed) {
-    // A missing fence is not proof that the GPU is idle. Keep bridge resources
-    // alive until device teardown rather than destroying one Streamline may
-    // still reference during ResizeBuffers.
-    RetainDlssFgResource(dlss_fg_latest_color_original.load(std::memory_order_relaxed));
-    RetainDlssFgResource(dlss_fg_latest_color_clone.load(std::memory_order_relaxed));
-    renodx::utils::log::w(
-        "DL2 DLSS FG: resize cleanup deferred; no completed input fence.");
-  } else {
-    DestroyDlssFgBridgePasses(device);
-  }
 }
 // Disabled by default. When armed from the Advanced diagnostic setting, this
 // records graphics and compute shader hashes after the known late Gamma pass,
@@ -2436,15 +2391,6 @@ void OnTypelessAuditInitSwapchain(reshade::api::swapchain* swapchain, bool) {
   if (swapchain == nullptr) return;
   auto* device = swapchain->get_device();
   if (device == nullptr) return;
-  // Streamline can load after init_device but before its first DLSS-G buffer
-  // allocation. Retry here so the native-interface contract is active before
-  // the first presentation rather than waiting for a downstream draw.
-  if constexpr (kEnableDl2FgHooks) {
-    TryInstallStreamlineHook();
-    if (device->get_api() == reshade::api::device_api::d3d12) {
-      dlss_fg_active_swapchain.store(reinterpret_cast<uintptr_t>(swapchain), std::memory_order_release);
-    }
-  }
   const auto back_buffer = swapchain->get_current_back_buffer();
   const auto desc = device->get_resource_desc(back_buffer);
   const uint64_t generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
@@ -3910,6 +3856,7 @@ void MarkDlssFgAdCommandList(
   }
 }
 
+#if 0
 bool PrepareDlssFgComputeSource(reshade::api::command_list* cmd_list) {
   const int32_t final_color_mode = std::clamp(
       static_cast<int32_t>(dlss_fg_final_color_mode + 0.5f), 0, 11);
@@ -4118,6 +4065,11 @@ bool PrepareDlssFgComputeSource(reshade::api::command_list* cmd_list) {
   }
   return rendered;
 }
+#else
+bool PrepareDlssFgComputeSource(reshade::api::command_list*) {
+  return false;
+}
+#endif
 
 void DlssFgAdPostDraw(renodx::utils::command_action::CommandContext<
                           renodx::utils::command_action::DrawArguments>& context,
@@ -6966,7 +6918,6 @@ void OnDownstreamDrawCapturePresent(
     const reshade::api::rect*) {
   ++dl2_probe_present_serial;
   CaptureReshadeSwapchainSnapshot(queue, swapchain);
-  if constexpr (kEnableDl2FgHooks) TryInstallStreamlineHook();
 
   // The 0x268 probe records its tiny copies on the 0x268 command list itself,
   // before any UI overlay can overwrite the target. Present only signals the
@@ -8458,8 +8409,8 @@ renodx::utils::settings::Settings settings = {
         .can_reset = false,
         .label = "Swap Chain Format",
         .section = "Compatibility",
-        .tooltip = "Requires a game restart. HDR10 presents R10G10B10A2 with BT.2100 PQ, the only HDR output DLSS Frame Generation supports. scRGB presents R16G16B16A16_FLOAT linear, which has more headroom but is unsupported by Frame Generation.",
-        .labels = {"HDR10 (PQ, DLSS FG)", "scRGB (FP16, no FG)"},
+        .tooltip = "Requires a game restart. HDR10 presents R10G10B10A2 with BT.2100 PQ. scRGB presents R16G16B16A16_FLOAT linear with more headroom.",
+        .labels = {"HDR10 (PQ)", "scRGB (FP16)"},
         .is_global = true,
         .is_visible = []() { return current_settings_mode >= 1; },
     },
@@ -8505,11 +8456,15 @@ renodx::utils::settings::Settings settings = {
             "All typeless (diagnostic) + UNORM/sRGB",
             "Semantic hot-swap (experimental)",
             "Exact Balanced chain 0 + 1",
-            "Exact Balanced + FG chain 2 + 3",
+            "Exact Balanced chain 2 + 3",
         },
         .is_global = true,
         .is_visible = []() { return current_settings_mode >= 2; },
     },
+// DLSS Frame Generation settings and Streamline diagnostics are intentionally
+// removed from the user-facing settings. The implementation is compile-time
+// disabled below and remains only as isolated legacy source for reference.
+#if 0
     new renodx::utils::settings::Setting{
         .key = "FrameGenerationCompatibility",
         .binding = &renodx::mods::swapchain::v1::copy_swapchain_back_buffer_before_proxy,
@@ -8532,7 +8487,7 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "Requires a full game restart. Game default preserves DL2's optional zero format; RGB10 retains RenoDX's previous forced HDR10 declaration; RGBA8 is a negative control matching the host swapchain description rather than the upgraded backbuffer.",
         .labels = {"Game default (0)", "HDR10 RGB10 (24)", "Host RGBA8 (28, negative control)"},
         .is_global = true,
-        .is_visible = []() { return current_settings_mode >= 2; },
+        .is_visible = &IsDl2FgSettingVisible,
     },
     new renodx::utils::settings::Setting{
         .key = "DLSSFGAuxiliaryColorTags",
@@ -8544,7 +8499,7 @@ renodx::utils::settings::Settings settings = {
         .section = "Compatibility",
         .tooltip = "Live A/B for Streamline's auxiliary UI and HUD-less inputs. Disabled inputs are submitted as explicit null tags while preserving tag order and lifecycle semantics.",
         .labels = {"Original", "UI only", "HUDLess only", "None (Final Color only)"},
-        .is_visible = []() { return current_settings_mode >= 2; },
+        .is_visible = &IsDl2FgSettingVisible,
     },
     new renodx::utils::settings::Setting{
         .key = "DLSSFGUseTaggedClone",
@@ -8555,7 +8510,7 @@ renodx::utils::settings::Settings settings = {
         .label = "DLSS FG Use Tagged FP16 Clone",
         .section = "Compatibility",
         .tooltip = "Experimental. Routes only DLSS FG's captured HUDLessColor and UIColorAndAlpha tags to the matching RenoDX FP16 clone, with clone format and dimensions preserved in the Streamline resource metadata.",
-        .is_visible = []() { return current_settings_mode >= 2; },
+        .is_visible = &IsDl2FgSettingVisible,
     },
     new renodx::utils::settings::Setting{
         .key = "DLSSFGFinalColorMode",
@@ -8594,7 +8549,7 @@ renodx::utils::settings::Settings settings = {
                  << previous_mode << "=>" << current_mode
                  << " submission_logs=16";
           renodx::utils::log::i(stream.str().c_str()); },
-        .is_visible = []() { return current_settings_mode >= 2; },
+        .is_visible = &IsDl2FgSettingVisible,
     },
     new renodx::utils::settings::Setting{
         .key = "DLSSFGCreationFormatFix",
@@ -8605,7 +8560,7 @@ renodx::utils::settings::Settings settings = {
         .label = "DLSS FG RGB10 Native Contract (Restart)",
         .section = "Compatibility",
         .tooltip = "DL2-specific Streamline interface fix. When the swapchain reports RGBA8 but its actual RenoDX HDR10 backbuffer is RGB10, GetDesc/GetDesc1 report RGB10 to Streamline before DLSS-G allocates its generated-frame buffers. Requires a game restart.",
-        .is_visible = []() { return current_settings_mode >= 2; },
+        .is_visible = &IsDl2FgSettingVisible,
     },
     new renodx::utils::settings::Setting{
         .key = "DLSSFGSkipGeneratedProxy",
@@ -8616,7 +8571,7 @@ renodx::utils::settings::Settings settings = {
         .label = "DLSS FG Skip Generated Proxy",
         .section = "Compatibility",
         .tooltip = "Experimental. After a new Streamline HUDLessColor tag, skips RenoDX's final proxy draw once for the immediately following DLSS-generated Present. Resource upgrades and all other Present work remain active.",
-        .is_visible = []() { return current_settings_mode >= 2; },
+        .is_visible = &IsDl2FgSettingVisible,
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
@@ -8632,7 +8587,7 @@ renodx::utils::settings::Settings settings = {
           };
           dlss_fg_tag_transfer_capture_active.store(true, std::memory_order_relaxed);
           return false; },
-        .is_visible = []() { return current_settings_mode >= 2; },
+        .is_visible = &IsDl2FgSettingVisible,
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
@@ -8649,7 +8604,7 @@ renodx::utils::settings::Settings settings = {
           };
           dlss_fg_compute_uav_views.clear();
           return false; },
-        .is_visible = []() { return current_settings_mode >= 2; },
+        .is_visible = &IsDl2FgSettingVisible,
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
@@ -8664,7 +8619,7 @@ renodx::utils::settings::Settings settings = {
               .active = true,
           };
           return false; },
-        .is_visible = []() { return current_settings_mode >= 2; },
+        .is_visible = &IsDl2FgSettingVisible,
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
@@ -8715,7 +8670,7 @@ renodx::utils::settings::Settings settings = {
                 << " presents=16 submissions=128 inputs=tagged producers=rgb10";
           renodx::utils::log::i(armed.str().c_str());
           return false; },
-        .is_visible = []() { return current_settings_mode >= 2; },
+        .is_visible = &IsDl2FgSettingVisible,
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
@@ -8733,7 +8688,7 @@ renodx::utils::settings::Settings settings = {
           }
           renodx::utils::log::i("DL2 DLSS FG exact AD ordering audit armed: submissions=16");
           return false; },
-        .is_visible = []() { return current_settings_mode >= 2; },
+        .is_visible = &IsDl2FgSettingVisible,
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
@@ -8744,7 +8699,7 @@ renodx::utils::settings::Settings settings = {
           std::scoped_lock lock(dlss_fg_handoff_audit_mutex);
           dlss_fg_handoff_audit = {.armed = true};
           return false; },
-        .is_visible = []() { return current_settings_mode >= 2; },
+        .is_visible = &IsDl2FgSettingVisible,
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
@@ -8754,7 +8709,7 @@ renodx::utils::settings::Settings settings = {
         .on_click = []() {
           dlss_fg_tag_capture = true;
           return false; },
-        .is_visible = []() { return current_settings_mode >= 2; },
+        .is_visible = &IsDl2FgSettingVisible,
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
@@ -8764,7 +8719,7 @@ renodx::utils::settings::Settings settings = {
         .on_click = []() {
           ArmStreamlinePresentTrace();
           return false; },
-        .is_visible = []() { return current_settings_mode >= 2; },
+        .is_visible = &IsDl2FgSettingVisible,
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
@@ -8774,7 +8729,7 @@ renodx::utils::settings::Settings settings = {
         .on_click = []() {
           dlss_fg_present_cadence_capture = true;
           return false; },
-        .is_visible = []() { return current_settings_mode >= 2; },
+        .is_visible = &IsDl2FgSettingVisible,
     },
     new renodx::utils::settings::Setting{
         .key = "DLSSFGBypassAllProxy",
@@ -8785,7 +8740,7 @@ renodx::utils::settings::Settings settings = {
         .label = "DLSS FG Bypass All RenoDX Proxy",
         .section = "Compatibility",
         .tooltip = "Diagnostic A/B. Skips RenoDX's final proxy draw on every Present after the first. Colors will be incorrect; test only whether focused gameplay continues updating instead of freezing.",
-        .is_visible = []() { return current_settings_mode >= 2; },
+        .is_visible = &IsDl2FgSettingVisible,
     },
     new renodx::utils::settings::Setting{
         .key = "DLSSFGSuppressPrePQTags",
@@ -8796,7 +8751,7 @@ renodx::utils::settings::Settings settings = {
         .label = "DLSS FG Suppress Pre-PQ Color Tags",
         .section = "Compatibility",
         .tooltip = "Legacy diagnostic. Explicitly clears DL2's pre-PQ HUDLessColor and UIColorAndAlpha tags so DLSS-G uses the automatically intercepted final HDR10/PQ color. This overrides the auxiliary color tag selector with None.",
-        .is_visible = []() { return current_settings_mode >= 2; },
+        .is_visible = &IsDl2FgSettingVisible,
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
@@ -8806,8 +8761,9 @@ renodx::utils::settings::Settings settings = {
         .on_click = []() {
           dlss_fg_backbuffer_barrier_capture.store(128u, std::memory_order_release);
           return false; },
-        .is_visible = []() { return current_settings_mode >= 2; },
+        .is_visible = &IsDl2FgSettingVisible,
     },
+#endif
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture 268 Resource Lifecycle (4 Presents)",
@@ -9169,14 +9125,6 @@ void OnPresetOff() {
       {"ColorGradeStrength", 100.f},
       {"ColorGradeLUTScaling", 100.f},
       {"FxLensFlare", 100.f},
-      {"FrameGenerationCompatibility", 0.f},
-      {"DLSSFGColorBufferFormat", 0.f},
-      {"DLSSFGCreationFormatFix", 1.f},
-      {"DLSSFGAuxiliaryColorTags", 0.f},
-      {"DLSSFGUseTaggedClone", 0.f},
-      {"DLSSFGSuppressPrePQTags", 0.f},
-      {"DLSSFGSkipGeneratedProxy", 0.f},
-      {"DLSSFGBypassAllProxy", 0.f},
       {"DebugMode", 0.f},
       {"Debug268Stage", 0.f},
       {"LuminanceStageProbe", 0.f},
@@ -9186,9 +9134,9 @@ void OnPresetOff() {
   });
 }
 
-// Historical scRGB experiments are superseded for DLSS Frame Generation.
-// The final presentation must be RGB10/HDR10 PQ, while intermediate scene
-// resources continue using FP16 clones to preserve the game's HDR signal.
+// HDR10/PQ and scRGB are normal output choices. Intermediate scene resources
+// continue using FP16 clones to preserve the game's HDR signal; no FG-specific
+// output contract is installed by this addon.
 
 void OnInitDevice(reshade::api::device* device) {
   if (device->get_api() == reshade::api::device_api::d3d11) {
@@ -9204,33 +9152,10 @@ void OnInitDevice(reshade::api::device* device) {
     renodx::mods::swapchain::swap_chain_proxy_vertex_shader = __swap_chain_proxy_vertex_shader_dx12;
     renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx12;
 
-    auto* native_device = reinterpret_cast<ID3D12Device*>(
-        static_cast<uintptr_t>(device->get_native()));
-    D3D12_FEATURE_DATA_FORMAT_SUPPORT format_support = {};
-    format_support.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
-    const HRESULT support_hr = native_device != nullptr
-                                   ? native_device->CheckFeatureSupport(
-                                         D3D12_FEATURE_FORMAT_SUPPORT,
-                                         &format_support,
-                                         sizeof(format_support))
-                                   : E_POINTER;
-    const bool typed_uav = SUCCEEDED(support_hr)
-                           && (format_support.Support1
-                               & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW)
-                                  != 0
-                           && (format_support.Support2
-                               & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)
-                                  != 0;
-    dlss_fg_rgb10_uav_supported.store(typed_uav, std::memory_order_release);
-    std::ostringstream support_message;
-    support_message << "DL2 DLSS FG RGB10 compute bridge: supported=" << (typed_uav ? 1 : 0)
-                    << " hr=0x" << std::hex << static_cast<uint32_t>(support_hr)
-                    << " support1=0x" << format_support.Support1
-                    << " support2=0x" << format_support.Support2;
-    renodx::utils::log::i(support_message.str().c_str());
   }
 
-  if constexpr (kEnableDl2FgHooks) TryInstallStreamlineHook();
+  // DLSS SR/FG resources are selected by the game during startup. RenoDX
+  // does not install Streamline frame-generation hooks.
 }
 
 }  // namespace
@@ -9290,10 +9215,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::utils::log::i("DL2 AD targeted output rewrite: disabled (audit-only)");
       renodx::utils::log::i("DL2 build: ", renodx::build_info::kBuildVersion);
       renodx::utils::log::i("DL2 scoped clone diagnostic: output-audit-v1");
-      renodx::utils::log::i(
-          "DL2 Streamline/FG hooks: ",
-          kEnableDl2FgHooks ? "enabled" : "disabled",
-          " for crash A/B");
       renodx::utils::log::i(
           "DL2 shader hooks: ",
           kEnableDl2ShaderHooks ? "enabled" : "disabled",
