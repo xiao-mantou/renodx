@@ -8019,7 +8019,6 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     CustomDirectXShaders(0x6C349427),
     CustomDirectXShaders(0xEFC06591),
     CustomDirectXShaders(0xE46618DA),
-    CustomDirectXShaders(0x1BF90CDB),
     CustomDirectXShaders(0x93053DEF),
     // 0xAD remains audit-only. Its copied HDR template is not safe to register
     // with the crash-isolation layout, and targeted binding was a prior crash
