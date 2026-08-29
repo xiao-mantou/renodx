@@ -347,6 +347,13 @@ void main(
         ? max(debug_input.r, max(debug_input.g, debug_input.b))
         : renodx::color::y::from::BT709(max(0.0, debug_input));
     o0 = float4(renodx::draw::RenderIntermediatePass(DebugFalseColor(debug_range)), 1.0);
+    // Mode 1 is the actual 0x268 HDR input after DL2's 0.6 calibration and
+    // game auto exposure. Keep the false-color view, but show the sampled t1
+    // exposure value so it is not confused with Mode 10's pre-exposure source.
+    if (RENODX_DEBUG_MODE < 1.5) {
+      const float3 exposure_label = DebugRenderLabel(v1.xy, 0.42, 0.82, exposure, 0.008);
+      if (exposure_label.r > 0.5) o0.rgb = float3(1.0, 1.0, 1.0);
+    }
     return;
   }
 
