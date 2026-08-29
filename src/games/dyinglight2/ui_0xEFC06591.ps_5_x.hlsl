@@ -16,7 +16,10 @@ void main(
   if (any(edge < 0.0)) discard;
 
   const float4 texture_color = t0.Sample(s0_s, v2.xy);
-  const float alpha = texture_color.x * cb0[0].z + cb0[0].w;
-  o0.rgb = FinalizeDL2UI(v1.rgb);
-  o0.a = v1.a * alpha;
+  float4 sampled_color = cb0[0].w + texture_color * cb0[0].z;
+  sampled_color.w = texture_color.x * cb0[0].w
+                    + texture_color.w * cb0[0].z;
+  const float4 ui_color = v1 * sampled_color;
+  o0.rgb = FinalizeDL2UI(ui_color.rgb);
+  o0.a = ui_color.a;
 }

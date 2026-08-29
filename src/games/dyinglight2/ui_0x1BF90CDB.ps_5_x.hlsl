@@ -12,7 +12,7 @@ void main(
     float4 v0 : SV_POSITION0,
     float4 v1 : TEXCOORD0,
     float4 v2 : TEXCOORD1,
-    float2 v3 : TEXCOORD2,
+    linear noperspective float2 v3 : TEXCOORD2,
     out float4 o0 : SV_TARGET0) {
   const float coverage = saturate(t0.Sample(s0_s, v2.xy).w * cb0[0].x + cb0[0].y);
   const float4 ui_color = float4(t1.SampleLevel(s0_s, v3.xy, 0).xyz, coverage);
