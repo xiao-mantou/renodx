@@ -1931,6 +1931,12 @@ static void ResetBffcAdChainAudit();
 static void ResetAdStageProbeOnSwapchainDestroy();
 static void ResetCenterProbeOnSwapchainDestroy();
 static void SetBffcAdStageObserver(bool enabled);
+static void DisarmDl2Diagnostics();
+static void RegisterDl2DiagnosticEvents();
+static void UnregisterDl2DiagnosticEvents();
+void OnDownstreamDrawCapturePresent(
+    reshade::api::command_queue*, reshade::api::swapchain*, const reshade::api::rect*,
+    const reshade::api::rect*, uint32_t, const reshade::api::rect*);
 
 // Invalidate the normal-path target activation gate before a swapchain retires.
 void OnDl2HdrActivationDestroySwapchain(reshade::api::swapchain*, bool) {
@@ -1941,6 +1947,7 @@ void OnDl2HdrActivationDestroySwapchain(reshade::api::swapchain*, bool) {
 }
 
 void OnDestroySwapchain(reshade::api::swapchain*, bool resize) {
+  DisarmDl2Diagnostics();
   dl2_hdr_target_activation_ready.store(false, std::memory_order_release);
   ResetProxySourceProbeOnSwapchainDestroy();
   ResetCenterProbeOnSwapchainDestroy();
@@ -1962,6 +1969,14 @@ float downstream_draw_capture = 0.f;
 float downstream_transfer_capture = 0.f;
 bool gamma_draw_audit_capture = false;
 bool gamma_native_input_audit_capture = false;
+// Narrow, user-armed diagnostics. The command-action callback is always
+// registered for the three proven DL2 stages, but this flag is checked before
+// any state lookup, lock, allocation, or logging.
+static std::atomic_bool dl2_diagnostic_armed = false;
+static std::atomic_uint32_t dl2_diagnostic_draw_budget = 0u;
+static std::atomic_uint32_t dl2_diagnostic_present_budget = 0u;
+static std::atomic_bool dl2_diagnostic_events_registered = false;
+static std::atomic_uint64_t dl2_diagnostic_epoch = 0u;
 constexpr uint32_t kGammaFrameAuditDrawCount = 8u;
 constexpr size_t kDownstreamInputViewLimit = 64u;
 constexpr uint32_t kDL2TonemapperCurveFloatCount = 5u;
@@ -2374,11 +2389,50 @@ std::unordered_map<reshade::api::command_list*, std::vector<reshade::api::resour
     upscaler_source_compute_uav_views;
 std::unordered_map<reshade::api::command_list*, std::vector<reshade::api::resource_view>>
     upscaler_source_compute_srv_views;
+std::unordered_map<reshade::api::command_list*, reshade::api::buffer_range> upscaler_input_cb0_ranges;
+
+static void ArmDl2Diagnostics(uint32_t draw_budget = 512u, uint32_t present_budget = 32u) {
+  dl2_diagnostic_epoch.fetch_add(1u, std::memory_order_acq_rel);
+  dl2_diagnostic_draw_budget.store(draw_budget, std::memory_order_release);
+  dl2_diagnostic_present_budget.store(present_budget, std::memory_order_release);
+  RegisterDl2DiagnosticEvents();
+  dl2_diagnostic_armed.store(true, std::memory_order_release);
+}
+
+static void DisarmDl2Diagnostics() {
+  dl2_diagnostic_armed.store(false, std::memory_order_release);
+  dl2_diagnostic_draw_budget.store(0u, std::memory_order_release);
+  dl2_diagnostic_present_budget.store(0u, std::memory_order_release);
+  UnregisterDl2DiagnosticEvents();
+  // Drop only diagnostic bookkeeping. Resource/clone ownership remains with
+  // the normal swapchain lifecycle and is never touched by disarm.
+  std::scoped_lock lock(downstream_draw_capture_mutex);
+  downstream_draw_capture = 0.f;
+  downstream_transfer_capture = 0.f;
+  downstream_draw_capture_state = {};
+  upscaler_color_path_audit_state = {};
+  upscaler_input_audit_state = {};
+  upscaler_source_writer_audit_state = {};
+  bffc_ad_chain_audit_state = {};
+  gamma_draw_audit_capture = false;
+  gamma_native_input_audit_capture = false;
+  gamma_draw_audit_state = {};
+  gamma_native_input_audit_state = {};
+  downstream_capture_rtvs.clear();
+  downstream_capture_t0_views.clear();
+  gamma_audit_t0_views.clear();
+  upscaler_source_compute_uav_views.clear();
+  upscaler_source_compute_srv_views.clear();
+  upscaler_input_cb0_ranges.clear();
+  upscaler_color_last_writers.clear();
+  upscaler_color_writer_chains.clear();
+  upscaler_color_writer_observations.clear();
+}
+
 static void ResetBffcAdChainAudit() {
   std::scoped_lock audit_lock(downstream_draw_capture_mutex);
   bffc_ad_chain_audit_state = {};
 }
-std::unordered_map<reshade::api::command_list*, reshade::api::buffer_range> upscaler_input_cb0_ranges;
 std::unordered_map<uint64_t, UpscalerMappedBuffer> upscaler_mapped_buffers;
 std::mutex upscaler_mapped_buffers_mutex;
 std::mutex typeless_creation_audit_mutex;
@@ -2411,6 +2465,7 @@ void OnTypelessAuditInitResource(
     const reshade::api::subresource_data*,
     reshade::api::resource_usage,
     reshade::api::resource resource) {
+  if (!dl2_diagnostic_armed.load(std::memory_order_acquire)) return;
   if (resource.handle == 0u
       || desc.texture.format != reshade::api::format::r8g8b8a8_typeless
       || (desc.usage & reshade::api::resource_usage::render_target) == 0) {
@@ -2426,6 +2481,7 @@ void OnTypelessAuditInitResource(
 }
 
 void OnTypelessAuditDestroyResource(reshade::api::device*, reshade::api::resource resource) {
+  if (!dl2_diagnostic_armed.load(std::memory_order_acquire)) return;
   {
     std::scoped_lock lock(typeless_creation_audit_mutex);
     typeless_creation_indices.erase(resource.handle);
@@ -2799,6 +2855,7 @@ void OnUpscalerMapBufferRegion(
     uint64_t size,
     reshade::api::map_access,
     void** mapped_data) {
+  if (!dl2_diagnostic_armed.load(std::memory_order_acquire)) return;
   if (device == nullptr || resource.handle == 0u || mapped_data == nullptr || *mapped_data == nullptr) return;
   const auto desc = device->get_resource_desc(resource);
   if (desc.type != reshade::api::resource_type::buffer) return;
@@ -2815,6 +2872,7 @@ void OnUpscalerMapBufferRegion(
 void OnUpscalerUnmapBufferRegion(
     reshade::api::device*,
     reshade::api::resource resource) {
+  if (!dl2_diagnostic_armed.load(std::memory_order_acquire)) return;
   std::scoped_lock lock(upscaler_mapped_buffers_mutex);
   upscaler_mapped_buffers.erase(resource.handle);
 }
@@ -2853,6 +2911,7 @@ void OnGammaAuditPushDescriptors(
     reshade::api::pipeline_layout layout,
     uint32_t layout_param,
     const reshade::api::descriptor_table_update& update) {
+  if (!dl2_diagnostic_armed.load(std::memory_order_acquire)) return;
   const bool capture_gamma_input = gamma_draw_audit_capture;
   // Bindings are normally established before the Gamma draw, so start this
   // bounded cache when the one-shot button is armed rather than afterwards.
@@ -3790,6 +3849,7 @@ void OnDownstreamBindRenderTargets(
     uint32_t count,
     const reshade::api::resource_view* rtvs,
     reshade::api::resource_view) {
+  if (!dl2_diagnostic_armed.load(std::memory_order_acquire)) return;
   if (count != 0u && rtvs != nullptr && cmd_list != nullptr) {
     auto* device = cmd_list->get_device();
     if (device != nullptr) {
@@ -4237,6 +4297,9 @@ static void RecordCenterProbeDraw(reshade::api::command_list* cmd_list, uint32_t
 
 inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& context)
     -> renodx::utils::command_action::CallbackResult<Context> {
+  if constexpr (!kEnableDl2CpuObservers && !kEnableDl2FgHooks) {
+    if (!dl2_diagnostic_armed.load(std::memory_order_acquire)) return {};
+  }
   auto& capture = downstream_draw_capture_state;
   std::scoped_lock lock(downstream_draw_capture_mutex);
   const bool capture_commands = downstream_draw_capture >= 0.5f;
@@ -4938,6 +5001,31 @@ inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& co
   return {};
 };
 
+// Always-registered narrow entry point. The shader filter keeps normal draw
+// traffic out of this callback; the first atomic check keeps the unarmed path
+// to a single flag load before any command/shader state lookup.
+inline constexpr auto OnDl2TargetedDiagnosticDraw = []<typename Context>(Context& context)
+    -> renodx::utils::command_action::CallbackResult<Context> {
+  if (!dl2_diagnostic_armed.load(std::memory_order_acquire)) return {};
+  const uint32_t remaining = dl2_diagnostic_draw_budget.load(std::memory_order_relaxed);
+  if (remaining == 0u) return {};
+  dl2_diagnostic_draw_budget.fetch_sub(1u, std::memory_order_relaxed);
+  auto result = OnDownstreamDrawCapture(context);
+  // The legacy Gamma audit has its own bounded state. Route only AD draws
+  // into it while that specific button is armed; other targeted draws avoid
+  // the extra state lookup.
+  if constexpr (std::is_same_v<Context, renodx::utils::command_action::CommandContext<
+                                      renodx::utils::command_action::DrawArguments>>
+                || std::is_same_v<Context, renodx::utils::command_action::CommandContext<
+                                      renodx::utils::command_action::DrawIndexedArguments>>) {
+    if (gamma_draw_audit_capture || gamma_native_input_audit_capture) {
+      auto gamma_result = OnGammaDrawAudit(context);
+      if (gamma_result.post_callback != nullptr) return gamma_result;
+    }
+  }
+  return result;
+};
+
 bool DescribeDownstreamTransfer(
     DownstreamTransferType type,
     reshade::api::command_list* cmd_list,
@@ -5058,6 +5146,7 @@ bool OnDownstreamClearRenderTargetView(
     const float color[4],
     uint32_t rect_count,
     const reshade::api::rect*) {
+  if (!dl2_diagnostic_armed.load(std::memory_order_acquire)) return false;
   RecordDownstreamClear(cmd_list, rtv, color, rect_count);
   return false;
 }
@@ -5452,6 +5541,7 @@ bool OnDownstreamCopyResource(
     reshade::api::command_list* cmd_list,
     reshade::api::resource source,
     reshade::api::resource dest) {
+  if (!dl2_diagnostic_armed.load(std::memory_order_acquire)) return false;
   static thread_local uint32_t callback_depth = 0u;
   ++callback_depth;
   const auto current_depth = callback_depth;
@@ -5496,6 +5586,7 @@ bool OnDownstreamCopyTextureRegion(
     uint32_t,
     const reshade::api::subresource_box*,
     reshade::api::filter_mode) {
+  if (!dl2_diagnostic_armed.load(std::memory_order_acquire)) return false;
   MarkDlssFgCommandListSwapchainWrite(cmd_list, source, dest, false, true);
   RecordDlssFgTagTransfer(DownstreamTransferType::copy_texture_region, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::copy_texture_region, cmd_list, source, dest);
@@ -5516,6 +5607,7 @@ bool OnDownstreamResolveTextureRegion(
     uint32_t,
     uint32_t,
     reshade::api::format) {
+  if (!dl2_diagnostic_armed.load(std::memory_order_acquire)) return false;
   MarkDlssFgCommandListSwapchainWrite(cmd_list, source, dest, false, true);
   RecordDlssFgTagTransfer(DownstreamTransferType::resolve_texture_region, cmd_list, source, dest);
   RecordDownstreamTransfer(DownstreamTransferType::resolve_texture_region, cmd_list, source, dest);
@@ -5523,6 +5615,36 @@ bool OnDownstreamResolveTextureRegion(
   RecordUpscalerSourceTransfer(
       UpscalerSourceWriterType::resolve_texture_region, cmd_list, source, dest);
   return false;
+}
+
+static void RegisterDl2DiagnosticEvents() {
+  if (dl2_diagnostic_events_registered.exchange(true, std::memory_order_acq_rel)) return;
+  reshade::register_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
+  reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
+  reshade::register_event<reshade::addon_event::clear_render_target_view>(OnDownstreamClearRenderTargetView);
+  reshade::register_event<reshade::addon_event::init_resource>(OnTypelessAuditInitResource);
+  reshade::register_event<reshade::addon_event::destroy_resource>(OnTypelessAuditDestroyResource);
+  reshade::register_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
+  reshade::register_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
+  reshade::register_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
+  reshade::register_event<reshade::addon_event::push_descriptors>(OnGammaAuditPushDescriptors);
+  reshade::register_event<reshade::addon_event::map_buffer_region>(OnUpscalerMapBufferRegion);
+  reshade::register_event<reshade::addon_event::unmap_buffer_region>(OnUpscalerUnmapBufferRegion);
+}
+
+static void UnregisterDl2DiagnosticEvents() {
+  if (!dl2_diagnostic_events_registered.exchange(false, std::memory_order_acq_rel)) return;
+  reshade::unregister_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
+  reshade::unregister_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
+  reshade::unregister_event<reshade::addon_event::clear_render_target_view>(OnDownstreamClearRenderTargetView);
+  reshade::unregister_event<reshade::addon_event::init_resource>(OnTypelessAuditInitResource);
+  reshade::unregister_event<reshade::addon_event::destroy_resource>(OnTypelessAuditDestroyResource);
+  reshade::unregister_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
+  reshade::unregister_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
+  reshade::unregister_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
+  reshade::unregister_event<reshade::addon_event::push_descriptors>(OnGammaAuditPushDescriptors);
+  reshade::unregister_event<reshade::addon_event::map_buffer_region>(OnUpscalerMapBufferRegion);
+  reshade::unregister_event<reshade::addon_event::unmap_buffer_region>(OnUpscalerUnmapBufferRegion);
 }
 
 void OnDlssFgBackbufferBarrier(
@@ -6916,7 +7038,23 @@ void OnDownstreamDrawCapturePresent(
     const reshade::api::rect*,
     uint32_t,
     const reshade::api::rect*) {
+  const bool any_capture = dl2_diagnostic_armed.load(std::memory_order_acquire)
+                           || downstream_draw_capture >= 0.5f
+                           || downstream_transfer_capture >= 0.5f
+                           || upscaler_input_audit_state.active
+                           || upscaler_source_writer_audit_state.active
+                           || upscaler_color_path_audit_state.active
+                           || bffc_ad_chain_audit_state.active
+                           || IsAdStageProbeCaptureRequested()
+                           || IsCenterProbeCaptureRequested();
+  if (!any_capture) return;
   ++dl2_probe_present_serial;
+  if (dl2_diagnostic_armed.load(std::memory_order_acquire)) {
+    const uint32_t remaining = dl2_diagnostic_present_budget.load(std::memory_order_relaxed);
+    if (remaining == 0u || dl2_diagnostic_present_budget.fetch_sub(1u, std::memory_order_relaxed) <= 1u) {
+      DisarmDl2Diagnostics();
+    }
+  }
   CaptureReshadeSwapchainSnapshot(queue, swapchain);
 
   // The 0x268 probe records its tiny copies on the 0x268 command list itself,
@@ -8766,6 +8904,49 @@ renodx::utils::settings::Settings settings = {
 #endif
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture DLSS On/Off Color Path",
+        .section = "Debug",
+        .tooltip = "One-shot read-only capture. Arms the 0x3E, 0x268, and 0xAD color-path audits together for a bounded draw/present window, then disarms automatically. No resource mutation or HDR-path changes.",
+        .on_click = []() {
+          {
+            std::scoped_lock lock(downstream_draw_capture_mutex);
+            const uint64_t capture_id = ++upscaler_color_path_capture_serial;
+            const uint64_t generation = dlss_fg_swapchain_generation.load(std::memory_order_acquire);
+            downstream_draw_capture = 1.f;
+            downstream_transfer_capture = 1.f;
+            downstream_draw_capture_state = {};
+            downstream_capture_rtvs.clear();
+            downstream_capture_t0_views.clear();
+            upscaler_color_path_audit_state = {
+                .capture_id = capture_id,
+                .start_generation = generation,
+                .active = true,
+            };
+            upscaler_input_audit_state = {
+                .capture_id = ++upscaler_input_audit_capture_serial,
+                .start_generation = generation,
+                .active = true,
+            };
+            upscaler_source_writer_audit_state = {
+                .capture_id = ++upscaler_source_writer_audit_capture_serial,
+                .active = true,
+            };
+            upscaler_color_last_writers.clear();
+            upscaler_color_writer_chains.clear();
+            upscaler_color_writer_observations.clear();
+            upscaler_source_compute_uav_views.clear();
+            upscaler_source_compute_srv_views.clear();
+            upscaler_input_cb0_ranges.clear();
+          }
+          t1_baseline_readback_logged = false;
+          ArmDl2Diagnostics();
+          renodx::utils::log::i("DL2 DLSS On/Off color path capture armed: stages=3E,268,AD draws=512 presents=32");
+          return false;
+        },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture 268 Resource Lifecycle (4 Presents)",
         .section = "Debug",
         .tooltip = "One-shot read-only capture. Arms the 268 post-LUT target snapshot and the four-Present 3E/268/AD path audit together, including clone/effective RTV views, downstream readers, copies, formats, and rotating resources.",
@@ -8790,6 +8971,7 @@ renodx::utils::settings::Settings settings = {
           stream << "DL2 268 resource lifecycle audit armed: capture=" << capture_id
                  << " generation=" << generation;
           renodx::utils::log::i(stream.str().c_str());
+          ArmDl2Diagnostics(512u, 32u);
           return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
@@ -8815,6 +8997,7 @@ renodx::utils::settings::Settings settings = {
           stream << "DL2 upscaler color path audit armed: capture=" << capture_id
                  << " generation=" << generation;
           renodx::utils::log::i(stream.str().c_str());
+          ArmDl2Diagnostics(512u, 32u);
           return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
@@ -8839,6 +9022,7 @@ renodx::utils::settings::Settings settings = {
           stream << "DL2 0x3E input/curve audit armed: capture=" << capture_id
                  << " generation=" << generation;
           renodx::utils::log::i(stream.str().c_str());
+          ArmDl2Diagnostics(512u, 32u);
           return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
@@ -8859,6 +9043,7 @@ renodx::utils::settings::Settings settings = {
           std::ostringstream stream;
           stream << "DL2 0x3E source-writer audit armed: capture=" << capture_id;
           renodx::utils::log::i(stream.str().c_str());
+          ArmDl2Diagnostics(512u, 32u);
           return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
@@ -8973,6 +9158,7 @@ renodx::utils::settings::Settings settings = {
           SetCenterProbeObserver(true);
           center_probe_capture.store(1.f, std::memory_order_release);
           renodx::utils::log::i("DL2 0x268 I/R/T probe armed for one draw at sample UV 0.5,0.5");
+          ArmDl2Diagnostics(64u, 8u);
           return false;
         },
         .is_visible = []() { return current_settings_mode >= 2; },
@@ -8989,6 +9175,7 @@ renodx::utils::settings::Settings settings = {
           downstream_draw_capture_state = {};
           downstream_capture_t0_views.clear();
           renodx::utils::log::i("DL2 0x268=>0xAD resource-chain capture armed.");
+          ArmDl2Diagnostics(512u, 32u);
           return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
@@ -9008,6 +9195,7 @@ renodx::utils::settings::Settings settings = {
           downstream_capture_rtvs.clear();
           downstream_capture_t0_views.clear();
           renodx::utils::log::i("DL2 BFFC->AD clone chain audit armed (cross-command-list history).");
+          ArmDl2Diagnostics(512u, 32u);
           return false;
         },
         .is_visible = []() { return current_settings_mode >= 2; },
@@ -9023,6 +9211,7 @@ renodx::utils::settings::Settings settings = {
           downstream_draw_capture_state = {};
           downstream_capture_t0_views.clear();
           renodx::utils::log::i("DL2 post-LUT candidate capture armed.");
+          ArmDl2Diagnostics(512u, 8u);
           return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
@@ -9036,6 +9225,7 @@ renodx::utils::settings::Settings settings = {
           downstream_transfer_capture = 1.f;
           downstream_draw_capture_state = {};
           renodx::utils::log::i("DL2 post-LUT transfer capture armed.");
+          ArmDl2Diagnostics(512u, 8u);
           return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
@@ -9063,6 +9253,7 @@ renodx::utils::settings::Settings settings = {
           ad_stage_probe_capture.store(1.f, std::memory_order_release);
           ad_stage_probe_arm_pending.store(true, std::memory_order_release);
           SetBffcAdStageObserver(true);
+          ArmDl2Diagnostics(64u, 8u);
           renodx::utils::log::i("DL2 AD stage probe armed: deferred 5-point input/output readback.");
           return false;
         },
@@ -9076,6 +9267,7 @@ renodx::utils::settings::Settings settings = {
         .on_click = []() {
           gamma_draw_audit_capture = true;
           gamma_draw_audit_state = {};
+          ArmDl2Diagnostics(64u, 8u);
           return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
@@ -9087,6 +9279,7 @@ renodx::utils::settings::Settings settings = {
         .on_click = []() {
           gamma_native_input_audit_capture = true;
           gamma_native_input_audit_state = {};
+          ArmDl2Diagnostics(64u, 8u);
           return false; },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
@@ -9181,6 +9374,20 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         renodx::utils::state::Use(fdw_reason);
       }
 
+      // Keep only the narrow shader-filtered callback resident in normal
+      // builds. The broad all-draw observer remains opt-in for legacy tests.
+      renodx::utils::command_action::Register(
+          OnDl2TargetedDiagnosticDraw,
+          {.shader_hash = 0x3E36DA5Bu,
+           .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+      renodx::utils::command_action::Register(
+          OnDl2TargetedDiagnosticDraw,
+          {.shader_hash = 0x268BAB6Du,
+           .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+      renodx::utils::command_action::Register(
+          OnDl2TargetedDiagnosticDraw,
+          {.shader_hash = 0xAD085E81u,
+           .command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
       if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
         renodx::utils::command_action::Register(
             OnDownstreamDrawCapture,
@@ -9239,11 +9446,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           "DL2 generic state tracking: ",
           kEnableDl2StateTracking ? "enabled" : "disabled",
           " for performance A/B");
-      if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
-        reshade::register_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
-        reshade::register_event<reshade::addon_event::clear_render_target_view>(
-            OnDownstreamClearRenderTargetView);
-      }
       if constexpr (kEnableDl2ShaderHooks) {
         reshade::register_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
       }
@@ -9252,16 +9454,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         reshade::register_event<reshade::addon_event::destroy_command_queue>(UnregisterDlssFgNativeQueue);
       }
       reshade::register_event<reshade::addon_event::init_swapchain>(OnTypelessAuditInitSwapchain);
-      if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
-        reshade::register_event<reshade::addon_event::init_resource>(OnTypelessAuditInitResource);
-        reshade::register_event<reshade::addon_event::destroy_resource>(OnTypelessAuditDestroyResource);
-        reshade::register_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
-        reshade::register_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
-        reshade::register_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
-        reshade::register_event<reshade::addon_event::push_descriptors>(OnGammaAuditPushDescriptors);
-        reshade::register_event<reshade::addon_event::map_buffer_region>(OnUpscalerMapBufferRegion);
-        reshade::register_event<reshade::addon_event::unmap_buffer_region>(OnUpscalerUnmapBufferRegion);
-      }
       if constexpr (kEnableDl2FgHooks) {
         reshade::register_event<reshade::addon_event::reset_command_list>(OnDlssFgResetCommandList);
         reshade::register_event<reshade::addon_event::execute_command_list>(OnDlssFgExecuteCommandList);
@@ -9467,6 +9659,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       break;
     }
     case DLL_PROCESS_DETACH:
+      renodx::utils::command_action::Unregister(OnDl2TargetedDiagnosticDraw);
       if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
         renodx::utils::command_action::Unregister(OnDownstreamDrawCapture);
         renodx::utils::command_action::Unregister(OnGammaDrawAudit);
@@ -9477,31 +9670,14 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         renodx::utils::command_action::Unregister(
             renodx::games::dyinglight2::descriptor_override::OnTargetDraw);
       }
-      if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
-        reshade::unregister_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
-      }
       if constexpr (kEnableDl2FgHooks) {
         reshade::unregister_event<reshade::addon_event::barrier>(OnDlssFgBackbufferBarrier);
       }
-      if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
-        reshade::unregister_event<reshade::addon_event::copy_resource>(OnDownstreamCopyResource);
-        reshade::unregister_event<reshade::addon_event::clear_render_target_view>(
-            OnDownstreamClearRenderTargetView);
-      }
+      UnregisterDl2DiagnosticEvents();
       if constexpr (kEnableDl2ShaderHooks) {
         reshade::unregister_event<reshade::addon_event::create_pipeline>(OnCreateDl2UiPipeline);
       }
       reshade::unregister_event<reshade::addon_event::init_swapchain>(OnTypelessAuditInitSwapchain);
-      if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
-        reshade::unregister_event<reshade::addon_event::init_resource>(OnTypelessAuditInitResource);
-        reshade::unregister_event<reshade::addon_event::destroy_resource>(OnTypelessAuditDestroyResource);
-        reshade::unregister_event<reshade::addon_event::copy_texture_region>(OnDownstreamCopyTextureRegion);
-        reshade::unregister_event<reshade::addon_event::resolve_texture_region>(OnDownstreamResolveTextureRegion);
-        reshade::unregister_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnDownstreamBindRenderTargets);
-        reshade::unregister_event<reshade::addon_event::push_descriptors>(OnGammaAuditPushDescriptors);
-        reshade::unregister_event<reshade::addon_event::map_buffer_region>(OnUpscalerMapBufferRegion);
-        reshade::unregister_event<reshade::addon_event::unmap_buffer_region>(OnUpscalerUnmapBufferRegion);
-      }
       if constexpr (kEnableDl2FgHooks) {
         reshade::unregister_event<reshade::addon_event::reset_command_list>(OnDlssFgResetCommandList);
         reshade::unregister_event<reshade::addon_event::execute_command_list>(OnDlssFgExecuteCommandList);
@@ -9550,12 +9726,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     }
   }
 
-  // Register after the swapchain proxy so the one-shot capture includes any
-  // proxy copy/resolve work issued from its own Present callback.
+  // Present/readback tracing is registered only by ArmDl2Diagnostics, after
+  // the swapchain proxy, so the normal unarmed path has no present callback.
   if (fdw_reason == DLL_PROCESS_ATTACH) {
-    if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
-      reshade::register_event<reshade::addon_event::present>(OnDownstreamDrawCapturePresent);
-    }
     if constexpr (kEnableDl2FgHooks) {
       reshade::register_event<reshade::addon_event::barrier>(OnDlssFgBackbufferBarrier);
     }
