@@ -397,3 +397,86 @@ The next capture reuses the writer audit with `target_final_fg_output=true`. Onc
 - Destroyed/recreated 0xAD sources now retire their prepared slot vectors instead of dropping ownership. Retired RGB10 resources and their fences are released with the bridge teardown, after the normal device lifetime boundary.
 - The first runtime test of `6202457` showed `bridge_ready=0` and `bridge_ready=1` alternating for the same final-color tray. The cause was clearing the previous ready record before the replacement Compute copy was submitted; the final copy briefly fell back to the native tray. The next revision keeps the last published tray until replacement publication and raises the per-source pool from 4 to 8 after observing `pool_exhausted=1` under the queue latency.
 - The follow-up runtime showed `bridge_ready=1` stable after warm-up, but visual residuals remained. A targeted `consumer fence` wait on the final copy queue was tested in `d1c1799`; it hit every final submission and produced a visible jelly-like presentation delay without removing the flash. That wait is rolled back. The remaining investigation is generated-frame/input-frame correspondence, not broader GPU waiting.
+
+## 2026-08-30 DLSS On/Off resource-path confirmation
+
+- Build `8eb9bc7` was used for both one-shot `Capture DLSS On/Off Color Path`
+  captures. The `17:45:28` capture is the user-confirmed DLSS Off baseline;
+  the `18:19:13` capture is the user-confirmed DLSS On run. Both remained in
+  `generation=5`, at `2560x1440`, within the bounded capture budgets.
+- DLSS Off follows the un-cloned path: `0x3E36DA5B` writes an original
+  format-27 target, `0x268BAB6D` reads and writes format 27, and
+  `0xAD085E81` reads the format-27 resource. All captured records report
+  `clone=0`.
+- DLSS On follows a different resource path: `0x3E36DA5B` writes original
+  format 27 through an active effective format-10 clone (`clone=1`,
+  `upgrade_index=4`); `0x268BAB6D` reads that effective format-10 resource
+  and writes another format-10 clone (`upgrade_index=5`); `0xAD085E81` reads
+  the resulting format-10 clone (`upgrade_index=7`). Resource and view
+  handles remain consistent within each Present.
+- The On capture also reports `0x3E36DA5B` in the `0x268` input-writer
+  history (`input_writers=[0x3E36DA5B,0x80C96448]`), while Off reports only
+  `0x80C96448`. This is ordering evidence, not an independent DLSS API state
+  readback, and `0x80C96448` must not be labeled as a DLSS shader from this
+  record alone.
+- The confirmed On/Off boundary is resource format/clone activation and
+  lifetime: Off preserves the original UNORM chain, while On routes the same
+  stages through FP16 clones. No HDR shader math, Peak/Game/WhiteClip,
+  Proxy, BFFC activation, or FG hook was changed for this capture.
+- Capture sources were `C:\Users\xiaom\Documents\renodx\ReShade-latest.log`
+  (Off, `17:45:28`) and
+  `E:\SteamLibrary\steamapps\common\Dying Light 2\ph\work\bin\x64\ReShade.log`
+  (On, `18:19:13`). Explicit Streamline DLSS SR options were not logged in
+  this run because the Streamline hook is not installed.
+- Both processes also logged `DL2 typeless candidate test: mode=0 mask=0xb0`,
+  so the On capture was run with the Off chain (`4+5+7`), not a mode-specific
+  On chain. For the previously verified Balanced SR + FG Off topology, the
+  matching restart-only setting is mode `32` (`0+1`); mode `33` (`2+3`) is
+  reserved for Balanced + FG. Therefore the On result's lack of values above
+  203 nit cannot yet be attributed to a correctly selected DLSS-On resource
+  chain. It proves that clones were active under mode 0, but not that mode 0
+  is the right chain for the user's On configuration.
+
+## 2026-08-30 game-settings state check
+
+- The current `C:\Users\xiaom\Documents\Dying Light 2\out\settings\video.scr`
+  is plain text and declares `Upscaler(1)`. In the game's user-facing
+  semantics this is the DLSS-Off/native linear path; `Upscaler(2)` is DLSS,
+  `Upscaler(5)` is FSR3, and `Upscaler(6)` is XeSS. The file comment exposes
+  the lower-level names (`0=none`, `1=linear`, `2=DLSS`, `3=FSR`, `4=FSR2`,
+  `5=FSR3`, `6=XeSS`), so `1` must not be mistaken for an independent
+  upscaler. Its `Upscaling(3)` quality value is ignored while `Upscaler` is
+  not `2`.
+- The same file declares `FrameGeneration(0, 0)`. The first value is the FG
+  implementation selector: `0` means FG Off, `1` means DLSS FG, and `2` means
+  FSR FG. The second value is only the frame-multiplier/rate slot (`x2`, `x3`,
+  `x4`, and so on) and is intentionally ignored by resource-chain selection.
+  `FrameGeneration(0, 0)` must be present before launch if FG is to remain
+  off; changing the file after the game has initialized is not a safe runtime
+  switch.
+- The latest game-directory log started at `21:21:45` and independently
+  reports `DL2 typeless candidate test: mode=0 mask=0xb0`, matching the
+  no-DLSS/Off state. The earlier `20:59:46` run reported mode `32` but is a
+  different process/configuration and cannot be used as evidence for the
+  current run.
+- A startup-only auto selector is therefore feasible in principle: read
+  `Upscaler`, `Upscaling`, and the first `FrameGeneration` value before
+  building `resource_upgrade_infos`, then choose the already-validated mode
+  `0` or mode `32` only when FG is `0`. Any nonzero FG selector must fail
+  closed, show the user a disable-and-restart warning, and avoid pretending
+  that the non-FG chain is valid. It cannot safely hot-switch the live
+  D3D12/Streamline resource topology.
+
+## 2026-08-30 startup selection and FG guard
+
+- The addon now reads the active `video.scr` at process attach, before the
+  device resource-upgrade list is built. With `ResourceUpgradeAutoSelect=1`
+  and the manual value still at `0`, the validated native/linear path selects
+  mode `0`, while DLSS Balanced (`Upscaler(2)`, `Upscaling(1)`, FG off) selects
+  mode `32`. Other upscalers and unverified quality values keep the manual
+  mode and are not guessed.
+- If the first `FrameGeneration` value is nonzero, the addon saves a one-time
+  `video.scr.renodx.bak`, atomically rewrites the tuple to `FrameGeneration(0, 0)`, and
+  logs that a full game restart is required. A ReShade compatibility notice
+  distinguishes a successful write from a locked/failed write. No Streamline
+  FG hook or normal HDR path is enabled by this guard.

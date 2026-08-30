@@ -12,10 +12,13 @@
 #include <atomic>
 #include <bit>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string>
+#include <string_view>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -49,6 +52,233 @@ namespace {
 
 ShaderInjectData shader_injection;
 HMODULE addon_module = nullptr;
+
+struct Dl2GameSettings {
+  int32_t upscaler = -1;
+  int32_t upscaling = -1;
+  int32_t frame_generation = -1;
+  int32_t frame_generation_multiplier = -1;
+  bool file_found = false;
+  bool parse_complete = false;
+  bool frame_generation_disable_attempted = false;
+  bool frame_generation_disable_succeeded = false;
+};
+
+Dl2GameSettings dl2_game_settings = {};
+float dl2_resource_upgrade_auto_select = 1.f;
+bool dl2_frame_generation_warning_visible = false;
+bool dl2_frame_generation_warning_overlay_registered = false;
+
+std::wstring GetDl2VideoSettingsPath() {
+  std::array<wchar_t, 32768> user_profile = {};
+  const DWORD length = GetEnvironmentVariableW(
+      L"USERPROFILE", user_profile.data(), static_cast<DWORD>(user_profile.size()));
+  if (length == 0 || length >= user_profile.size()) return {};
+  std::wstring path(user_profile.data(), length);
+  path += L"\\Documents\\Dying Light 2\\out\\settings\\video.scr";
+  return path;
+}
+
+bool ReadDl2VideoSettings(const std::wstring& path, std::string& contents) {
+  const HANDLE file = CreateFileW(
+      path.c_str(),
+      GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      nullptr,
+      OPEN_EXISTING,
+      FILE_ATTRIBUTE_NORMAL,
+      nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  LARGE_INTEGER size = {};
+  if (!GetFileSizeEx(file, &size) || size.QuadPart < 0 || size.QuadPart > 4 * 1024 * 1024) {
+    CloseHandle(file);
+    return false;
+  }
+  contents.resize(static_cast<size_t>(size.QuadPart));
+  DWORD bytes_read = 0;
+  const bool result = contents.empty()
+                          || (ReadFile(
+                                  file,
+                                  contents.data(),
+                                  static_cast<DWORD>(contents.size()),
+                                  &bytes_read,
+                                  nullptr)
+                              && bytes_read == contents.size());
+  CloseHandle(file);
+  if (!result) contents.clear();
+  return result;
+}
+
+bool WriteDl2VideoSettings(const std::wstring& path, const std::string& contents) {
+  const std::wstring temporary_path = path + L".renodx.tmp";
+  const HANDLE file = CreateFileW(
+      temporary_path.c_str(),
+      GENERIC_WRITE,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      nullptr,
+      CREATE_ALWAYS,
+      FILE_ATTRIBUTE_NORMAL,
+      nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  DWORD bytes_written = 0;
+  const bool result = contents.empty()
+                          || (WriteFile(
+                                  file,
+                                  contents.data(),
+                                  static_cast<DWORD>(contents.size()),
+                                  &bytes_written,
+                                  nullptr)
+                              && bytes_written == contents.size());
+  if (result) FlushFileBuffers(file);
+  CloseHandle(file);
+  if (!result || !MoveFileExW(
+                    temporary_path.c_str(),
+                    path.c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    DeleteFileW(temporary_path.c_str());
+    return false;
+  }
+  return true;
+}
+
+bool ParseDl2Tuple(
+    const std::string& line,
+    std::string_view name,
+    int32_t& first,
+    int32_t* second = nullptr) {
+  size_t cursor = 0;
+  while (cursor < line.size() && (line[cursor] == ' ' || line[cursor] == '\t')) ++cursor;
+  if (cursor >= line.size() || line[cursor] == '!'
+      || line.compare(cursor, name.size(), name) != 0) {
+    return false;
+  }
+  cursor += name.size();
+  while (cursor < line.size() && (line[cursor] == ' ' || line[cursor] == '\t')) ++cursor;
+  if (cursor >= line.size() || line[cursor] != '(') return false;
+  ++cursor;
+  char* end = nullptr;
+  const long parsed_first = std::strtol(line.c_str() + cursor, &end, 10);
+  if (end == line.c_str() + cursor) return false;
+  first = static_cast<int32_t>(parsed_first);
+  cursor = static_cast<size_t>(end - line.c_str());
+  if (second == nullptr) return true;
+  while (cursor < line.size() && (line[cursor] == ' ' || line[cursor] == '\t')) ++cursor;
+  if (cursor >= line.size() || line[cursor] != ',') return false;
+  ++cursor;
+  while (cursor < line.size() && (line[cursor] == ' ' || line[cursor] == '\t')) ++cursor;
+  const long parsed_second = std::strtol(line.c_str() + cursor, &end, 10);
+  if (end == line.c_str() + cursor) return false;
+  *second = static_cast<int32_t>(parsed_second);
+  return true;
+}
+
+bool DisableDl2FrameGenerationInSettings(
+    const std::wstring& path,
+    std::string& contents,
+    int32_t frame_generation) {
+  if (frame_generation == 0) return true;
+  size_t line_start = 0;
+  while (line_start <= contents.size()) {
+    const size_t end = contents.find('\n', line_start);
+    const size_t length = (end == std::string::npos ? contents.size() : end) - line_start;
+    const std::string line = contents.substr(line_start, length);
+    int32_t ignored_first = -1;
+    int32_t ignored_second = -1;
+    if (ParseDl2Tuple(line, "FrameGeneration", ignored_first, &ignored_second)) {
+      const size_t name_offset = line.find("FrameGeneration");
+      const size_t open = line.find('(', name_offset);
+      if (open == std::string::npos) return false;
+      size_t number_start = open + 1;
+      while (number_start < line.size()
+             && (line[number_start] == ' ' || line[number_start] == '\t')) {
+        ++number_start;
+      }
+      size_t number_end = number_start;
+      while (number_end < line.size()
+             && (line[number_end] == '-'
+                 || (line[number_end] >= '0' && line[number_end] <= '9'))) {
+        ++number_end;
+      }
+      if (number_start == number_end) return false;
+      const size_t comma = line.find(',', number_end);
+      if (comma == std::string::npos) return false;
+      size_t second_start = comma + 1;
+      while (second_start < line.size()
+             && (line[second_start] == ' ' || line[second_start] == '\t')) {
+        ++second_start;
+      }
+      size_t second_end = second_start;
+      while (second_end < line.size()
+             && (line[second_end] == '-'
+                 || (line[second_end] >= '0' && line[second_end] <= '9'))) {
+        ++second_end;
+      }
+      if (second_start == second_end) return false;
+      const size_t second_offset = line_start + second_start;
+      contents.replace(second_offset, second_end - second_start, "0");
+      contents.replace(line_start + number_start, number_end - number_start, "0");
+      if (!WriteDl2VideoSettings(path, contents)) return false;
+      return true;
+    }
+    if (end == std::string::npos) break;
+    line_start = end + 1;
+  }
+  return false;
+}
+
+void ReadAndPrepareDl2GameSettings() {
+  const std::wstring path = GetDl2VideoSettingsPath();
+  if (path.empty()) return;
+  std::string contents;
+  if (!ReadDl2VideoSettings(path, contents)) return;
+  dl2_game_settings.file_found = true;
+  size_t line_start = 0;
+  while (line_start <= contents.size()) {
+    const size_t end = contents.find('\n', line_start);
+    const size_t length = (end == std::string::npos ? contents.size() : end) - line_start;
+    const std::string line = contents.substr(line_start, length);
+    int32_t value = -1;
+    int32_t second = -1;
+    if (ParseDl2Tuple(line, "Upscaler", value)) dl2_game_settings.upscaler = value;
+    if (ParseDl2Tuple(line, "Upscaling", value)) dl2_game_settings.upscaling = value;
+    if (ParseDl2Tuple(line, "FrameGeneration", value, &second)) {
+      dl2_game_settings.frame_generation = value;
+      dl2_game_settings.frame_generation_multiplier = second;
+    }
+    if (end == std::string::npos) break;
+    line_start = end + 1;
+  }
+  dl2_game_settings.parse_complete = dl2_game_settings.upscaler >= 0
+                                     && dl2_game_settings.frame_generation >= 0;
+  if (dl2_game_settings.frame_generation > 0) {
+    dl2_game_settings.frame_generation_disable_attempted = true;
+    const std::wstring backup_path = path + L".renodx.bak";
+    const bool backup_ready = GetFileAttributesW(backup_path.c_str()) != INVALID_FILE_ATTRIBUTES
+                              || CopyFileW(path.c_str(), backup_path.c_str(), FALSE);
+    if (backup_ready) {
+      dl2_game_settings.frame_generation_disable_succeeded = DisableDl2FrameGenerationInSettings(
+          path,
+          contents,
+          dl2_game_settings.frame_generation);
+    }
+    dl2_frame_generation_warning_visible = true;
+  }
+}
+
+void OnDl2CompatibilityWarningOverlay(reshade::api::effect_runtime*) {
+  if (!dl2_frame_generation_warning_visible) return;
+  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.75f, 0.2f, 1.f));
+  if (dl2_game_settings.frame_generation_disable_succeeded) {
+    ImGui::TextWrapped(
+        "RenoDX: Frame Generation was enabled and video.scr was changed to "
+        "FrameGeneration(0, 0). Restart the game to apply the change.");
+  } else {
+    ImGui::TextWrapped(
+        "RenoDX: Frame Generation is enabled, but video.scr could not be "
+        "updated. Disable Frame Generation in the game and restart.");
+  }
+  ImGui::PopStyleColor();
+}
 
 // Keep UI values independent while sending a compact representation to HLSL.
 // This avoids growing every D3D12 root layout for the optional boost.
@@ -8597,8 +8827,39 @@ renodx::utils::settings::Settings settings = {
             "Exact Balanced chain 0 + 1",
             "Exact Balanced chain 2 + 3",
         },
+        .is_enabled = []() { return dl2_resource_upgrade_auto_select < 0.5f; },
         .is_global = true,
         .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "ResourceUpgradeAutoSelect",
+        .binding = &dl2_resource_upgrade_auto_select,
+        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+        .default_value = 1.f,
+        .can_reset = false,
+        .label = "Auto Select DLSS Resource Chain",
+        .section = "Compatibility",
+        .tooltip = "At startup, selects only the validated DL2 chain for Linear or DLSS Balanced. Other upscalers and quality modes keep the manual resource setting.",
+        .is_global = true,
+        .is_visible = []() { return current_settings_mode >= 1; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "Frame Generation was enabled. RenoDX changed video.scr to FrameGeneration(0, 0). Restart the game to apply the change.",
+        .section = "Compatibility",
+        .is_visible = []() {
+          return dl2_game_settings.frame_generation_disable_attempted
+                 && dl2_game_settings.frame_generation_disable_succeeded;
+        },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "Frame Generation is enabled, but RenoDX could not edit video.scr. Disable Frame Generation in the game and restart.",
+        .section = "Compatibility",
+        .is_visible = []() {
+          return dl2_game_settings.frame_generation_disable_attempted
+                 && !dl2_game_settings.frame_generation_disable_succeeded;
+        },
     },
 // DLSS Frame Generation settings and Streamline diagnostics are intentionally
 // removed from the user-facing settings. The implementation is compile-time
@@ -9361,7 +9622,32 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   switch (fdw_reason) {
     case DLL_PROCESS_ATTACH: {
       addon_module = h_module;
+      ReadAndPrepareDl2GameSettings();
       if (!reshade::register_addon(h_module)) return FALSE;
+
+      if (dl2_game_settings.file_found) {
+        std::ostringstream stream;
+        stream << "DL2 game settings: upscaler=" << dl2_game_settings.upscaler
+               << " quality=" << dl2_game_settings.upscaling
+               << " frame_generation=" << dl2_game_settings.frame_generation
+               << " multiplier=" << dl2_game_settings.frame_generation_multiplier;
+        renodx::utils::log::i(stream.str().c_str());
+        if (dl2_game_settings.frame_generation_disable_attempted) {
+          renodx::utils::log::i(
+              "DL2 FrameGeneration startup disable: ",
+              dl2_game_settings.frame_generation_disable_succeeded ? "updated video.scr; restart required"
+                                                                    : "write failed; close FG manually and restart");
+        }
+      } else {
+        renodx::utils::log::w(
+            "DL2 game settings: video.scr was not found; resource-chain auto-selection disabled.");
+      }
+      if (dl2_frame_generation_warning_visible) {
+        reshade::register_overlay(
+            "OSD",
+            OnDl2CompatibilityWarningOverlay);
+        dl2_frame_generation_warning_overlay_registered = true;
+      }
 
       // Descriptor heap mirrors are needed by the one-shot draw-time binding
       // audit. Keep them disabled for the normal performance build, but enable
@@ -9530,6 +9816,46 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       if (resource_upgrade_test < 0 || resource_upgrade_test > 33) {
         resource_upgrade_test = 0;
       }
+      const int32_t configured_resource_upgrade_test = resource_upgrade_test;
+      int32_t resource_upgrade_auto_select = 1;
+      reshade::get_config_value(
+          nullptr,
+          renodx::utils::settings::global_name.c_str(),
+          "ResourceUpgradeAutoSelect",
+          resource_upgrade_auto_select);
+      dl2_resource_upgrade_auto_select = resource_upgrade_auto_select != 0 ? 1.f : 0.f;
+      bool resource_upgrade_auto_selected = false;
+      if (dl2_resource_upgrade_auto_select > 0.5f
+          && dl2_game_settings.frame_generation == 0) {
+        if (dl2_game_settings.upscaler == 1) {
+          resource_upgrade_test = 0;
+          resource_upgrade_auto_selected = true;
+        } else if (dl2_game_settings.upscaler == 2 && dl2_game_settings.upscaling == 1) {
+          resource_upgrade_test = 32;
+          resource_upgrade_auto_selected = true;
+        }
+      }
+      if (resource_upgrade_auto_selected) {
+        renodx::utils::log::i(
+            "DL2 resource chain auto-select: mode=",
+            resource_upgrade_test,
+            " for upscaler=",
+            dl2_game_settings.upscaler,
+            " quality=",
+            dl2_game_settings.upscaling,
+            " fg=0");
+      } else if (dl2_resource_upgrade_auto_select > 0.5f
+                 && dl2_game_settings.file_found) {
+        renodx::utils::log::w(
+            "DL2 resource chain auto-select: no validated mapping; retaining configured mode=",
+            configured_resource_upgrade_test,
+            " upscaler=",
+            dl2_game_settings.upscaler,
+            " quality=",
+            dl2_game_settings.upscaling,
+            " fg=",
+            dl2_game_settings.frame_generation);
+      }
       resource_upgrade_test_setting = static_cast<float>(resource_upgrade_test);
       const bool upgrade_all_typeless = resource_upgrade_test == 30;
       const bool semantic_typeless_hot_swap = resource_upgrade_test == 31;
@@ -9592,7 +9918,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           " typeless=",
           enable_typeless_upgrade,
           " unorm_srgb=",
-          enable_unorm_upgrades);
+          enable_unorm_upgrades,
+          " auto=",
+          resource_upgrade_auto_selected,
+          " configured=",
+          configured_resource_upgrade_test);
 
       // The 0x3E -> 0x268 -> 0xAD chain uses full-size R8G8B8A8_TYPELESS
       // resources. Without their FP16 clones, values above 1.0 are clipped
@@ -9660,6 +9990,12 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       break;
     }
     case DLL_PROCESS_DETACH:
+      if (dl2_frame_generation_warning_overlay_registered) {
+        reshade::unregister_overlay(
+            "OSD",
+            OnDl2CompatibilityWarningOverlay);
+        dl2_frame_generation_warning_overlay_registered = false;
+      }
       renodx::utils::command_action::Unregister(OnDl2TargetedDiagnosticDraw);
       if constexpr (kEnableDl2CpuObservers || kEnableDl2FgHooks) {
         renodx::utils::command_action::Unregister(OnDownstreamDrawCapture);
