@@ -4297,9 +4297,7 @@ static void RecordCenterProbeDraw(reshade::api::command_list* cmd_list, uint32_t
 
 inline constexpr auto OnDownstreamDrawCapture = []<typename Context>(Context& context)
     -> renodx::utils::command_action::CallbackResult<Context> {
-  if constexpr (!kEnableDl2CpuObservers && !kEnableDl2FgHooks) {
-    if (!dl2_diagnostic_armed.load(std::memory_order_acquire)) return {};
-  }
+  if (!dl2_diagnostic_armed.load(std::memory_order_acquire)) return {};
   auto& capture = downstream_draw_capture_state;
   std::scoped_lock lock(downstream_draw_capture_mutex);
   const bool capture_commands = downstream_draw_capture >= 0.5f;
