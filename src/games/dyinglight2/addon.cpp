@@ -9594,6 +9594,28 @@ void OnPresetOff() {
 // output contract is installed by this addon.
 
 void OnInitDevice(reshade::api::device* device) {
+  ReadAndPrepareDl2GameSettings();
+  if (dl2_game_settings.file_found) {
+    std::ostringstream stream;
+    stream << "DL2 game settings: upscaler=" << dl2_game_settings.upscaler
+           << " quality=" << dl2_game_settings.upscaling
+           << " frame_generation=" << dl2_game_settings.frame_generation
+           << " multiplier=" << dl2_game_settings.frame_generation_multiplier;
+    renodx::utils::log::i(stream.str().c_str());
+    if (dl2_game_settings.frame_generation_disable_attempted) {
+      renodx::utils::log::i(
+          "DL2 FrameGeneration startup disable: ",
+          dl2_game_settings.frame_generation_disable_succeeded ? "updated video.scr; restart required"
+                                                                : "write failed; close FG manually and restart");
+    }
+  } else {
+    renodx::utils::log::w(
+        "DL2 game settings: video.scr was not found; resource-chain auto-selection disabled.");
+  }
+  if (dl2_frame_generation_warning_visible && !dl2_frame_generation_warning_overlay_registered) {
+    reshade::register_overlay("OSD", OnDl2CompatibilityWarningOverlay);
+    dl2_frame_generation_warning_overlay_registered = true;
+  }
   if (device->get_api() == reshade::api::device_api::d3d11) {
     renodx::mods::shader::expected_constant_buffer_space = 0;
     renodx::mods::swapchain::expected_constant_buffer_space = 0;
@@ -9622,32 +9644,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   switch (fdw_reason) {
     case DLL_PROCESS_ATTACH: {
       addon_module = h_module;
-      ReadAndPrepareDl2GameSettings();
       if (!reshade::register_addon(h_module)) return FALSE;
-
-      if (dl2_game_settings.file_found) {
-        std::ostringstream stream;
-        stream << "DL2 game settings: upscaler=" << dl2_game_settings.upscaler
-               << " quality=" << dl2_game_settings.upscaling
-               << " frame_generation=" << dl2_game_settings.frame_generation
-               << " multiplier=" << dl2_game_settings.frame_generation_multiplier;
-        renodx::utils::log::i(stream.str().c_str());
-        if (dl2_game_settings.frame_generation_disable_attempted) {
-          renodx::utils::log::i(
-              "DL2 FrameGeneration startup disable: ",
-              dl2_game_settings.frame_generation_disable_succeeded ? "updated video.scr; restart required"
-                                                                    : "write failed; close FG manually and restart");
-        }
-      } else {
-        renodx::utils::log::w(
-            "DL2 game settings: video.scr was not found; resource-chain auto-selection disabled.");
-      }
-      if (dl2_frame_generation_warning_visible) {
-        reshade::register_overlay(
-            "OSD",
-            OnDl2CompatibilityWarningOverlay);
-        dl2_frame_generation_warning_overlay_registered = true;
-      }
 
       // Descriptor heap mirrors are needed by the one-shot draw-time binding
       // audit. Keep them disabled for the normal performance build, but enable
@@ -9816,46 +9813,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       if (resource_upgrade_test < 0 || resource_upgrade_test > 33) {
         resource_upgrade_test = 0;
       }
-      const int32_t configured_resource_upgrade_test = resource_upgrade_test;
-      int32_t resource_upgrade_auto_select = 1;
-      reshade::get_config_value(
-          nullptr,
-          renodx::utils::settings::global_name.c_str(),
-          "ResourceUpgradeAutoSelect",
-          resource_upgrade_auto_select);
-      dl2_resource_upgrade_auto_select = resource_upgrade_auto_select != 0 ? 1.f : 0.f;
-      bool resource_upgrade_auto_selected = false;
-      if (dl2_resource_upgrade_auto_select > 0.5f
-          && dl2_game_settings.frame_generation == 0) {
-        if (dl2_game_settings.upscaler == 1) {
-          resource_upgrade_test = 0;
-          resource_upgrade_auto_selected = true;
-        } else if (dl2_game_settings.upscaler == 2 && dl2_game_settings.upscaling == 1) {
-          resource_upgrade_test = 32;
-          resource_upgrade_auto_selected = true;
-        }
-      }
-      if (resource_upgrade_auto_selected) {
-        renodx::utils::log::i(
-            "DL2 resource chain auto-select: mode=",
-            resource_upgrade_test,
-            " for upscaler=",
-            dl2_game_settings.upscaler,
-            " quality=",
-            dl2_game_settings.upscaling,
-            " fg=0");
-      } else if (dl2_resource_upgrade_auto_select > 0.5f
-                 && dl2_game_settings.file_found) {
-        renodx::utils::log::w(
-            "DL2 resource chain auto-select: no validated mapping; retaining configured mode=",
-            configured_resource_upgrade_test,
-            " upscaler=",
-            dl2_game_settings.upscaler,
-            " quality=",
-            dl2_game_settings.upscaling,
-            " fg=",
-            dl2_game_settings.frame_generation);
-      }
       resource_upgrade_test_setting = static_cast<float>(resource_upgrade_test);
       const bool upgrade_all_typeless = resource_upgrade_test == 30;
       const bool semantic_typeless_hot_swap = resource_upgrade_test == 31;
@@ -9918,11 +9875,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           " typeless=",
           enable_typeless_upgrade,
           " unorm_srgb=",
-          enable_unorm_upgrades,
-          " auto=",
-          resource_upgrade_auto_selected,
-          " configured=",
-          configured_resource_upgrade_test);
+          enable_unorm_upgrades);
 
       // The 0x3E -> 0x268 -> 0xAD chain uses full-size R8G8B8A8_TYPELESS
       // resources. Without their FP16 clones, values above 1.0 are clipped
