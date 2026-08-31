@@ -455,10 +455,9 @@ inline constexpr bool kEnableDl2ShaderReplacements = true;
 // Keep global draw/binding/resource observers disabled in the normal build.
 // They remain available in source for explicitly requested diagnostics, but
 // must not add per-command CPU work to the shipping HDR path.
-// Temporary diagnostic build: enable descriptor/resource observers so the
-// armed DLSS path capture can resolve the actual 0x3E/0x268 input bindings.
-// Restore to false after the On/Off comparison; this is not a release setting.
-inline constexpr bool kEnableDl2CpuObservers = true;
+// Keep descriptor/resource observers opt-in for one-shot diagnostics. The
+// normal rendering path must not pay for global CPU-side tracing.
+inline constexpr bool kEnableDl2CpuObservers = false;
 // Stable performance baseline: keep the final proxy render and generic state
 // mirror enabled for normal lifecycle/state safety.
 inline constexpr bool kEnableDl2SwapchainProxyRender = true;
