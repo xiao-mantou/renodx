@@ -280,6 +280,69 @@ void OnDl2CompatibilityWarningOverlay(reshade::api::effect_runtime*) {
   ImGui::PopStyleColor();
 }
 
+void ApplyDl2AutoResourceChain() {
+  if (dl2_resource_upgrade_auto_select <= 0.5f
+      || !dl2_game_settings.parse_complete
+      || dl2_game_settings.frame_generation != 0) {
+    return;
+  }
+
+  int32_t selected_mode = -1;
+  if (dl2_game_settings.upscaler == 1) {
+    selected_mode = 0;
+  } else if (dl2_game_settings.upscaler == 2 && dl2_game_settings.upscaling == 1) {
+    selected_mode = 32;
+  }
+  if (selected_mode < 0) return;
+
+  renodx::mods::swapchain::resource_upgrade_infos.clear();
+  resource_upgrade_test_setting = static_cast<float>(selected_mode);
+
+  const uint64_t typeless_candidate_mask = selected_mode == 0
+                                               ? ((uint64_t{1} << 4) | (uint64_t{1} << 5) | (uint64_t{1} << 7))
+                                               : ((uint64_t{1} << 0) | (uint64_t{1} << 1));
+  for (int32_t candidate_index = 0; candidate_index < 64; ++candidate_index) {
+    if ((typeless_candidate_mask & (uint64_t{1} << candidate_index)) == 0u) continue;
+    renodx::mods::swapchain::resource_upgrade_infos.push_back({
+        .old_format = reshade::api::format::r8g8b8a8_typeless,
+        .new_format = reshade::api::format::r16g16b16a16_float,
+        .index = candidate_index,
+        .ignore_size = false,
+        .use_resource_view_cloning = true,
+        .use_resource_view_hot_swap = false,
+        .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
+        .usage_include = reshade::api::resource_usage::render_target,
+    });
+  }
+
+  renodx::mods::swapchain::resource_upgrade_infos.push_back({
+      .old_format = reshade::api::format::r8g8b8a8_unorm,
+      .new_format = reshade::api::format::r16g16b16a16_float,
+      .ignore_size = false,
+      .use_resource_view_cloning = true,
+      .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
+      .usage_include = reshade::api::resource_usage::render_target,
+  });
+  renodx::mods::swapchain::resource_upgrade_infos.push_back({
+      .old_format = reshade::api::format::r8g8b8a8_unorm_srgb,
+      .new_format = reshade::api::format::r16g16b16a16_float,
+      .ignore_size = false,
+      .use_resource_view_cloning = true,
+      .use_resource_view_hot_swap = true,
+      .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
+      .usage_include = reshade::api::resource_usage::render_target,
+  });
+
+  renodx::utils::log::i(
+      "DL2 resource chain auto-select: mode=",
+      selected_mode,
+      " for upscaler=",
+      dl2_game_settings.upscaler,
+      " quality=",
+      dl2_game_settings.upscaling,
+      " fg=0");
+}
+
 // Keep UI values independent while sending a compact representation to HLSL.
 // This avoids growing every D3D12 root layout for the optional boost.
 float dl2_hdr_highlight_boost = 0.f;
@@ -9595,6 +9658,14 @@ void OnPresetOff() {
 
 void OnInitDevice(reshade::api::device* device) {
   ReadAndPrepareDl2GameSettings();
+  int32_t resource_upgrade_auto_select = 1;
+  reshade::get_config_value(
+      nullptr,
+      renodx::utils::settings::global_name.c_str(),
+      "ResourceUpgradeAutoSelect",
+      resource_upgrade_auto_select);
+  dl2_resource_upgrade_auto_select = resource_upgrade_auto_select != 0 ? 1.f : 0.f;
+  ApplyDl2AutoResourceChain();
   if (dl2_game_settings.file_found) {
     std::ostringstream stream;
     stream << "DL2 game settings: upscaler=" << dl2_game_settings.upscaler
