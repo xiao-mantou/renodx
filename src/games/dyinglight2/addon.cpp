@@ -414,7 +414,8 @@ bool ArmStreamlinePresentTrace() {
 
 // 0 = HDR10 (RGB10 + BT.2100 PQ), 1 = scRGB (FP16 + linear).
 // DLSS Frame Generation requires HDR10/PQ, so that is the default. The value is
-// read once in DllMain because a swapchain container cannot change at runtime.
+// read once during device initialization because a swapchain container cannot
+// change at runtime.
 float swap_chain_format_setting = 0.f;
 // Immutable copy used by the proxy shader. ReShade may reload the global
 // setting after DllMain, but the swapchain container cannot change then.
@@ -8898,7 +8899,7 @@ renodx::utils::settings::Settings settings = {
         .key = "ResourceUpgradeAutoSelect",
         .binding = &dl2_resource_upgrade_auto_select,
         .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
-        .default_value = 1.f,
+        .default_value = 0.f,
         .can_reset = false,
         .label = "Auto Select DLSS Resource Chain",
         .section = "Compatibility",
@@ -9845,7 +9846,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // HDR output DLSS Frame Generation supports; scRGB stays available as a
       // no-FG fallback. Scene resources keep their FP16 clones either way.
       {
-        int32_t format_choice = 1;
+        int32_t format_choice = 0;
         reshade::get_config_value(nullptr, renodx::utils::settings::global_name.c_str(), "SwapChainFormat", format_choice);
         swap_chain_format_setting = static_cast<float>(format_choice);
         const bool use_hdr10 = (format_choice == 0);
