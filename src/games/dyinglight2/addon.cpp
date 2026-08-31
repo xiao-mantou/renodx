@@ -68,6 +68,7 @@ Dl2GameSettings dl2_game_settings = {};
 float dl2_resource_upgrade_auto_select = 1.f;
 bool dl2_frame_generation_warning_visible = false;
 bool dl2_frame_generation_warning_overlay_registered = false;
+extern float resource_upgrade_test_setting;
 
 std::wstring GetDl2VideoSettingsPath() {
   std::array<wchar_t, 32768> user_profile = {};
