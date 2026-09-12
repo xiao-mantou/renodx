@@ -148,48 +148,8 @@ float4 main(
 
   float display_scale = 0.012500000186264515f * hdr.maxBrightnessOfTV * hdr.hdrScale;
 
-  // TEMPORARY injection diagnostic: R = peak/4000, G = game/500, B = type/3.
-  if (hdr.hdr != 0) {
-    return float4(
-        saturate(RENODX_PEAK_WHITE_NITS / 4000.f),
-        saturate(RENODX_DIFFUSE_WHITE_NITS / 500.f),
-        saturate(RENODX_TONE_MAP_TYPE / 3.f),
-        1.f);
-  }
-
-  // Validate the injected settings before using them; unbound or garbage root constants must fall back
-  // to the vanilla path instead of producing a broken image.
-  const bool valid_injection = (RENODX_TONE_MAP_TYPE >= 1.f && RENODX_TONE_MAP_TYPE <= 3.f)
-                               && (RENODX_PEAK_WHITE_NITS >= 48.f && RENODX_PEAK_WHITE_NITS <= 4000.f)
-                               && (RENODX_DIFFUSE_WHITE_NITS >= 48.f && RENODX_DIFFUSE_WHITE_NITS <= 500.f)
-                               && (RENODX_DEBUG_MODE >= 0.f && RENODX_DEBUG_MODE <= 3.f);
-
-  if (valid_injection && RENODX_DEBUG_MODE > 0.f) {
-    if (RENODX_DEBUG_MODE == 1.f) {
-      return float4(
-          RENODX_PEAK_WHITE_NITS / 1000.f,
-          RENODX_DIFFUSE_WHITE_NITS / 203.f,
-          RENODX_TONE_MAP_TYPE / 10.f,
-          1.f);
-    }
-    if (RENODX_DEBUG_MODE == 2.f) {
-      return float4(
-          hdr.hdr / 10.f,
-          display_scale / 10.f,
-          hdr.hdrScale * 10.f,
-          1.f);
-    }
-    return float4(
-        saturate(exposure / 10.f),
-        renodx::color::y::from::BT709(untonemapped) / 10.f,
-        renodx::color::y::from::BT709(neutral_sdr) / 10.f,
-        1.f);
-  }
-
-  float3 output = graded_sdr;  // Vanilla fallback (SDR output, vanilla preset, or invalid injection).
-  if (hdr.hdr != 0
-      && display_scale > 0.0f
-      && valid_injection) {
+  float3 output = graded_sdr;  // Vanilla for SDR output.
+  if (hdr.hdr != 0 && display_scale > 0.0f) {
     // Normalize the scene so the game's paper white (F1FilmicCurve(F1_PAPER_WHITE) == 1.0)
     // becomes 1.0, matching the Hable output reference used by UpgradeToneMap and RenoDRT.
     float3 normalized_untonemapped = untonemapped / F1_PAPER_WHITE;
