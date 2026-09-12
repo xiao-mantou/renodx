@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <deps/imgui/imgui.h>
+
 #include <include/reshade.hpp>
 
 #include <embed/shaders.h>
