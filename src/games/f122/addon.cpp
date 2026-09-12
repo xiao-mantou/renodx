@@ -6,6 +6,8 @@
 #define ImTextureID ImU64
 
 #define DEBUG_LEVEL_0
+#define DEBUG_LEVEL_1
+#define DEBUG_LEVEL_2
 
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>
