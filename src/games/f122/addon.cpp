@@ -15,7 +15,7 @@
 namespace {
 
 // Index into the embedded peak variants below.
-float current_peak_preset = 0.f;
+float current_peak_preset = 1.f;
 
 std::span<const uint8_t> SelectedPeakVariant() {
   switch (static_cast<int>(current_peak_preset)) {
@@ -35,7 +35,7 @@ renodx::utils::settings::Settings settings = {
         .key = "ToneMapPeakNits",
         .binding = &current_peak_preset,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-        .default_value = 0.f,
+        .default_value = 1.f,
         .label = "Peak Brightness",
         .section = "Tone Mapping",
         .tooltip = "Tone map peak in nits. Restart the game for the change to apply.",
@@ -62,6 +62,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     custom_shaders.clear();
     custom_shaders.emplace(0xB2F67FED, renodx::mods::shader::CreateCustomShader(0xB2F67FED, SelectedPeakVariant()));
+    custom_shaders.emplace(0x2EA7EE8A, renodx::mods::shader::CreateCustomShader(0x2EA7EE8A, __0x2EA7EE8A));
   }
   renodx::mods::shader::Use(fdw_reason, custom_shaders);
 

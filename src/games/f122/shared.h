@@ -7,10 +7,12 @@
 #ifndef RENODX_PEAK_WHITE_NITS
 #define RENODX_PEAK_WHITE_NITS 400.f
 #endif
-#define RENODX_DIFFUSE_WHITE_NITS            203.f
-#define RENODX_GRAPHICS_WHITE_NITS           renodx::color::bt2408::GRAPHICS_WHITE
-#define RENODX_GAMMA_CORRECTION              GAMMA_CORRECTION_NONE
-#define RENODX_TONE_MAP_TYPE                 renodx::draw::TONE_MAP_TYPE_RENO_DRT
+#define RENODX_DIFFUSE_WHITE_NITS  203.f
+#define RENODX_GRAPHICS_WHITE_NITS renodx::color::bt2408::GRAPHICS_WHITE
+#define RENODX_GAMMA_CORRECTION    GAMMA_CORRECTION_NONE
+#ifndef RENODX_TONE_MAP_TYPE
+#define RENODX_TONE_MAP_TYPE renodx::draw::TONE_MAP_TYPE_RENO_DRT
+#endif
 #define RENODX_TONE_MAP_PER_CHANNEL          0.f
 #define RENODX_TONE_MAP_WORKING_COLOR_SPACE  0.f
 #define RENODX_TONE_MAP_HUE_PROCESSOR        0.f
@@ -27,8 +29,10 @@
 #define RENODX_TONE_MAP_BLOWOUT              0.f
 #define RENODX_TONE_MAP_FLARE                0.f
 #define RENODX_COLOR_GRADE_STRENGTH          1.f
-#define RENODX_RENO_DRT_TONE_MAP_METHOD      renodx::tonemap::renodrt::config::tone_map_method::DANIELE
-#define RENODX_DEBUG_MODE                    0.f
+#ifndef RENODX_RENO_DRT_TONE_MAP_METHOD
+#define RENODX_RENO_DRT_TONE_MAP_METHOD renodx::tonemap::renodrt::config::tone_map_method::NEUTWO
+#endif
+#define RENODX_DEBUG_MODE 0.f
 
 #include "../../shaders/renodx.hlsl"
 
