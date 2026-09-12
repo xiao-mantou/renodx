@@ -3,8 +3,10 @@
 
 // F1 22's DX12 root signatures leave too little root-constant budget for injected settings,
 // so this mod replaces the tonemap shader with baked-in defaults instead of a shader injection cbuffer.
-// Peak is set to match a 400-nit display so the whole roll-off lands inside the panel's range.
-#define RENODX_PEAK_WHITE_NITS               400.f
+// Variant files override RENODX_PEAK_WHITE_NITS before including the shared tonemap body.
+#ifndef RENODX_PEAK_WHITE_NITS
+#define RENODX_PEAK_WHITE_NITS 400.f
+#endif
 #define RENODX_DIFFUSE_WHITE_NITS            203.f
 #define RENODX_GRAPHICS_WHITE_NITS           renodx::color::bt2408::GRAPHICS_WHITE
 #define RENODX_GAMMA_CORRECTION              GAMMA_CORRECTION_NONE
