@@ -247,6 +247,16 @@ renodx::utils::settings::Settings settings = {
         .is_enabled = []() { return shader_injection.tone_map_type > 0; },
         .parse = [](float value) { return value * 0.01f; },
     },
+    new renodx::utils::settings::Setting{
+        .key = "DebugMode",
+        .binding = &shader_injection.debug_mode,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Debug Mode",
+        .section = "Debug",
+        .labels = {"Off", "Injection", "HDR Params", "Exposure"},
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
 };
 
 void OnPresetOff() {

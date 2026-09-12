@@ -57,6 +57,7 @@ struct ShaderInjectData {
   float swap_chain_encoding;
   float swap_chain_encoding_color_space;
   float custom_flip_uv_y;
+  float debug_mode;
 };
 
 #ifndef __cplusplus
@@ -90,6 +91,7 @@ cbuffer shader_injection : register(b13) {
 #define RENODX_TONE_MAP_FLARE                shader_injection.tone_map_flare
 #define RENODX_COLOR_GRADE_STRENGTH          shader_injection.color_grade_strength
 #define RENODX_RENO_DRT_TONE_MAP_METHOD      renodx::tonemap::renodrt::config::tone_map_method::DANIELE
+#define RENODX_DEBUG_MODE                    shader_injection.debug_mode
 
 #include "../../shaders/renodx.hlsl"
 
