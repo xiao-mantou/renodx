@@ -148,6 +148,15 @@ float4 main(
 
   float display_scale = 0.012500000186264515f * hdr.maxBrightnessOfTV * hdr.hdrScale;
 
+  // TEMPORARY injection diagnostic: R = peak/4000, G = game/500, B = type/3.
+  if (hdr.hdr != 0) {
+    return float4(
+        saturate(RENODX_PEAK_WHITE_NITS / 4000.f),
+        saturate(RENODX_DIFFUSE_WHITE_NITS / 500.f),
+        saturate(RENODX_TONE_MAP_TYPE / 3.f),
+        1.f);
+  }
+
   // Validate the injected settings before using them; unbound or garbage root constants must fall back
   // to the vanilla path instead of producing a broken image.
   const bool valid_injection = (RENODX_TONE_MAP_TYPE >= 1.f && RENODX_TONE_MAP_TYPE <= 3.f)
