@@ -148,7 +148,14 @@ float4 main(
 
   float display_scale = 0.012500000186264515f * hdr.maxBrightnessOfTV * hdr.hdrScale;
 
-  if (RENODX_DEBUG_MODE > 0.f) {
+  // Validate the injected settings before using them; unbound or garbage root constants must fall back
+  // to the vanilla path instead of producing a broken image.
+  const bool valid_injection = (RENODX_TONE_MAP_TYPE >= 1.f && RENODX_TONE_MAP_TYPE <= 3.f)
+                               && (RENODX_PEAK_WHITE_NITS >= 48.f && RENODX_PEAK_WHITE_NITS <= 4000.f)
+                               && (RENODX_DIFFUSE_WHITE_NITS >= 48.f && RENODX_DIFFUSE_WHITE_NITS <= 500.f)
+                               && (RENODX_DEBUG_MODE >= 0.f && RENODX_DEBUG_MODE <= 3.f);
+
+  if (valid_injection && RENODX_DEBUG_MODE > 0.f) {
     if (RENODX_DEBUG_MODE == 1.f) {
       return float4(
           RENODX_PEAK_WHITE_NITS / 1000.f,
@@ -170,12 +177,10 @@ float4 main(
         1.f);
   }
 
-  float3 output = graded_sdr;  // Vanilla fallback (SDR output, vanilla preset, or missing injection).
+  float3 output = graded_sdr;  // Vanilla fallback (SDR output, vanilla preset, or invalid injection).
   if (hdr.hdr != 0
       && display_scale > 0.0f
-      && RENODX_TONE_MAP_TYPE > 0.f
-      && RENODX_PEAK_WHITE_NITS > 0.f
-      && RENODX_DIFFUSE_WHITE_NITS > 0.f) {
+      && valid_injection) {
     // Normalize the scene so the game's paper white (F1FilmicCurve(F1_PAPER_WHITE) == 1.0)
     // becomes 1.0, matching the Hable output reference used by UpgradeToneMap and RenoDRT.
     float3 normalized_untonemapped = untonemapped / F1_PAPER_WHITE;

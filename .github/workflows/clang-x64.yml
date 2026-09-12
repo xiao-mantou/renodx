@@ -54,7 +54,7 @@ jobs:
         run: cmake --preset clang-x64 -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Build (x64)
-        run: cmake --build --preset clang-x64-release --target f122 devkit mcp_bridge --verbose
+        run: cmake --build --preset clang-x64-release --target f122 --verbose
 
       - name: Show sccache stats
         if: always()
@@ -65,9 +65,6 @@ jobs:
 
       - name: Copy addon binaries
         run: copy build\release\*.addon64 build_output\
-
-      - name: Copy tool binaries
-        run: copy build\release\*.exe build_output\
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
