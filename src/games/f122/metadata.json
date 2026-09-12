@@ -1,0 +1,15 @@
+{
+  "$schema": "https://cdn.jsdelivr.net/gh/clshortfuse/renodx/renodx-metadata-schema.json",
+  "id": "f122",
+  "title": "F1 22",
+  "maintainers": [
+    "xiao-mantou"
+  ],
+  "status": "experimental",
+  "deploy": {
+    "steam_appid": 1708720,
+    "game_exe": "F1_22.exe",
+    "api": "d3d12",
+    "architecture": "x64"
+  }
+}
