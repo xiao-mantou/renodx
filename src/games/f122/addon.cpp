@@ -16,6 +16,7 @@ namespace {
 
 // Index into the embedded peak variants below.
 float current_peak_preset = 1.f;
+float applied_peak_preset = 1.f;
 
 std::span<const uint8_t> SelectedPeakVariant() {
   switch (static_cast<int>(current_peak_preset)) {
@@ -28,6 +29,24 @@ std::span<const uint8_t> SelectedPeakVariant() {
   }
 }
 
+// Runtime replacements apply on the next present, so the setting takes effect without a restart.
+void OnPresent(
+    reshade::api::command_queue*,
+    reshade::api::swapchain* swapchain,
+    const reshade::api::rect*,
+    const reshade::api::rect*,
+    uint32_t,
+    const reshade::api::rect*) {
+  if (applied_peak_preset == current_peak_preset) return;
+
+  auto* device = swapchain->get_device();
+  if (device == nullptr) return;
+
+  renodx::utils::shader::AddRuntimeReplacement(device, 0xB2F67FED, SelectedPeakVariant());
+  applied_peak_preset = current_peak_preset;
+  reshade::log::message(reshade::log::level::info, "f122: applied runtime peak variant");
+}
+
 renodx::mods::shader::CustomShaders custom_shaders = {};
 
 renodx::utils::settings::Settings settings = {
@@ -38,8 +57,9 @@ renodx::utils::settings::Settings settings = {
         .default_value = 1.f,
         .label = "Peak Brightness",
         .section = "Tone Mapping",
-        .tooltip = "Tone map peak in nits. Restart the game for the change to apply.",
+        .tooltip = "Tone map peak in nits. Applies immediately.",
         .labels = {"400", "450", "1000"},
+        .on_change = []() { applied_peak_preset = -1.f; },
     },
 };
 
@@ -52,8 +72,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   switch (fdw_reason) {
     case DLL_PROCESS_ATTACH:
       if (!reshade::register_addon(h_module)) return FALSE;
+      renodx::utils::shader::use_replace_async = true;
+      reshade::register_event<reshade::addon_event::present>(OnPresent);
       break;
     case DLL_PROCESS_DETACH:
+      reshade::unregister_event<reshade::addon_event::present>(OnPresent);
       reshade::unregister_addon(h_module);
       break;
   }
@@ -63,6 +86,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     custom_shaders.clear();
     custom_shaders.emplace(0xB2F67FED, renodx::mods::shader::CreateCustomShader(0xB2F67FED, SelectedPeakVariant()));
     custom_shaders.emplace(0x2EA7EE8A, renodx::mods::shader::CreateCustomShader(0x2EA7EE8A, __0x2EA7EE8A));
+    applied_peak_preset = current_peak_preset;
   }
   renodx::mods::shader::Use(fdw_reason, custom_shaders);
 
