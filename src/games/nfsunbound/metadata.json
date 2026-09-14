@@ -10,6 +10,9 @@
   "tags": [
     "HDR"
   ],
+  "notes": [
+    "Baked shader variants (no settings injection): DX12 root signature leaves no cbuffer budget. Peak presets are switched at runtime via present event."
+  ],
   "deploy": {
     "steam_appid": 1846380,
     "game_exe": "NeedForSpeedUnbound.exe",
