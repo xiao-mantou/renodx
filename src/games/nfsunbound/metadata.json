@@ -1,0 +1,22 @@
+{
+  "$schema": "https://cdn.jsdelivr.net/gh/clshortfuse/renodx/renodx-metadata-schema.json",
+  "id": "nfsunbound",
+  "title": "Need for Speed Unbound",
+  "maintainers": [
+    "xiao-mantou"
+  ],
+  "status": "experimental",
+  "summary": "HDR tone mapping takeover for Need for Speed Unbound.",
+  "tags": [
+    "HDR"
+  ],
+  "deploy": {
+    "steam_appid": 1846380,
+    "game_exe": "NeedForSpeedUnbound.exe",
+    "process_name": "NeedForSpeedUnbound.exe",
+    "api": "d3d12",
+    "architecture": [
+      "x64"
+    ]
+  }
+}

@@ -3,9 +3,10 @@ name: Clang x64
 on:
   workflow_dispatch:
   push:
-    branches: [main, "codex/**", "f122"]
+    branches: [main, "codex/**", "f122", "nfsunbound"]
     paths:
       - "src/games/f122/**"
+      - "src/games/nfsunbound/**"
       - "src/mods/**"
       - "src/shaders/**"
       - "src/utils/**"
@@ -67,7 +68,7 @@ jobs:
         run: cmake --preset clang-x64 -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Build (x64)
-        run: cmake --build --preset clang-x64-release --target f122 --verbose
+        run: cmake --build --preset clang-x64-release --target nfsunbound --verbose
 
       - name: Show sccache stats
         if: always()
@@ -82,6 +83,6 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: renodx-f122
+          name: renodx-nfsunbound
           path: build_output/
 
