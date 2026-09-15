@@ -20,6 +20,7 @@
 #define RENODX_GAMMA_CORRECTION GAMMA_CORRECTION_NONE
 #define RENODX_TONE_MAP_TYPE renodx::draw::TONE_MAP_TYPE_RENO_DRT
 #define RENODX_RENO_DRT_TONE_MAP_METHOD renodx::tonemap::renodrt::config::tone_map_method::NEUTWO
+#define RENODX_RENO_DRT_SCALING_METHOD renodx::tonemap::renodrt::config::scaling_method::MAX_CHANNEL
 #define RENODX_TONE_MAP_PER_CHANNEL 0.f
 #define RENODX_TONE_MAP_WORKING_COLOR_SPACE 0.f
 #define RENODX_TONE_MAP_HUE_PROCESSOR 0.f
