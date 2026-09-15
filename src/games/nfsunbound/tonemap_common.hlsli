@@ -158,8 +158,7 @@ OutputSignature main(
     _366 = _337;
   }
   float3 graded_hdr = float3(_364, _365, _366);
-  float3 neutral_sdr = renodx::tonemap::frostbite::RangeCompress(graded_hdr, RENODX_SDR_SHOULDER_START, 1.0f);
-  float3 tonemapped = renodx::draw::ToneMapPass(graded_hdr, neutral_sdr, neutral_sdr);
+  float3 tonemapped = renodx::draw::ToneMapPass(graded_hdr);
   float3 output_color = renodx::color::pq::EncodeSafe(
       renodx::color::bt2020::from::BT709(tonemapped) * RENODX_DIFFUSE_WHITE_NITS,
       1.f);

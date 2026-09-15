@@ -17,8 +17,8 @@ namespace {
 
 // Index into the embedded peak variants below. NFS Unbound's DX12 root signatures leave no
 // room for an injected settings cbuffer, so presets are baked into shader variants instead.
-float current_preset = 1.f;
-float applied_preset = 1.f;
+float current_preset = 3.f;
+float applied_preset = 3.f;
 
 std::span<const uint8_t> SelectedVariant() {
   switch (static_cast<int>(current_preset)) {
@@ -60,7 +60,7 @@ renodx::utils::settings::Settings settings = {
         .key = "PeakPreset",
         .binding = &current_preset,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-        .default_value = 1.f,
+        .default_value = 3.f,
         .label = "Peak / Game Nits",
         .section = "Tone Mapping",
         .tooltip = "Baked shader preset. Applies immediately.",
