@@ -17,19 +17,29 @@ namespace {
 
 // Index into the embedded peak variants below. NFS Unbound's DX12 root signatures leave no
 // room for an injected settings cbuffer, so presets are baked into shader variants instead.
-float current_preset = 3.f;
-float applied_preset = 3.f;
+float current_preset = 8.f;
+float applied_preset = 8.f;
 
 std::span<const uint8_t> SelectedVariant() {
   switch (static_cast<int>(current_preset)) {
     case 0:
-      return __0x11111111;  // 400 nits
+      return __0x11111111;  // 400 nits / game 203
+    case 1:
+      return __0x72BE437B;  // 450 nits / game 203
     case 2:
       return __0x22222222;  // 450 nits / game 150
     case 3:
       return __0x33333333;  // 450 nits / game 100
     case 4:
-      return __0x44444444;  // 1000 nits
+      return __0x44444444;  // 1000 nits / game 203
+    case 5:
+      return __0x88888888;  // 400 nits / game 100
+    case 6:
+      return __0x55555555;  // 400 nits / game 150
+    case 7:
+      return __0x66666666;  // 400 nits / game 200
+    case 8:
+      return __0x77777777;  // 450 nits / game 200
     default:
       return __0x72BE437B;  // 450 nits / game 203
   }
@@ -60,11 +70,12 @@ renodx::utils::settings::Settings settings = {
         .key = "PeakPreset",
         .binding = &current_preset,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-        .default_value = 3.f,
+        .default_value = 8.f,
         .label = "Peak / Game Nits",
         .section = "Tone Mapping",
         .tooltip = "Baked shader preset. Applies immediately.",
-        .labels = {"400", "450/203", "450/150", "450/100", "1000"},
+        // Keep the original indices stable; new game-white combinations are appended.
+        .labels = {"400/203", "450/203", "450/150", "450/100", "1000/203", "400/100", "400/150", "400/200", "450/200"},
         .on_change = []() { applied_preset = -1.f; },
     },
 };
