@@ -39,7 +39,7 @@ std::span<const uint8_t> SelectedVariant() {
     case 7:
       return __0x66666666;  // 400 nits / game 200
     case 8:
-      return __0x77777777;  // 450 nits / game 200
+      return __0x99999999;  // 450 nits / game 200
     default:
       return __0x72BE437B;  // 450 nits / game 203
   }
