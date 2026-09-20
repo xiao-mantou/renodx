@@ -2,6 +2,9 @@ name: NFS Heat DevKit
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - codex/nfsheat
 
 jobs:
   build:
