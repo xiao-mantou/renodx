@@ -17,31 +17,53 @@ namespace {
 
 // Index into the embedded peak variants below. NFS Unbound's DX12 root signatures leave no
 // room for an injected settings cbuffer, so presets are baked into shader variants instead.
-float current_preset = 8.f;
-float applied_preset = 8.f;
+float current_preset = 5.f;
+float applied_preset = 5.f;
 
 std::span<const uint8_t> SelectedVariant() {
   switch (static_cast<int>(current_preset)) {
     case 0:
-      return __0x11111111;  // 400 nits / game 203
+      return __0x40100101;  // 400 nits / paper white 100
     case 1:
-      return __0x72BE437B;  // 450 nits / game 203
+      return __0x40150101;  // 400 nits / paper white 150
     case 2:
-      return __0x22222222;  // 450 nits / game 150
+      return __0x40203101;  // 400 nits / paper white 203
     case 3:
-      return __0x33333333;  // 450 nits / game 100
+      return __0x45100101;  // 450 nits / paper white 100
     case 4:
-      return __0x44444444;  // 1000 nits / game 203
+      return __0x45150101;  // 450 nits / paper white 150
     case 5:
-      return __0x88888888;  // 400 nits / game 100
+      return __0x72BE437B;  // 450 nits / paper white 203
     case 6:
-      return __0x55555555;  // 400 nits / game 150
+      return __0x50100101;  // 500 nits / paper white 100
     case 7:
-      return __0x66666666;  // 400 nits / game 200
+      return __0x50150101;  // 500 nits / paper white 150
     case 8:
-      return __0x99999999;  // 450 nits / game 200
+      return __0x50203101;  // 500 nits / paper white 203
+    case 9:
+      return __0x55100101;  // 550 nits / paper white 100
+    case 10:
+      return __0x55150101;  // 550 nits / paper white 150
+    case 11:
+      return __0x55203101;  // 550 nits / paper white 203
+    case 12:
+      return __0x60100101;  // 600 nits / paper white 100
+    case 13:
+      return __0x60150101;  // 600 nits / paper white 150
+    case 14:
+      return __0x60203101;  // 600 nits / paper white 203
+    case 15:
+      return __0x65100101;  // 650 nits / paper white 100
+    case 16:
+      return __0x65150101;  // 650 nits / paper white 150
+    case 17:
+      return __0x65203101;  // 650 nits / paper white 203
+    case 18:
+      return __0x10002031;  // 1000 nits / paper white 203
+    case 19:
+      return __0x14002031;  // 1400 nits / paper white 203
     default:
-      return __0x72BE437B;  // 450 nits / game 203
+      return __0x72BE437B;  // 450 nits / paper white 203
   }
 }
 
@@ -70,12 +92,11 @@ renodx::utils::settings::Settings settings = {
         .key = "PeakPreset",
         .binding = &current_preset,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-        .default_value = 8.f,
-        .label = "Peak / Game Nits",
+        .default_value = 5.f,
+        .label = "Peak / Paper White Nits",
         .section = "Tone Mapping",
         .tooltip = "Baked shader preset. Applies immediately.",
-        // Keep the original indices stable; new game-white combinations are appended.
-        .labels = {"400/203", "450/203", "450/150", "450/100", "1000/203", "400/100", "400/150", "400/200", "450/200"},
+        .labels = {"400/100", "400/150", "400/203", "450/100", "450/150", "450/203", "500/100", "500/150", "500/203", "550/100", "550/150", "550/203", "600/100", "600/150", "600/203", "650/100", "650/150", "650/203", "1000/203", "1400/203"},
         .on_change = []() { applied_preset = -1.f; },
     },
 };

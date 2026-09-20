@@ -3,7 +3,7 @@
 
 // NFS Unbound's DX12 root signatures leave too little root-constant budget for injected settings,
 // so this mod replaces the tonemap output shader with baked-in defaults instead of a shader
-// injection cbuffer. Keep variant files overriding the macros below before including this header.
+// injection cbuffer. Peak and paper white are baked into each preset variant.
 #ifndef RENODX_PEAK_WHITE_NITS
 #define RENODX_PEAK_WHITE_NITS 450.f
 #endif
