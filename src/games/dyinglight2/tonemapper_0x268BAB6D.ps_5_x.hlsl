@@ -18,31 +18,14 @@ cbuffer cb0 : register(b0)
 #define Saturation           cb0[1].x
 #define WhiteTemperatureK    cb0[1].y
 
-// Chromatic aberration. v1 carries the pre-offset red/blue uv pair, v2.xy the
-// unshifted uv and v2.zw the letterbox-space position. The offsets are faded in
-// toward the frame edge; green is always read straight from this pixel.
-float3 SampleWithChromaticAberration(float4 v0, float4 v1, float4 v2) {
-  float2 inset = 1.0 - abs(v2.zw) * abs(v2.zw);
-  float weight = saturate(1.0 - inset.x * inset.y);
-  weight = max(0.0, weight * 1.5 - 0.5);
-
-  float4 uv = lerp(v2.xyxy, v1.xyzw, weight);
-
-  float3 col;
-  col.r = t0.SampleLevel(s0_s, uv.xy, 0).r;
-  col.b = t0.SampleLevel(s0_s, uv.zw, 0).b;
-  col.g = t0.Load(int3((int2)v0.xy, 0)).g;
-  return col;
-}
-
 void main(
   float4 v0 : SV_POSITION0,
   float4 v1 : TEXCOORD0,
-  float4 v2 : TEXCOORD1,
   out float4 o0 : SV_TARGET0)
 {
-  float3 col = SampleWithChromaticAberration(v0, v1, v2);
-  float3 colIn = col;
+  float4 col = t0.SampleLevel(s0_s, v1.xy, 0);
+  o0.w = col.w;
+  float4 colIn = col;
 
   if (RENODX_TONE_MAP_TYPE == 0.f) { // vanilla
     // lut
@@ -104,8 +87,7 @@ void main(
   }
 
   // letterbox / pillarbox mask
-  bool outside = (abs(v2.w) > LetterboxHalfHeight) || (abs(v2.z) > LetterboxHalfWidth);
+  bool outside = (abs(v1.w) > LetterboxHalfHeight) || (abs(v1.z) > LetterboxHalfWidth);
   o0.xyz = (LetterboxEnable > 0.0) ? (outside ? 0.0 : col.xyz) : col.xyz;
   o0.xyz = renodx::color::srgb::EncodeSafe(o0.xyz);
-  o0.w = 1;
 }
