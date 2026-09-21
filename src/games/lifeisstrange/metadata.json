@@ -1,0 +1,17 @@
+{
+  "$schema": "https://cdn.jsdelivr.net/gh/clshortfuse/renodx/renodx-metadata-schema.json",
+  "id": "lifeisstrange",
+  "title": "Life Is Strange",
+  "maintainers": [
+    "xiaomantou"
+  ],
+  "status": "testing",
+  "summary": "Development baseline for the DirectX 11 renderer path exposed through dgVoodoo2.",
+  "deploy": {
+    "game_exe": "LifeIsStrange.exe",
+    "process_name": "LifeIsStrange.exe",
+    "api": "d3d11",
+    "steam_appid": 319630,
+    "architecture": ["x86"]
+  }
+}

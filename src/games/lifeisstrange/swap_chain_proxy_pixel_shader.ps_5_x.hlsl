@@ -1,0 +1,9 @@
+#include "./shared.h"
+
+Texture2D source_texture : register(t0);
+SamplerState source_sampler : register(s0);
+
+float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
+  uv.y = lerp(uv.y, 1.f - uv.y, CUSTOM_FLIP_UV_Y);
+  return renodx::draw::SwapChainPass(source_texture.Sample(source_sampler, uv));
+}
