@@ -14,6 +14,7 @@
 
 #include "../../mods/shader.hpp"
 #include "../../mods/swapchain.hpp"
+#include "./readback.hpp"
 #include "../../utils/settings.hpp"
 #include "./shared.h"
 
@@ -407,8 +408,18 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   switch (fdw_reason) {
     case DLL_PROCESS_ATTACH:
       if (!reshade::register_addon(h_module)) return FALSE;
+      reshade::register_event<reshade::addon_event::init_command_queue>(lifeisstrange::readback::OnInitCommandQueue);
+      reshade::register_event<reshade::addon_event::destroy_command_queue>(lifeisstrange::readback::OnDestroyCommandQueue);
 
       if (!initialized) {
+        if (auto shader = custom_shaders.find(lifeisstrange::readback::config.shader_hash); shader != custom_shaders.end()) {
+          shader->second.on_drawn = &lifeisstrange::readback::OnDrawn;
+        } else {
+          reshade::log::message(
+              reshade::log::level::error,
+              "LifeIsStrange Readback: 06A2A81D shader entry was not generated; readback callback is disabled.");
+        }
+
         renodx::mods::shader::force_pipeline_cloning = true;
         renodx::mods::shader::expected_constant_buffer_space = 50;
         renodx::mods::shader::expected_constant_buffer_index = 13;
@@ -433,7 +444,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         });
         reshade::log::message(
             reshade::log::level::info,
-            "LifeIsStrange RenoDX build 2026.09.22-intermediate-upgrade-debug1-v2: 06A2 intermediate resource probe enabled (SDR swapchain unchanged)");
+            "LifeIsStrange RenoDX build 2026.09.22-readback-v1: 06A2 FP16 clone + readback enabled (sample interval 60, SDR swapchain unchanged)");
         renodx::mods::swapchain::swap_chain_proxy_shaders = {
             {
                 reshade::api::device_api::d3d11,
@@ -620,6 +631,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
       break;
     case DLL_PROCESS_DETACH:
+      reshade::unregister_event<reshade::addon_event::init_command_queue>(lifeisstrange::readback::OnInitCommandQueue);
+      reshade::unregister_event<reshade::addon_event::destroy_command_queue>(lifeisstrange::readback::OnDestroyCommandQueue);
       reshade::unregister_event<reshade::addon_event::present>(OnPresent);
       reshade::unregister_addon(h_module);
       break;
