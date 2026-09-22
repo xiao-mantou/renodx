@@ -80,7 +80,7 @@ static bool GetPipelineLayoutData(const reshade::api::pipeline_layout& layout, F
 
   bool found = false;
   shared.data->pipeline_layout_data.if_contains(layout.handle, [&f, &found](const std::pair<const uint64_t, PipelineLayoutData>& pair) {
-    std::invoke(f, &pair.second);
+    f(&pair.second);
     found = true;
   });
   return found;
