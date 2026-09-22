@@ -17,6 +17,7 @@
 #include <include/reshade.hpp>
 
 #include "../../utils/resource.hpp"
+#include "../../utils/resource_upgrade.hpp"
 #include "../../utils/swapchain.hpp"
 
 namespace lifeisstrange::readback {
@@ -43,6 +44,8 @@ struct ReadbackState {
   bool warned_unsupported_format = false;
   bool warned_create_readback = false;
   bool warned_map_readback = false;
+  std::uint32_t view_activation_attempts = 0u;
+  bool logged_view_activation = false;
 };
 
 inline constexpr ReadbackConfig config = {};
@@ -127,36 +130,60 @@ inline void OnDrawn(reshade::api::command_list* cmd_list) {
   bool used_clone = false;
   bool found_view_info = false;
   std::string clone_diagnostic;
-  renodx::utils::resource::GetResourceViewInfo(
-      requested_view,
-      [&](const renodx::utils::resource::ResourceViewInfo& info) {
-        found_view_info = true;
-        if (config.prefer_clone) {
-          source = info.clone_resource;
-          source_view = info.clone;
-          used_clone = source.handle != 0u && source_view.handle != 0u;
-          if (!used_clone) {
-            const auto original_desc = info.original_resource.handle != 0u
-                                           ? renodx::utils::resource::GetResourceDesc(device, info.original_resource)
-                                           : reshade::api::resource_desc{};
-            std::stringstream message;
-            message << "LifeIsStrange Readback: 06A2 clone diagnostic"
-                    << " view=0x" << std::hex << requested_view.handle
-                    << " original=0x" << info.original_resource.handle
-                    << " clone_view=0x" << info.clone.handle
-                    << " clone_resource=0x" << info.clone_resource.handle
-                    << std::dec
-                    << " usage=" << info.usage
-                    << " view_format=" << info.desc.format
-                    << " resource_format=" << original_desc.texture.format
-                    << " size=" << original_desc.texture.width << "x" << original_desc.texture.height
-                    << " clone_target=" << (info.clone_target != nullptr ? info.clone_target->name.c_str() : "none");
-            clone_diagnostic = message.str();
-          }
-        } else {
-          source = info.original_resource;
-        }
-      });
+  auto inspect_view = [&](const renodx::utils::resource::ResourceViewInfo& info) {
+    found_view_info = true;
+    if (config.prefer_clone) {
+      source = info.clone_resource;
+      source_view = info.clone;
+      used_clone = source.handle != 0u && source_view.handle != 0u;
+      if (!used_clone) {
+        const auto original_desc = info.original_resource.handle != 0u
+                                       ? renodx::utils::resource::GetResourceDesc(device, info.original_resource)
+                                       : reshade::api::resource_desc{};
+        std::stringstream message;
+        message << "LifeIsStrange Readback: 06A2 clone diagnostic"
+                << " view=0x" << std::hex << requested_view.handle
+                << " original=0x" << info.original_resource.handle
+                << " clone_view=0x" << info.clone.handle
+                << " clone_resource=0x" << info.clone_resource.handle
+                << std::dec
+                << " usage=" << info.usage
+                << " view_format=" << info.desc.format
+                << " resource_format=" << original_desc.texture.format
+                << " size=" << original_desc.texture.width << "x" << original_desc.texture.height
+                << " clone_target=" << (info.clone_target != nullptr ? info.clone_target->name.c_str() : "none");
+        clone_diagnostic = message.str();
+      }
+    } else {
+      source = info.original_resource;
+    }
+  };
+  renodx::utils::resource::GetResourceViewInfo(requested_view, inspect_view);
+
+  if (config.prefer_clone && !used_clone && state.view_activation_attempts < 3u) {
+    ++state.view_activation_attempts;
+    const auto activated_view = renodx::utils::resource::upgrade::GetResourceViewClone(
+        requested_view,
+        {
+            .require_enabled = false,
+            .allow_create = true,
+            .activate = true,
+        });
+    if (activated_view.handle != 0u) {
+      found_view_info = false;
+      source = {0u};
+      source_view = requested_view;
+      used_clone = false;
+      clone_diagnostic.clear();
+      renodx::utils::resource::GetResourceViewInfo(requested_view, inspect_view);
+      if (used_clone && !state.logged_view_activation) {
+        state.logged_view_activation = true;
+        reshade::log::message(
+            reshade::log::level::info,
+            "LifeIsStrange Readback: activated 06A2 FP16 render-target view clone.");
+      }
+    }
+  }
 
   if (!found_view_info) {
     LogWarningOnce(state.warned_no_target, "LifeIsStrange Readback: render target view is not tracked.");
