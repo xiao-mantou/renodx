@@ -140,6 +140,10 @@ inline void OnDrawn(reshade::api::command_list* cmd_list) {
         const auto original_desc = info.original_resource.handle != 0u
                                        ? renodx::utils::resource::GetResourceDesc(device, info.original_resource)
                                        : reshade::api::resource_desc{};
+        const auto clone_desc = info.clone_resource.handle != 0u
+                                    ? renodx::utils::resource::GetResourceDesc(device, info.clone_resource)
+                                    : reshade::api::resource_desc{};
+        const auto native_view_desc = renodx::utils::resource::GetResourceViewDesc(device, requested_view);
         std::stringstream message;
         message << "LifeIsStrange Readback: 06A2 clone diagnostic"
                 << " view=0x" << std::hex << requested_view.handle
@@ -148,9 +152,17 @@ inline void OnDrawn(reshade::api::command_list* cmd_list) {
                 << " clone_resource=0x" << info.clone_resource.handle
                 << std::dec
                 << " usage=" << info.usage
+                << " view_type=" << info.desc.type
                 << " view_format=" << info.desc.format
+                << " native_view_type=" << native_view_desc.type
+                << " native_view_format=" << native_view_desc.format
+                << " resource_type=" << original_desc.type
                 << " resource_format=" << original_desc.texture.format
                 << " size=" << original_desc.texture.width << "x" << original_desc.texture.height
+                << " clone_type=" << clone_desc.type
+                << " clone_format=" << clone_desc.texture.format
+                << " clone_size=" << clone_desc.texture.width << "x" << clone_desc.texture.height
+                << " clone_enabled=" << (info.clone_enabled ? "true" : "false")
                 << " clone_target=" << (info.clone_target != nullptr ? info.clone_target->name.c_str() : "none");
         clone_diagnostic = message.str();
       }

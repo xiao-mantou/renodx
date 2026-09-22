@@ -5,6 +5,9 @@
 
 #define ImTextureID ImU64
 
+// Temporary D3D9 clone-failure diagnostics; remove after the view path is identified.
+#define DEBUG_LEVEL_0
+
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>
 
@@ -453,7 +456,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         });
         reshade::log::message(
             reshade::log::level::info,
-            "LifeIsStrange RenoDX build 2026.09.23-readback-v4: 06A2 FP16 clone + readback enabled (on-demand view activation, back-buffer dimensions, B8G8/R8G8 targets, final swapchain proxy disabled)");
+            "LifeIsStrange RenoDX build 2026.09.23-readback-v5: 06A2 FP16 clone + readback enabled (D3D9 view-failure diagnostics, on-demand view activation, final swapchain proxy disabled)");
 
         {
           auto* setting = new renodx::utils::settings::Setting{
