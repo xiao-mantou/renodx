@@ -5,7 +5,7 @@
 
 #define ImTextureID ImU64
 
-#define DEBUG_LEVEL_0
+#define DEBUG_LEVEL_1
 
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>
@@ -433,7 +433,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         });
         reshade::log::message(
             reshade::log::level::info,
-            "LifeIsStrange RenoDX build 2026.09.22-intermediate-upgrade-v1: 06A2 intermediate resource probe enabled (SDR swapchain unchanged)");
+            "LifeIsStrange RenoDX build 2026.09.22-intermediate-upgrade-debug1-v2: 06A2 intermediate resource probe enabled (SDR swapchain unchanged)");
         renodx::mods::swapchain::swap_chain_proxy_shaders = {
             {
                 reshade::api::device_api::d3d11,
