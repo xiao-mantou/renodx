@@ -126,6 +126,7 @@ inline void OnDrawn(reshade::api::command_list* cmd_list) {
   reshade::api::resource_view source_view = requested_view;
   bool used_clone = false;
   bool found_view_info = false;
+  std::string clone_diagnostic;
   renodx::utils::resource::GetResourceViewInfo(
       requested_view,
       [&](const renodx::utils::resource::ResourceViewInfo& info) {
@@ -134,6 +135,24 @@ inline void OnDrawn(reshade::api::command_list* cmd_list) {
           source = info.clone_resource;
           source_view = info.clone;
           used_clone = source.handle != 0u && source_view.handle != 0u;
+          if (!used_clone) {
+            const auto original_desc = info.original_resource.handle != 0u
+                                           ? renodx::utils::resource::GetResourceDesc(device, info.original_resource)
+                                           : reshade::api::resource_desc{};
+            std::stringstream message;
+            message << "LifeIsStrange Readback: 06A2 clone diagnostic"
+                    << " view=0x" << std::hex << requested_view.handle
+                    << " original=0x" << info.original_resource.handle
+                    << " clone_view=0x" << info.clone.handle
+                    << " clone_resource=0x" << info.clone_resource.handle
+                    << std::dec
+                    << " usage=" << info.usage
+                    << " view_format=" << info.desc.format
+                    << " resource_format=" << original_desc.texture.format
+                    << " size=" << original_desc.texture.width << "x" << original_desc.texture.height
+                    << " clone_target=" << (info.clone_target != nullptr ? info.clone_target->name.c_str() : "none");
+            clone_diagnostic = message.str();
+          }
         } else {
           source = info.original_resource;
         }
@@ -146,7 +165,9 @@ inline void OnDrawn(reshade::api::command_list* cmd_list) {
   if (config.prefer_clone && !used_clone) {
     LogWarningOnce(
         state.warned_no_clone,
-        "LifeIsStrange Readback: 06A2 render target has no active clone yet; waiting for the FP16 clone.");
+        clone_diagnostic.empty()
+            ? "LifeIsStrange Readback: 06A2 render target has no active clone yet; waiting for the FP16 clone."
+            : clone_diagnostic);
     return;
   }
   if (!config.prefer_clone) {

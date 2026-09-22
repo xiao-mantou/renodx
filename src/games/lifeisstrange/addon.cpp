@@ -430,19 +430,30 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         renodx::mods::swapchain::resource_upgrade_infos.push_back({
             .old_format = reshade::api::format::b8g8r8a8_unorm,
             .new_format = reshade::api::format::r16g16b16a16_float,
-            .ignore_size = false,
             .use_resource_view_cloning = true,
             .dimensions = {
-                .width = 1920,
-                .height = 1080,
+                .width = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
+                .height = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
                 .depth = renodx::utils::resource::ResourceUpgradeInfo::ANY,
             },
             .usage_include = reshade::api::resource_usage::render_target,
-            .name = "LifeIsStrange_06A2_Intermediate",
+            .name = "LifeIsStrange_06A2_Intermediate_B8G8R8A8",
+        });
+        renodx::mods::swapchain::resource_upgrade_infos.push_back({
+            .old_format = reshade::api::format::r8g8b8a8_unorm,
+            .new_format = reshade::api::format::r16g16b16a16_float,
+            .use_resource_view_cloning = true,
+            .dimensions = {
+                .width = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
+                .height = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
+                .depth = renodx::utils::resource::ResourceUpgradeInfo::ANY,
+            },
+            .usage_include = reshade::api::resource_usage::render_target,
+            .name = "LifeIsStrange_06A2_Intermediate_R8G8B8A8",
         });
         reshade::log::message(
             reshade::log::level::info,
-            "LifeIsStrange RenoDX build 2026.09.22-readback-v2: 06A2 FP16 clone + readback enabled (sample interval 60, final swapchain proxy disabled)");
+            "LifeIsStrange RenoDX build 2026.09.23-readback-v3: 06A2 FP16 clone + readback enabled (back-buffer dimensions, B8G8/R8G8 targets, final swapchain proxy disabled)");
 
         {
           auto* setting = new renodx::utils::settings::Setting{
