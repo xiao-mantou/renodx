@@ -418,6 +418,22 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         renodx::mods::swapchain::expected_constant_buffer_index = 13;
         renodx::mods::swapchain::expected_constant_buffer_space = 50;
         renodx::mods::swapchain::use_resource_cloning = true;
+        renodx::mods::swapchain::resource_upgrade_infos.push_back({
+            .old_format = reshade::api::format::b8g8r8a8_unorm,
+            .new_format = reshade::api::format::r16g16b16a16_float,
+            .ignore_size = false,
+            .use_resource_view_cloning = true,
+            .dimensions = {
+                .width = 1920,
+                .height = 1080,
+                .depth = renodx::utils::resource::ResourceUpgradeInfo::ANY,
+            },
+            .usage_include = reshade::api::resource_usage::render_target,
+            .name = "LifeIsStrange_06A2_Intermediate",
+        });
+        reshade::log::message(
+            reshade::log::level::info,
+            "LifeIsStrange RenoDX build 2026.09.22-intermediate-upgrade-v1: 06A2 intermediate resource probe enabled (SDR swapchain unchanged)");
         renodx::mods::swapchain::swap_chain_proxy_shaders = {
             {
                 reshade::api::device_api::d3d11,
