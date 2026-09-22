@@ -5,8 +5,6 @@
 
 #define ImTextureID ImU64
 
-#define DEBUG_LEVEL_1
-
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>
 
@@ -444,23 +442,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         });
         reshade::log::message(
             reshade::log::level::info,
-            "LifeIsStrange RenoDX build 2026.09.22-readback-v1: 06A2 FP16 clone + readback enabled (sample interval 60, SDR swapchain unchanged)");
-        renodx::mods::swapchain::swap_chain_proxy_shaders = {
-            {
-                reshade::api::device_api::d3d11,
-                {
-                    .vertex_shader = __swap_chain_proxy_vertex_shader_dx11,
-                    .pixel_shader = __swap_chain_proxy_pixel_shader_dx11,
-                },
-            },
-            {
-                reshade::api::device_api::d3d12,
-                {
-                    .vertex_shader = __swap_chain_proxy_vertex_shader_dx12,
-                    .pixel_shader = __swap_chain_proxy_pixel_shader_dx12,
-                },
-            },
-        };
+            "LifeIsStrange RenoDX build 2026.09.22-readback-v2: 06A2 FP16 clone + readback enabled (sample interval 60, final swapchain proxy disabled)");
 
         {
           auto* setting = new renodx::utils::settings::Setting{
