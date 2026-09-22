@@ -175,15 +175,37 @@ function Get-GitHubReleaseAssetDownloadInfo {
   }
   $releaseApiUrl = "https://api.github.com/repos/$Repo/releases/tags/$Tag"
   $originalSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol
+  $asset = @()
 
   try {
     if (($originalSecurityProtocol -band [Net.SecurityProtocolType]::Tls12) -eq 0) {
       [Net.ServicePointManager]::SecurityProtocol = $originalSecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     }
 
-    $response = Invoke-WebRequest -Uri $releaseApiUrl -Headers $headers -UseBasicParsing -ErrorAction Stop
-    $release = $response.Content | ConvertFrom-Json
-    $asset = @($release.assets | Where-Object { $_.name -match $AssetPattern } | Select-Object -First 1)
+    try {
+      $response = Invoke-WebRequest -Uri $releaseApiUrl -Headers $headers -UseBasicParsing -ErrorAction Stop
+      $release = $response.Content | ConvertFrom-Json
+      $asset = @($release.assets | Where-Object { $_.name -match $AssetPattern } | Select-Object -First 1)
+    } catch {
+      # The GitHub REST API is rate-limited on shared CI runners. The public
+      # expanded-assets page exposes the same release links without API quota.
+      $expandedAssetsUrl = "https://github.com/$Repo/releases/expanded_assets/$Tag"
+      $expandedResponse = Invoke-WebRequest -Uri $expandedAssetsUrl -Headers @{ 'User-Agent' = 'renodx-setup' } -UseBasicParsing -ErrorAction Stop
+      $hrefPattern = '/' + [regex]::Escape($Repo) + '/releases/download/' + [regex]::Escape($Tag) + '/([^"?#]+)'
+      $asset = @(
+        [regex]::Matches($expandedResponse.Content, $hrefPattern) |
+          ForEach-Object {
+            $name = [System.Uri]::UnescapeDataString($_.Groups[1].Value)
+            if ($name -match $AssetPattern) {
+              [pscustomobject]@{
+                name = $name
+                browser_download_url = "https://github.com/$Repo/releases/download/$Tag/$name"
+              }
+            }
+          } |
+          Select-Object -First 1
+      )
+    }
   } finally {
     [Net.ServicePointManager]::SecurityProtocol = $originalSecurityProtocol
   }
