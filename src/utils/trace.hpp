@@ -1274,7 +1274,7 @@ static void OnBindDescriptorTables(
     }
   }
 
-  pipeline_layout::GetPipelineLayoutData(layout, [&](const auto& local_layout_data) {
+  pipeline_layout::GetPipelineLayoutData(layout, [&](const auto* local_layout_data) {
     const auto& layout_data = *local_layout_data;
 
     for (uint32_t i = 0; i < count; ++i) {

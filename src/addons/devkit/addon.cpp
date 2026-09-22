@@ -4772,7 +4772,7 @@ void OnPushDescriptors(
         if (has_directx_slot_info) return true;
         if (failed_directx_offset_lookup) return false;
 
-        bool found_directx_offsets = renodx::utils::pipeline_layout::GetPipelineLayoutData(layout, [&](const auto& local_layout_data) {
+        bool found_directx_offsets = renodx::utils::pipeline_layout::GetPipelineLayoutData(layout, [&](const auto* local_layout_data) {
           const auto& layout_data = *local_layout_data;
           if (layout_param >= layout_data.params.size()) {
             reshade::log::message(reshade::log::level::error, "Layout param out of range.");
@@ -4851,7 +4851,7 @@ void OnPushDescriptors(
     }
 
     case reshade::api::descriptor_type::constant_buffer: {
-      bool found_descriptor_layout = renodx::utils::pipeline_layout::GetPipelineLayoutData(layout, [&](const auto& local_layout_data) {
+      bool found_descriptor_layout = renodx::utils::pipeline_layout::GetPipelineLayoutData(layout, [&](const auto* local_layout_data) {
         const auto& layout_data = *local_layout_data;
         if (layout_param >= layout_data.params.size()) {
           reshade::log::message(reshade::log::level::error, "Layout param out of range.");
@@ -5100,7 +5100,7 @@ bool OnDraw(reshade::api::command_list* cmd_list, DrawDetails::DrawMethods draw_
           auto* descriptor_data = renodx::utils::data::Get<renodx::utils::descriptor::DeviceData>(device);
           if (descriptor_data == nullptr) return false;
 
-          renodx::utils::pipeline_layout::GetPipelineLayoutData(pipeline_shader_details->layout, [&](const auto& local_layout_data) {
+          renodx::utils::pipeline_layout::GetPipelineLayoutData(pipeline_shader_details->layout, [&](const auto* local_layout_data) {
             const auto& info = *local_layout_data;
             auto param_count = info.params.size();
 

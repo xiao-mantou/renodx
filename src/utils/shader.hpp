@@ -172,7 +172,7 @@ struct PipelineShaderDetails {
       : pipeline(pipeline),
         device(device),
         layout(layout) {
-    pipeline_layout::GetPipelineLayoutData(layout, [&](const auto& layout_data) {
+    pipeline_layout::GetPipelineLayoutData(layout, [&](const auto* layout_data) {
       this->replacement_layout = layout_data->replacement_layout;
       this->injection_layout = layout_data->injection_layout;
       this->injection_index = layout_data->injection_index;
