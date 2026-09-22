@@ -173,15 +173,16 @@ inline void OnDrawn(reshade::api::command_list* cmd_list) {
     LogWarningOnce(state.warned_unsupported_format, message.str());
     return;
   }
-  if (config.mip_level >= std::max(source_desc.texture.levels, 1u)
-      || config.layer >= std::max(source_desc.texture.depth_or_layers, 1u)) {
+  const auto levels = std::max<std::uint32_t>(static_cast<std::uint32_t>(source_desc.texture.levels), 1u);
+  const auto depth_or_layers =
+      std::max<std::uint32_t>(static_cast<std::uint32_t>(source_desc.texture.depth_or_layers), 1u);
+  if (config.mip_level >= levels || config.layer >= depth_or_layers) {
     LogWarningOnce(state.warned_no_target, "LifeIsStrange Readback: configured mip or layer is outside the resource.");
     return;
   }
 
   const auto width = std::max(source_desc.texture.width >> config.mip_level, 1u);
   const auto height = std::max(source_desc.texture.height >> config.mip_level, 1u);
-  const auto levels = std::max(source_desc.texture.levels, 1u);
   const auto subresource = config.mip_level + (config.layer * levels);
   const auto readback_desc = reshade::api::resource_desc(
       width,
