@@ -217,6 +217,9 @@ void DisableFrameGenerationInSettings() {
 }
 
 void OnInitDevice(reshade::api::device* device) {
+  // File I/O and regex initialization are deferred until after DLL attach.
+  DisableFrameGenerationInSettings();
+
   if (device->get_api() == reshade::api::device_api::d3d11) {
     renodx::mods::shader::expected_constant_buffer_space = 0;
         renodx::mods::swapchain::v2::expected_constant_buffer_space = 0;
@@ -237,7 +240,6 @@ extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION = "RenoDX for
 BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   switch (fdw_reason) {
     case DLL_PROCESS_ATTACH:
-      DisableFrameGenerationInSettings();
       if (!reshade::register_addon(h_module)) return FALSE;
 
       renodx::mods::shader::allow_multiple_push_constants = true;
