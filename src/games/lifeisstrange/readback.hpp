@@ -29,7 +29,6 @@ struct ReadbackConfig {
   std::uint32_t mip_level = 0u;
   std::uint32_t layer = 0u;
   std::uint32_t sample_interval = 60u;
-  bool prefer_clone = true;
 };
 
 struct ReadbackState {
@@ -40,12 +39,9 @@ struct ReadbackState {
   bool has_peak = false;
   float peak_max_rgb = 0.f;
   bool warned_no_target = false;
-  bool warned_no_clone = false;
   bool warned_unsupported_format = false;
   bool warned_create_readback = false;
   bool warned_map_readback = false;
-  std::uint32_t view_activation_attempts = 0u;
-  bool logged_view_activation = false;
 };
 
 inline constexpr ReadbackConfig config = {};
@@ -126,105 +122,19 @@ inline void OnDrawn(reshade::api::command_list* cmd_list) {
   }
 
   reshade::api::resource source = {0u};
-  reshade::api::resource_view source_view = requested_view;
-  bool used_clone = false;
-  bool used_upgraded_original = false;
   bool found_view_info = false;
-  std::string resource_diagnostic;
   auto inspect_view = [&](const renodx::utils::resource::ResourceViewInfo& info) {
     found_view_info = true;
-    if (config.prefer_clone) {
-      const auto original_desc = info.original_resource.handle != 0u
-                                     ? renodx::utils::resource::GetResourceDesc(device, info.original_resource)
-                                     : reshade::api::resource_desc{};
-      if (info.clone_resource.handle != 0u && info.clone.handle != 0u) {
-        source = info.clone_resource;
-        source_view = info.clone;
-        used_clone = true;
-      } else if (info.original_resource.handle != 0u
-                 && original_desc.texture.format == reshade::api::format::r16g16b16a16_float) {
-        // D3D9 create-time upgrades keep the game's original view handle and replace
-        // the resource format before the game creates/binds that view.
-        source = info.original_resource;
-        source_view = requested_view;
-        used_upgraded_original = true;
-      }
-      if (!used_clone) {
-        const auto clone_desc = info.clone_resource.handle != 0u
-                                    ? renodx::utils::resource::GetResourceDesc(device, info.clone_resource)
-                                    : reshade::api::resource_desc{};
-        const auto native_view_desc = renodx::utils::resource::GetResourceViewDesc(device, requested_view);
-        std::stringstream message;
-        message << "LifeIsStrange Readback: 06A2 clone diagnostic"
-                << " view=0x" << std::hex << requested_view.handle
-                << " original=0x" << info.original_resource.handle
-                << " clone_view=0x" << info.clone.handle
-                << " clone_resource=0x" << info.clone_resource.handle
-                << std::dec
-                << " usage=" << info.usage
-                << " view_type=" << info.desc.type
-                << " view_format=" << info.desc.format
-                << " native_view_type=" << native_view_desc.type
-                << " native_view_format=" << native_view_desc.format
-                << " resource_type=" << original_desc.type
-                << " resource_format=" << original_desc.texture.format
-                << " size=" << original_desc.texture.width << "x" << original_desc.texture.height
-                << " clone_type=" << clone_desc.type
-                << " clone_format=" << clone_desc.texture.format
-                << " clone_size=" << clone_desc.texture.width << "x" << clone_desc.texture.height
-                << " upgraded_original=" << (used_upgraded_original ? "true" : "false")
-                << " clone_enabled=" << (info.clone_enabled ? "true" : "false")
-                << " clone_target=" << (info.clone_target != nullptr ? info.clone_target->name.c_str() : "none");
-        resource_diagnostic = message.str();
-      }
-    } else {
-      source = info.original_resource;
-    }
+    // Native D3D9 validation reads the resource after its create-time FP16 upgrade.
+    // The game's original view handle is retained; no view clone is required.
+    source = info.original_resource;
   };
   renodx::utils::resource::GetResourceViewInfo(requested_view, inspect_view);
 
-  if (config.prefer_clone && !used_clone && !used_upgraded_original && state.view_activation_attempts < 3u) {
-    ++state.view_activation_attempts;
-    const auto activated_view = renodx::utils::resource::upgrade::GetResourceViewClone(
-        requested_view,
-        {
-            .require_enabled = false,
-            .allow_create = true,
-            .activate = true,
-        });
-    if (activated_view.handle != 0u) {
-      found_view_info = false;
-      source = {0u};
-      source_view = requested_view;
-      used_clone = false;
-      resource_diagnostic.clear();
-      renodx::utils::resource::GetResourceViewInfo(requested_view, inspect_view);
-      if (used_clone && !state.logged_view_activation) {
-        state.logged_view_activation = true;
-        reshade::log::message(
-            reshade::log::level::info,
-            "LifeIsStrange Readback: activated 06A2 FP16 render-target view clone.");
-      }
-    }
-  }
-
   if (!found_view_info) {
-    LogWarningOnce(state.warned_no_target, "LifeIsStrange Readback: render target view is not tracked.");
-    return;
-  }
-  if (config.prefer_clone && !used_clone && !used_upgraded_original) {
-    LogWarningOnce(
-        state.warned_no_clone,
-        resource_diagnostic.empty()
-            ? "LifeIsStrange Readback: 06A2 render target has no active clone yet; waiting for the FP16 clone."
-            : resource_diagnostic);
-    return;
-  }
-  if (!config.prefer_clone) {
-    source_view = requested_view;
-  }
-  if (source.handle == 0u) {
-    source = renodx::utils::resource::GetResourceFromView(device, source_view);
+    // D3D9 view/resource tracking can be unavailable for a native view. The API
+    // fallback still resolves the resource without creating or activating a clone.
+    source = renodx::utils::resource::GetResourceFromView(device, requested_view);
   }
   if (source.handle == 0u) {
     LogWarningOnce(state.warned_no_target, "LifeIsStrange Readback: could not resolve the render target resource.");
@@ -335,8 +245,8 @@ inline void OnDrawn(reshade::api::command_list* cmd_list) {
   message << std::fixed << std::setprecision(6)
           << "LifeIsStrange Readback peak: shader=0x" << std::hex << std::uppercase << config.shader_hash
           << " rtv_index=" << std::dec << config.render_target_index
-          << " source=" << (used_clone ? "clone" : (used_upgraded_original ? "upgraded_original" : "original"))
-          << " format=r16g16b16a16_float"
+          << " source=" << (found_view_info ? "upgraded_original" : "api_original")
+          << " format=" << source_desc.texture.format
           << " size=" << width << "x" << height
           << " sample=" << state.sample_count
           << " current_max_rgb=" << current_max_rgb
