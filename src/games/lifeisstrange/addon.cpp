@@ -402,12 +402,24 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::register_event<reshade::addon_event::destroy_command_queue>(lifeisstrange::readback::OnDestroyCommandQueue);
 
       if (!initialized) {
-        if (auto shader = custom_shaders.find(lifeisstrange::readback::config.shader_hash); shader != custom_shaders.end()) {
-          shader->second.on_drawn = &lifeisstrange::readback::OnDrawn;
+        if (vanilla_shader_validation) {
+          // Keep this probe limited to the 06A2 replacement. The overlay shader
+          // and post-draw readback both request replay and obscure frame-flow failures.
+          custom_shaders.erase(0xFC2A0632u);
+        }
+
+        if (!vanilla_shader_validation) {
+          if (auto shader = custom_shaders.find(lifeisstrange::readback::config.shader_hash); shader != custom_shaders.end()) {
+            shader->second.on_drawn = &lifeisstrange::readback::OnDrawn;
+          } else {
+            reshade::log::message(
+                reshade::log::level::error,
+                "LifeIsStrange Readback: 06A2A81D shader entry was not generated; readback callback is disabled.");
+          }
         } else {
           reshade::log::message(
-              reshade::log::level::error,
-              "LifeIsStrange Readback: 06A2A81D shader entry was not generated; readback callback is disabled.");
+              reshade::log::level::info,
+              "LifeIsStrange Readback: disabled for vanilla 06A2 no-op frame-flow validation.");
         }
 
         renodx::mods::shader::force_pipeline_cloning = true;
@@ -476,7 +488,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
         reshade::log::message(
             reshade::log::level::info,
-            "LifeIsStrange RenoDX build 2026.09.23-vanilla-baseline-v11: complete 06A2 SDR shader, FP16/proxy isolated");
+            "LifeIsStrange RenoDX build 2026.09.23-vanilla-frameflow-v12: 06A2 no-op, overlay/readback isolated");
 
         {
           auto* setting = new renodx::utils::settings::Setting{
