@@ -6,7 +6,7 @@
     "xiaomantou"
   ],
   "status": "testing",
-  "summary": "Native DirectX 9 validation path; D3D11 proxy output is temporarily disabled.",
+  "summary": "Native DirectX 9 FP16 chain with D3D11 HDR10 display proxy validation.",
   "deploy": {
     "game_exe": "LifeIsStrange.exe",
     "process_name": "LifeIsStrange.exe",

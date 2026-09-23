@@ -1,4 +1,4 @@
-name: Life Is Strange DevKit x86
+name: Life Is Strange addon x86
 
 on:
   workflow_dispatch:
@@ -7,8 +7,6 @@ on:
       - codex/life-is-strange
     paths:
       - "src/games/lifeisstrange/**"
-      - "src/addons/devkit/**"
-      - "src/apps/mcp_bridge/**"
       - "src/mods/**"
       - "src/shaders/**"
       - "src/utils/**"
@@ -52,8 +50,8 @@ jobs:
       - name: Configure CMake (x86)
         run: cmake --preset clang-x86 -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
-      - name: Build Life Is Strange and DevKit
-        run: cmake --build --preset clang-x86-debug --target lifeisstrange devkit mcp_bridge --verbose
+      - name: Build Life Is Strange addon only
+        run: cmake --build --preset clang-x86-debug --target lifeisstrange --verbose
 
       - name: Show sccache stats
         if: always()
@@ -63,10 +61,10 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path build_output | Out-Null
-          Copy-Item build32\Debug\renodx-lifeisstrange.addon32,build32\Debug\renodx-devkit.addon32,build32\Debug\renodx-mcp-bridge.exe -Destination build_output -ErrorAction Stop
+          Copy-Item build32\Debug\renodx-lifeisstrange.addon32 -Destination build_output -ErrorAction Stop
 
       - name: Upload x86 artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: renodx-lifeisstrange-devkit-x86
+          name: renodx-lifeisstrange-x86
           path: build_output/

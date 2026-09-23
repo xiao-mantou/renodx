@@ -5,7 +5,7 @@
 
 #define ImTextureID ImU64
 
-// D3D9 create-time FP16 validation logging; the D3D11 display proxy remains disabled.
+// Native D3D9 FP16 chain and D3D11 HDR display proxy validation.
 #define DEBUG_LEVEL_0
 
 #include <deps/imgui/imgui.h>
@@ -440,9 +440,29 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             .usage_include = reshade::api::resource_usage::render_target,
             .name = "LifeIsStrange_06A2_Intermediate_R8G8B8A8",
         });
+        renodx::mods::swapchain::resource_upgrade_infos.push_back({
+            .old_format = reshade::api::format::r16g16b16a16_unorm,
+            .new_format = reshade::api::format::r16g16b16a16_float,
+            .dimensions = {
+                .width = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
+                .height = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
+                .depth = renodx::utils::resource::ResourceUpgradeInfo::ANY,
+            },
+            .usage_include = reshade::api::resource_usage::render_target,
+            .name = "LifeIsStrange_Intermediate_R16G16B16A16_UNORM",
+        });
+
+        // Native DX9 games use the D3D11 proxy for the final HDR swap. The
+        // existing DX11 fullscreen shaders consume the FP16 proxy resource.
+        renodx::mods::swapchain::set_color_space = false;
+        renodx::mods::swapchain::use_device_proxy = true;
+        renodx::mods::swapchain::swap_chain_proxy_vertex_shader = __swap_chain_proxy_vertex_shader;
+        renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader;
+        renodx::mods::swapchain::SetUseHDR10();
+
         reshade::log::message(
             reshade::log::level::info,
-            "LifeIsStrange RenoDX build 2026.09.23-readback-v7: 06A2 native create-time FP16 resource upgrade + original-resource readback (D3D11 proxy disabled)");
+            "LifeIsStrange RenoDX build 2026.09.23-readback-v8: native D3D9 FP16 chain + D3D11 HDR10 proxy + original-resource readback");
 
         {
           auto* setting = new renodx::utils::settings::Setting{
@@ -491,8 +511,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
               .key = "SwapChainEncoding",
               .binding = &shader_injection.swap_chain_encoding,
               .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-              // The replacement probe is SDR-only; enable HDR explicitly in a later pass.
-              .default_value = 0.f,
+              .default_value = 4.f,
               .label = "Encoding",
               .section = "Display Output",
               .labels = {"None", "SRGB", "2.2", "2.4", "HDR10", "scRGB"},
@@ -506,16 +525,14 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
               .is_visible = []() { return current_settings_mode >= 2; },
           };
           renodx::utils::settings::LoadSetting(renodx::utils::settings::global_name, setting);
-          bool is_hdr10 = setting->GetValue() == 4;
-          renodx::mods::swapchain::SetUseHDR10(is_hdr10);
-          renodx::mods::swapchain::use_resize_buffer = setting->GetValue() < 4;
-          shader_injection.swap_chain_encoding_color_space = is_hdr10 ? 1.f : 0.f;
+          renodx::mods::swapchain::SetUseHDR10();
+          renodx::mods::swapchain::use_resize_buffer = false;
+          renodx::mods::swapchain::set_color_space = false;
+          shader_injection.swap_chain_encoding_color_space = 1.f;
           settings.push_back(setting);
         }
 
-        // Keep the D3D11 display proxy out of this native D3D9 validation build.
-        renodx::mods::swapchain::use_device_proxy = false;
-        renodx::mods::swapchain::set_color_space = true;
+        renodx::mods::swapchain::use_device_proxy = true;
         renodx::mods::swapchain::device_proxy_wait_idle_source = false;
         renodx::mods::swapchain::device_proxy_wait_idle_destination = false;
 
@@ -569,6 +586,19 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   }
 
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
+  if (fdw_reason == DLL_PROCESS_ATTACH) {
+    // Make the first proxy validation deterministic even if an older SDR preset
+    // is still stored in ReShade.ini. These values affect only shader bindings.
+    renodx::utils::settings::UpdateSetting("ToneMapType", 0.f);
+    renodx::utils::settings::UpdateSetting("IntermediateDecoding", 1.f);
+    renodx::utils::settings::UpdateSetting("SwapChainDecoding", 1.f);
+    renodx::utils::settings::UpdateSetting("SwapChainGammaCorrection", 0.f);
+    renodx::utils::settings::UpdateSetting("SwapChainClampColorSpace", 0.f);
+    renodx::utils::settings::UpdateSetting("SwapChainEncoding", 4.f);
+    renodx::mods::swapchain::SetUseHDR10();
+    renodx::mods::swapchain::use_resize_buffer = false;
+    renodx::mods::swapchain::set_color_space = false;
+  }
   renodx::mods::swapchain::Use(fdw_reason, &shader_injection);
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
 
