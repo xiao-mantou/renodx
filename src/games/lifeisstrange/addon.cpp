@@ -387,6 +387,7 @@ const auto UPGRADE_TYPE_OUTPUT_RATIO = 2.f;
 const auto UPGRADE_TYPE_ANY = 3.f;
 
 bool initialized = false;
+constexpr bool vanilla_shader_validation = true;
 
 }  // namespace
 
@@ -475,7 +476,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
         reshade::log::message(
             reshade::log::level::info,
-            "LifeIsStrange RenoDX build 2026.09.23-readback-v10: native D3D9 FP16 chain + D3D11 HDR10 proxy + proxy view target fix");
+            "LifeIsStrange RenoDX build 2026.09.23-vanilla-baseline-v11: complete 06A2 SDR shader, FP16/proxy isolated");
 
         {
           auto* setting = new renodx::utils::settings::Setting{
@@ -589,6 +590,15 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           }
         }
 
+        if (vanilla_shader_validation) {
+          // Isolate the SM3 replacement from the FP16 resource and D3D11 proxy paths.
+          renodx::mods::swapchain::resource_upgrade_infos.clear();
+          renodx::mods::swapchain::use_device_proxy = false;
+          renodx::mods::swapchain::set_color_space = true;
+          renodx::mods::swapchain::device_proxy_wait_idle_source = false;
+          renodx::mods::swapchain::device_proxy_wait_idle_destination = false;
+        }
+
         initialized = true;
       }
 
@@ -613,6 +623,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     renodx::mods::swapchain::SetUseHDR10();
     renodx::mods::swapchain::use_resize_buffer = false;
     renodx::mods::swapchain::set_color_space = false;
+    if (vanilla_shader_validation) {
+      renodx::mods::swapchain::resource_upgrade_infos.clear();
+      renodx::mods::swapchain::use_device_proxy = false;
+      renodx::mods::swapchain::set_color_space = true;
+    }
   }
   renodx::mods::swapchain::Use(fdw_reason, &shader_injection);
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
