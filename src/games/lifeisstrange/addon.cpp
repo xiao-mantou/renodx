@@ -462,7 +462,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
         reshade::log::message(
             reshade::log::level::info,
-            "LifeIsStrange RenoDX build 2026.09.23-readback-v8: native D3D9 FP16 chain + D3D11 HDR10 proxy + original-resource readback");
+            "LifeIsStrange RenoDX build 2026.09.23-readback-v9: native D3D9 FP16 chain + D3D11 HDR10 proxy + source wait-idle");
 
         {
           auto* setting = new renodx::utils::settings::Setting{
@@ -533,7 +533,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         }
 
         renodx::mods::swapchain::use_device_proxy = true;
-        renodx::mods::swapchain::device_proxy_wait_idle_source = false;
+        // DX9 StretchRect is submitted asynchronously. Wait before publishing
+        // the shared resource to the D3D11 proxy so it cannot consume a partial frame.
+        renodx::mods::swapchain::device_proxy_wait_idle_source = true;
         renodx::mods::swapchain::device_proxy_wait_idle_destination = false;
 
         for (const auto& [key, format] : UPGRADE_TARGETS) {
