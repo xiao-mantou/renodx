@@ -128,18 +128,28 @@ inline void OnDrawn(reshade::api::command_list* cmd_list) {
   reshade::api::resource source = {0u};
   reshade::api::resource_view source_view = requested_view;
   bool used_clone = false;
+  bool used_upgraded_original = false;
   bool found_view_info = false;
-  std::string clone_diagnostic;
+  std::string resource_diagnostic;
   auto inspect_view = [&](const renodx::utils::resource::ResourceViewInfo& info) {
     found_view_info = true;
     if (config.prefer_clone) {
-      source = info.clone_resource;
-      source_view = info.clone;
-      used_clone = source.handle != 0u && source_view.handle != 0u;
+      const auto original_desc = info.original_resource.handle != 0u
+                                     ? renodx::utils::resource::GetResourceDesc(device, info.original_resource)
+                                     : reshade::api::resource_desc{};
+      if (info.clone_resource.handle != 0u && info.clone.handle != 0u) {
+        source = info.clone_resource;
+        source_view = info.clone;
+        used_clone = true;
+      } else if (info.original_resource.handle != 0u
+                 && original_desc.texture.format == reshade::api::format::r16g16b16a16_float) {
+        // D3D9 create-time upgrades keep the game's original view handle and replace
+        // the resource format before the game creates/binds that view.
+        source = info.original_resource;
+        source_view = requested_view;
+        used_upgraded_original = true;
+      }
       if (!used_clone) {
-        const auto original_desc = info.original_resource.handle != 0u
-                                       ? renodx::utils::resource::GetResourceDesc(device, info.original_resource)
-                                       : reshade::api::resource_desc{};
         const auto clone_desc = info.clone_resource.handle != 0u
                                     ? renodx::utils::resource::GetResourceDesc(device, info.clone_resource)
                                     : reshade::api::resource_desc{};
@@ -162,9 +172,10 @@ inline void OnDrawn(reshade::api::command_list* cmd_list) {
                 << " clone_type=" << clone_desc.type
                 << " clone_format=" << clone_desc.texture.format
                 << " clone_size=" << clone_desc.texture.width << "x" << clone_desc.texture.height
+                << " upgraded_original=" << (used_upgraded_original ? "true" : "false")
                 << " clone_enabled=" << (info.clone_enabled ? "true" : "false")
                 << " clone_target=" << (info.clone_target != nullptr ? info.clone_target->name.c_str() : "none");
-        clone_diagnostic = message.str();
+        resource_diagnostic = message.str();
       }
     } else {
       source = info.original_resource;
@@ -172,7 +183,7 @@ inline void OnDrawn(reshade::api::command_list* cmd_list) {
   };
   renodx::utils::resource::GetResourceViewInfo(requested_view, inspect_view);
 
-  if (config.prefer_clone && !used_clone && state.view_activation_attempts < 3u) {
+  if (config.prefer_clone && !used_clone && !used_upgraded_original && state.view_activation_attempts < 3u) {
     ++state.view_activation_attempts;
     const auto activated_view = renodx::utils::resource::upgrade::GetResourceViewClone(
         requested_view,
@@ -186,7 +197,7 @@ inline void OnDrawn(reshade::api::command_list* cmd_list) {
       source = {0u};
       source_view = requested_view;
       used_clone = false;
-      clone_diagnostic.clear();
+      resource_diagnostic.clear();
       renodx::utils::resource::GetResourceViewInfo(requested_view, inspect_view);
       if (used_clone && !state.logged_view_activation) {
         state.logged_view_activation = true;
@@ -201,12 +212,12 @@ inline void OnDrawn(reshade::api::command_list* cmd_list) {
     LogWarningOnce(state.warned_no_target, "LifeIsStrange Readback: render target view is not tracked.");
     return;
   }
-  if (config.prefer_clone && !used_clone) {
+  if (config.prefer_clone && !used_clone && !used_upgraded_original) {
     LogWarningOnce(
         state.warned_no_clone,
-        clone_diagnostic.empty()
+        resource_diagnostic.empty()
             ? "LifeIsStrange Readback: 06A2 render target has no active clone yet; waiting for the FP16 clone."
-            : clone_diagnostic);
+            : resource_diagnostic);
     return;
   }
   if (!config.prefer_clone) {
@@ -324,7 +335,7 @@ inline void OnDrawn(reshade::api::command_list* cmd_list) {
   message << std::fixed << std::setprecision(6)
           << "LifeIsStrange Readback peak: shader=0x" << std::hex << std::uppercase << config.shader_hash
           << " rtv_index=" << std::dec << config.render_target_index
-          << " source=" << (used_clone ? "clone" : "original")
+          << " source=" << (used_clone ? "clone" : (used_upgraded_original ? "upgraded_original" : "original"))
           << " format=r16g16b16a16_float"
           << " size=" << width << "x" << height
           << " sample=" << state.sample_count

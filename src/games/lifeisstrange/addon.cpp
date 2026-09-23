@@ -5,7 +5,7 @@
 
 #define ImTextureID ImU64
 
-// Temporary D3D9 clone-failure diagnostics; remove after the view path is identified.
+// Temporary D3D9 create-time resource-upgrade diagnostics.
 #define DEBUG_LEVEL_0
 
 #include <deps/imgui/imgui.h>
@@ -433,7 +433,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         renodx::mods::swapchain::resource_upgrade_infos.push_back({
             .old_format = reshade::api::format::b8g8r8a8_unorm,
             .new_format = reshade::api::format::r16g16b16a16_float,
-            .use_resource_view_cloning = true,
             .dimensions = {
                 .width = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
                 .height = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
@@ -445,7 +444,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         renodx::mods::swapchain::resource_upgrade_infos.push_back({
             .old_format = reshade::api::format::r8g8b8a8_unorm,
             .new_format = reshade::api::format::r16g16b16a16_float,
-            .use_resource_view_cloning = true,
             .dimensions = {
                 .width = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
                 .height = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
@@ -456,7 +454,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         });
         reshade::log::message(
             reshade::log::level::info,
-            "LifeIsStrange RenoDX build 2026.09.23-readback-v5: 06A2 FP16 clone + readback enabled (D3D9 view-failure diagnostics, on-demand view activation, final swapchain proxy disabled)");
+            "LifeIsStrange RenoDX build 2026.09.23-readback-v6: 06A2 create-time FP16 resource upgrade + readback enabled (native D3D9, D3D11 proxy disabled)");
 
         {
           auto* setting = new renodx::utils::settings::Setting{
