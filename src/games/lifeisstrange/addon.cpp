@@ -593,6 +593,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         if (vanilla_shader_validation) {
           // Isolate the SM3 replacement from the FP16 resource and D3D11 proxy paths.
           renodx::mods::swapchain::resource_upgrade_infos.clear();
+          renodx::mods::swapchain::swap_chain_upgrade_targets.clear();
+          renodx::mods::swapchain::use_resource_cloning = false;
           renodx::mods::swapchain::use_device_proxy = false;
           renodx::mods::swapchain::set_color_space = true;
           renodx::mods::swapchain::device_proxy_wait_idle_source = false;
@@ -625,6 +627,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     renodx::mods::swapchain::set_color_space = false;
     if (vanilla_shader_validation) {
       renodx::mods::swapchain::resource_upgrade_infos.clear();
+      renodx::mods::swapchain::swap_chain_upgrade_targets.clear();
+      renodx::mods::swapchain::use_resource_cloning = false;
       renodx::mods::swapchain::use_device_proxy = false;
       renodx::mods::swapchain::set_color_space = true;
     }
