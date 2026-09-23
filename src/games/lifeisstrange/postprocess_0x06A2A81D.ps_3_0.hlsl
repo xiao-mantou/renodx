@@ -29,7 +29,7 @@ static const float4 c4 = float4(0.33399999f, -0.66600001f, 0.66600001f, 2.f);
 static const float4 c5 = float4(0.0070000002f, 0.0035000001f, -0.36000001f, 15.f);
 static const float4 c6 = float4(0.33399999f, 0.f, -0.33300000f, 0.66600001f);
 static const float4 c22 = float4(4.f, 0.33333001f, -3.f, 65504.f);
-static const float4 c23 = float4(0.30000001f, 0.58999997f, 0.10999999f, 0.0625f);
+static const float4 c23 = float4(0.300000012f, 0.589999974f, 0.109999999f, 0.0625f);
 static const float4 c24 = float4(1.f, 2.f, 3.f, -1.f);
 static const float4 c25 = float4(0.25f, 0.0078125f, 0.001953125f, 0.064453125f);
 static const float4 c26 = float4(14.9998999f, 0.05859375f, 0.234375f, 0.f);
@@ -123,7 +123,7 @@ float4 main(PS_IN i) : COLOR {
   r0 = r0 * c22.y + r1.w;
   r1 = r1.zzxy + c1.x;
 
-  r2.yz = max(i.texcoord1.xz, HalfResMaskRect.xx);
+  r2.yz = max(i.texcoord1.zw, HalfResMaskRect.xy);
   r3.xy = min(HalfResMaskRect.zw, r2.yz);
   r3 = tex2D(LowResPostProcessBuffer, r3.xy);
   r4 = r3.zzxy * c22.x;
@@ -144,7 +144,7 @@ float4 main(PS_IN i) : COLOR {
   r3.w = rcp(r1.y);
   r3.xy = rcp(r1.z);
   r0 = saturate(r0 * r3);
-  r1.xyw = r0.xwzz * c26.xzzy;
+  r1.xyw = r0.xwz * c26.xzy;
   r0.x = frac(r1.x);
   r0.x = -r0.x + r1.x;
   r0.y = r0.y * c5.w - r0.x;
@@ -154,28 +154,29 @@ float4 main(PS_IN i) : COLOR {
   r3 = 1.f - step(0.f, r3);
   r4.xy = c1.xy;
   r5 = DepthDistances.xxyz * -r4.yxxx + r2.x;
-  r0.xzw = saturate(r2.x * DepthTransition.w - DepthTransition.xyyz);
+  r0.xzw = saturate(r2.x * DepthTransition.w - DepthTransition.xyz);
   r2 = r3 * step(0.f, r5);
-  r1.z = dot(r2.yzww, c24);
-  r0.x = dot(r2, r0.xzww);
+  r1.z = dot(r2.yzw, c24.xyz);
+  r0.x = dot(r2.xyz, r0.xzw);
   r0.z = c1.x + r1.z;
   r2.x = r1.z * c25.x + c25.y;
   r3.x = r0.z * c25.x + c25.y;
-  r3.yz = c25.xz;
+  r3.yz = c25.zw;
   r3 = r1.xyxy + r3.yxzx;
   r5 = tex2D(ColorGradingLUT, r3.xy);
   r3 = tex2D(ColorGradingLUT, r3.zw);
   r6 = lerp(r5, r3, r0.y);
-  r2.yz = c25.xz;
+  r2.yz = c25.zw;
   r1 = r1.xyxy + r2.yxzx;
   r2 = tex2D(ColorGradingLUT, r1.xy);
   r1 = tex2D(ColorGradingLUT, r1.zw);
   r3 = lerp(r2, r1, r0.y);
-  r1 = lerp(r6, r3, r0.x);
+  // ps_3_0 lrp r1, r0.x, r6, r3 expands to lerp(r3, r6, r0.x).
+  r1 = lerp(r3, r6, r0.x);
 
   r0 = tex2D(DNEVignetTexture, i.texcoord2.zw);
   r0.x = saturate(dot(r0, DNEVignetMaskFactors));
-  r0.yzw = DNEVignetColor.xxy - r4.x;
+  r0.yzw = DNEVignetColor.xyz - r4.x;
   r0.xyz = r0.x * r0.yzw + c1.x;
   r2.x = c22.x;
   r2.xy = i.texcoord2.zw * r2.x + DNEImageGrainParameter.xy;
