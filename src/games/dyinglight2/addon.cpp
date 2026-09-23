@@ -233,9 +233,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::swapchain::v2::resource_upgrade_infos.push_back({
         .old_format = reshade::api::format::r8g8b8a8_typeless,
         .new_format = reshade::api::format::r16g16b16a16_float,
-        // DLSS Off can render this scene target at the internal resolution,
-        // which may differ from the swapchain dimensions.
-        .ignore_size = true,
+        // Keep the RAR/TGH baseline's exact resource matching for the first
+        // DX12 validation pass. DLSS Off size compatibility is handled later.
+        .ignore_size = false,
         .use_resource_view_cloning = true,
         .use_resource_view_hot_swap = false,
                 .aspect_ratio = renodx::mods::swapchain::v2::ResourceUpgradeInfo::ANY,
