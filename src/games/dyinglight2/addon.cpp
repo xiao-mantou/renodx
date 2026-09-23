@@ -6,13 +6,6 @@
 #define ImTextureID ImU64
 #define DEBUG_LEVEL_0
 
-#include <cstdlib>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
-#include <regex>
-#include <string>
-
 #include <embed/shaders.h>
 
 #include <deps/imgui/imgui.h>
@@ -194,32 +187,7 @@ void OnPresetOff() {
   });
 }
 
-void DisableFrameGenerationInSettings() {
-  const char* user_profile = std::getenv("USERPROFILE");
-  if (user_profile == nullptr || user_profile[0] == '\0') return;
-
-  const std::filesystem::path settings_path =
-      std::filesystem::path(user_profile) / "Documents" / "Dying Light 2" / "out" / "settings" / "video.scr";
-  std::ifstream input(settings_path, std::ios::binary);
-  if (!input) return;
-
-  const std::string source((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-  const std::regex enabled_frame_generation(
-      R"((^|[\r\n])([ \t]*)FrameGeneration\([ \t]*[1-9][0-9]*[ \t]*,))");
-  const std::string updated = std::regex_replace(
-      source, enabled_frame_generation, "$1$2FrameGeneration(0,");
-  if (updated == source) return;
-
-  std::ofstream output(settings_path, std::ios::binary | std::ios::trunc);
-  if (!output) return;
-  output.write(updated.data(), static_cast<std::streamsize>(updated.size()));
-  reshade::log::message(reshade::log::level::info, "DL2 FrameGeneration disabled in video.scr; restart the game to apply it.");
-}
-
 void OnInitDevice(reshade::api::device* device) {
-  // File I/O and regex initialization are deferred until after DLL attach.
-  DisableFrameGenerationInSettings();
-
   if (device->get_api() == reshade::api::device_api::d3d11) {
     renodx::mods::shader::expected_constant_buffer_space = 0;
         renodx::mods::swapchain::v2::expected_constant_buffer_space = 0;
