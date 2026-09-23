@@ -123,11 +123,17 @@ inline void OnDrawn(reshade::api::command_list* cmd_list) {
 
   reshade::api::resource source = {0u};
   bool found_view_info = false;
+  bool source_is_view_clone = false;
   auto inspect_view = [&](const renodx::utils::resource::ResourceViewInfo& info) {
     found_view_info = true;
-    // Native D3D9 validation reads the resource after its create-time FP16 upgrade.
-    // The game's original view handle is retained; no view clone is required.
-    source = info.original_resource;
+    // Proxy mode can rewrite the bound RTV to an active view clone while the
+    // original view handle remains in the command-list tracker.
+    if (info.clone_enabled && info.clone_resource.handle != 0u) {
+      source = info.clone_resource;
+      source_is_view_clone = true;
+    } else {
+      source = info.original_resource;
+    }
   };
   renodx::utils::resource::GetResourceViewInfo(requested_view, inspect_view);
 
@@ -245,7 +251,7 @@ inline void OnDrawn(reshade::api::command_list* cmd_list) {
   message << std::fixed << std::setprecision(6)
           << "LifeIsStrange Readback peak: shader=0x" << std::hex << std::uppercase << config.shader_hash
           << " rtv_index=" << std::dec << config.render_target_index
-          << " source=" << (found_view_info ? "upgraded_original" : "api_original")
+          << " source=" << (source_is_view_clone ? "active_view_clone" : (found_view_info ? "original" : "api_original"))
           << " format=" << source_desc.texture.format
           << " size=" << width << "x" << height
           << " sample=" << state.sample_count

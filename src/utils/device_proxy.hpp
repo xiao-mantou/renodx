@@ -1620,7 +1620,14 @@ static void OnPresent(
       shared_resource_source.clone_desc = resource_info->clone_desc;
       shared_resource_source.initial_state = resource_info->initial_state;
     });
-    renodx::utils::resource::upgrade::UpdateResourceViewsCloneState(resource_view_handles, true, true);
+    // The proxy target is selected lazily on the first host present. Existing
+    // backbuffer views must receive the same target before they are rewritten;
+    // otherwise RewriteRenderTargets can keep binding a stale/non-proxy clone.
+    renodx::utils::resource::upgrade::UpdateResourceViewsCloneState(
+        resource_view_handles,
+        true,
+        true,
+        &proxy_clone_target);
     if (needs_clone_creation) {
       swapchain_clone = renodx::utils::resource::upgrade::CloneResource(current_back_buffer);
       renodx::utils::resource::GetResourceInfo(current_back_buffer, [&](const renodx::utils::resource::ResourceInfo& resource_info) {

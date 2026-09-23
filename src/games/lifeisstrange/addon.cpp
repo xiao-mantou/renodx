@@ -452,6 +452,19 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             .name = "LifeIsStrange_Intermediate_R16G16B16A16_UNORM",
         });
 
+        // Match the DX9 proxy path used by Need for Speed: The Run: keep the
+        // present backbuffer on an FP16 view clone with a stable view handle.
+        renodx::mods::swapchain::swapchain_proxy_compatibility_mode = false;
+        renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
+            .old_format = reshade::api::format::b8g8r8a8_unorm,
+            .new_format = reshade::api::format::r16g16b16a16_float,
+            .ignore_size = true,
+            .use_resource_view_cloning = true,
+            .use_resource_view_hot_swap = true,
+            .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
+            .usage_include = reshade::api::resource_usage::present,
+        });
+
         // Native DX9 games use the D3D11 proxy for the final HDR swap. The
         // existing DX11 fullscreen shaders consume the FP16 proxy resource.
         renodx::mods::swapchain::set_color_space = false;
@@ -462,7 +475,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
         reshade::log::message(
             reshade::log::level::info,
-            "LifeIsStrange RenoDX build 2026.09.23-readback-v9: native D3D9 FP16 chain + D3D11 HDR10 proxy + source wait-idle");
+            "LifeIsStrange RenoDX build 2026.09.23-readback-v10: native D3D9 FP16 chain + D3D11 HDR10 proxy + proxy view target fix");
 
         {
           auto* setting = new renodx::utils::settings::Setting{
