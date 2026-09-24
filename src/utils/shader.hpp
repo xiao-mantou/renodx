@@ -45,6 +45,19 @@ static bool use_replace_async = false;
 static bool use_shader_cache = false;
 static std::atomic_size_t runtime_replacement_count = 0;
 
+// Optional game-specific gate used before a replacement pipeline is created.
+// This is intentionally null by default so existing addons keep their behavior.
+using ReplacementFilter = bool (*)(reshade::api::device*, uint32_t);
+static ReplacementFilter replacement_filter = nullptr;
+
+inline void SetReplacementFilter(ReplacementFilter filter) {
+  replacement_filter = filter;
+}
+
+inline bool IsReplacementAllowed(reshade::api::device* device, uint32_t shader_hash) {
+  return replacement_filter == nullptr || replacement_filter(device, shader_hash);
+}
+
 enum ShaderStageIndex : std::uint8_t {
   VERTEX_INDEX = 0,
   PIXEL_INDEX,
@@ -259,8 +272,9 @@ struct PipelineShaderDetails {
       } else {
         if (!shared.data->use_replace_async) {
           shared.data->runtime_replacements.if_contains(
-              {device, shader_hash},
-              [&](const std::pair<const std::pair<reshade::api::device*, uint32_t>, std::span<const uint8_t>>& pair) {
+          {device, shader_hash},
+          [&](const std::pair<const std::pair<reshade::api::device*, uint32_t>, std::span<const uint8_t>>& pair) {
+                if (!IsReplacementAllowed(device, shader_hash)) return;
                 if (replacement_subobjects == nullptr) {
                   replacement_subobjects = renodx::utils::pipeline::ClonePipelineSubObjects(subobjects, subobject_count);
                 }
@@ -535,6 +549,7 @@ static bool BuildReplacementPipeline(PipelineShaderDetails* details) {
   reshade::api::pipeline_subobject* replacement_subobjects = nullptr;
   details->replacement_stages = static_cast<reshade::api::pipeline_stage>(0);
   for (const auto& info : details->subobject_shaders) {
+    if (!IsReplacementAllowed(details->device, info.shader_hash)) continue;
     shared.data->runtime_replacements.if_contains(
         {details->device, info.shader_hash},
         [&](const std::pair<const std::pair<reshade::api::device*, uint32_t>, std::span<const uint8_t>>& new_shader_pair) {
@@ -898,6 +913,7 @@ static bool OnCreatePipeline(
       shared.data->compile_time_replacements.if_contains(
           {device, shader_hash},
           [&](const std::pair<const std::pair<reshade::api::device*, uint32_t>, std::span<const uint8_t>>& pair) {
+            if (!IsReplacementAllowed(device, shader_hash)) return;
             const auto replacement = pair.second;
             auto new_size = replacement.size();
 

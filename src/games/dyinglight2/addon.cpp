@@ -200,6 +200,15 @@ void OnInitDevice(reshade::api::device* device) {
   }
 }
 
+bool AllowD3D12Replacement(reshade::api::device* device, uint32_t shader_hash) {
+  if (!renodx::mods::shader::disable_custom_replacements_d3d12
+      || device == nullptr
+      || device->get_api() != reshade::api::device_api::d3d12) {
+    return true;
+  }
+  return shader_hash == renodx::mods::shader::d3d12_custom_replacement_allow_hash;
+}
+
 }  // namespace
 
 extern "C" __declspec(dllexport) constexpr const char* NAME = "RenoDX";
@@ -215,6 +224,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::shader::disable_custom_replacements_d3d12 = true;
       renodx::mods::shader::disable_shader_injection_d3d12 = false;
       renodx::mods::shader::d3d12_custom_replacement_allow_hash = 0x268BAB6D;
+      renodx::utils::shader::SetReplacementFilter(&AllowD3D12Replacement);
       renodx::utils::shader::use_replace_on_bind = false;
 
       renodx::mods::swapchain::v2::SetUseHDR10(true);
