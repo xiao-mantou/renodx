@@ -389,6 +389,9 @@ const auto UPGRADE_TYPE_ANY = 3.f;
 bool initialized = false;
 constexpr bool vanilla_shader_validation = true;
 constexpr bool readback_validation = true;
+// Stage 1 isolates the callback from resource replacement. Enable only after
+// the callback-only build is confirmed stable in the game.
+constexpr bool readback_resource_upgrade = false;
 
 }  // namespace
 
@@ -618,6 +621,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           // destroy and recreate RTV handles while a frame is being rebuilt.
           // The final SDR swap chain and D3D11 proxy remain disabled in this pass.
           renodx::mods::swapchain::use_resource_cloning = false;
+          if (!readback_resource_upgrade) {
+            renodx::mods::swapchain::resource_upgrade_infos.clear();
+          }
           renodx::mods::swapchain::swap_chain_upgrade_targets.clear();
           renodx::mods::swapchain::use_device_proxy = false;
           renodx::mods::swapchain::set_color_space = true;
@@ -657,6 +663,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::swapchain::set_color_space = true;
     } else if (readback_validation) {
       renodx::mods::swapchain::use_resource_cloning = false;
+      if (!readback_resource_upgrade) {
+        renodx::mods::swapchain::resource_upgrade_infos.clear();
+      }
       renodx::mods::swapchain::swap_chain_upgrade_targets.clear();
       renodx::mods::swapchain::use_device_proxy = false;
       renodx::mods::swapchain::set_color_space = true;
