@@ -392,7 +392,7 @@ constexpr bool vanilla_shader_validation = false;
 constexpr bool readback_validation = false;
 constexpr bool readback_resource_upgrade = false;
 constexpr bool intermediate_upgrade_validation = true;
-constexpr bool dx11_proxy_validation = false;
+constexpr bool dx11_proxy_validation = true;
 constexpr bool isolate_06a2_shader = true;
 
 }  // namespace
@@ -495,7 +495,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
         reshade::log::message(
             reshade::log::level::info,
-            "LifeIsStrange RenoDX build 2026.09.24-intermediate-v15: 06A2 replacement + FP16 intermediate upgrade, DX11 proxy disabled");
+            "LifeIsStrange RenoDX build 2026.09.24-hdr-proxy-v16: 06A2 replacement + FP16 intermediate upgrade + DX11 proxy");
 
         {
           auto* setting = new renodx::utils::settings::Setting{
