@@ -270,6 +270,13 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
     renodx::mods::swapchain::v2::Use(fdw_reason, &shader_injection);
+  if (fdw_reason == DLL_PROCESS_ATTACH) {
+    if (auto shader = custom_shaders.find(0xF34DDC49); shader != custom_shaders.end()) {
+      shader->second.on_replace = [](reshade::api::command_list* cmd_list) {
+        return cmd_list->get_device()->get_api() != reshade::api::device_api::d3d12;
+      };
+    }
+  }
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
 
   return TRUE;
