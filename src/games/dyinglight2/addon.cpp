@@ -206,7 +206,9 @@ bool AllowD3D12Replacement(reshade::api::device* device, uint32_t shader_hash) {
       || device->get_api() != reshade::api::device_api::d3d12) {
     return true;
   }
-  return shader_hash == renodx::mods::shader::d3d12_custom_replacement_allow_hash;
+  // Keep the two core HDR bridge stages together for the combined-path A/B.
+  return shader_hash == renodx::mods::shader::d3d12_custom_replacement_allow_hash
+         || shader_hash == 0x268BAB6D;
 }
 
 }  // namespace
