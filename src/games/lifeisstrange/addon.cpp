@@ -7,6 +7,7 @@
 
 // Native D3D9 FP16 chain and D3D11 HDR display proxy validation.
 #define DEBUG_LEVEL_0
+#define RENODX_LIFEISSTRANGE_RESOURCE_UPGRADE_DIAGNOSTIC
 
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>

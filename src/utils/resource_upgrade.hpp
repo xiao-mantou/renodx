@@ -991,6 +991,46 @@ struct CloneUpgradeTargetMatch {
   bool all_completed = false;
 };
 
+#if defined(RENODX_LIFEISSTRANGE_RESOURCE_UPGRADE_DIAGNOSTIC)
+inline bool IsLifeIsStrangeIntermediateCandidate(const reshade::api::resource_desc& desc) {
+  if (desc.type != reshade::api::resource_type::texture_2d
+      && desc.type != reshade::api::resource_type::surface) {
+    return false;
+  }
+  if (desc.texture.width != 1920 || desc.texture.height != 1080) return false;
+  return desc.texture.format == reshade::api::format::b8g8r8a8_unorm
+         || desc.texture.format == reshade::api::format::r8g8b8a8_unorm;
+}
+
+inline void LogLifeIsStrangeIntermediateDiagnostic(
+    const char* stage,
+    const reshade::api::resource_desc& desc,
+    const reshade::api::resource_desc& back_buffer_desc,
+    const reshade::api::resource_usage state,
+    const bool resource_upgrade_finished,
+    const bool cloning_enabled,
+    const renodx::utils::resource::ResourceUpgradeInfo* target = nullptr,
+    const bool target_match = false) {
+  std::stringstream s;
+  s << "LifeIsStrange resource diagnostic [" << stage << "]"
+    << ", format=" << desc.texture.format
+    << ", size=" << desc.texture.width << "x" << desc.texture.height
+    << ", usage=0x" << std::hex << static_cast<uint32_t>(desc.usage)
+    << ", state=0x" << static_cast<uint32_t>(state) << std::dec
+    << ", backbuffer=" << back_buffer_desc.texture.width << "x" << back_buffer_desc.texture.height
+    << ", backbuffer_format=" << back_buffer_desc.texture.format
+    << ", finished=" << resource_upgrade_finished
+    << ", cloning=" << cloning_enabled
+    << ", target_match=" << target_match;
+  if (target != nullptr) {
+    s << ", target_old=" << target->old_format
+      << ", target_new=" << target->new_format
+      << ", target_hot_swap=" << target->use_resource_view_hot_swap;
+  }
+  reshade::log::message(reshade::log::level::info, s.str().c_str());
+}
+#endif
+
 inline CloneUpgradeTargetMatch FindCloneUpgradeTarget(
     DeviceData* data,
     const reshade::api::resource_desc& desc,
@@ -1009,10 +1049,26 @@ inline CloneUpgradeTargetMatch FindCloneUpgradeTarget(
   for (uint32_t i = 0; i < len; i++) {
     auto* target = &upgrade_infos[i];
     if (upgrade_completed[i].load(std::memory_order_acquire)) continue;
-    if (
+    const bool target_matches =
         (target->use_resource_view_cloning
          || target->use_resource_view_cloning_and_upgrade)
-        && target->CheckResourceDesc(desc, data->back_buffer_desc, initial_state)) {
+        && target->CheckResourceDesc(desc, data->back_buffer_desc, initial_state);
+#if defined(RENODX_LIFEISSTRANGE_RESOURCE_UPGRADE_DIAGNOSTIC)
+    if (IsLifeIsStrangeIntermediateCandidate(desc)
+        && (target->old_format == reshade::api::format::b8g8r8a8_unorm
+            || target->old_format == reshade::api::format::r8g8b8a8_unorm)) {
+      LogLifeIsStrangeIntermediateDiagnostic(
+          "FindCloneUpgradeTarget",
+          desc,
+          data->back_buffer_desc,
+          initial_state,
+          data->resource_upgrade_finished.load(std::memory_order_acquire),
+          shared.data->use_resource_cloning,
+          target,
+          target_matches);
+    }
+#endif
+    if (target_matches) {
       const uint32_t counted = upgrade_counts[i].fetch_add(1u, std::memory_order_acq_rel) + 1u;
 #ifdef DEBUG_LEVEL_1
       std::stringstream s;
@@ -1074,7 +1130,19 @@ static bool OnCreateResource(
 
   auto* private_data = renodx::utils::data::Get<DeviceData>(device);
   if (private_data == nullptr) return false;
-  if (private_data->resource_upgrade_finished.load(std::memory_order_acquire)) return false;
+  const bool resource_upgrade_finished = private_data->resource_upgrade_finished.load(std::memory_order_acquire);
+#if defined(RENODX_LIFEISSTRANGE_RESOURCE_UPGRADE_DIAGNOSTIC)
+  if (IsLifeIsStrangeIntermediateCandidate(desc)) {
+    LogLifeIsStrangeIntermediateDiagnostic(
+        "OnCreateResource",
+        desc,
+        private_data->back_buffer_desc,
+        initial_state,
+        resource_upgrade_finished,
+        shared.data->use_resource_cloning);
+  }
+#endif
+  if (resource_upgrade_finished) return false;
 
   const auto& device_back_buffer_desc = private_data->back_buffer_desc;
   if (device_back_buffer_desc.type == reshade::api::resource_type::unknown) {
@@ -1301,6 +1369,18 @@ inline void OnInitResourceInfo(renodx::utils::resource::ResourceInfo* resource_i
   auto& resource = resource_info->resource;
   auto& initial_state = resource_info->initial_state;
   bool changed = false;
+
+#if defined(RENODX_LIFEISSTRANGE_RESOURCE_UPGRADE_DIAGNOSTIC)
+  if (IsLifeIsStrangeIntermediateCandidate(desc)) {
+    LogLifeIsStrangeIntermediateDiagnostic(
+        "OnInitResourceInfo",
+        desc,
+        private_data->back_buffer_desc,
+        initial_state,
+        private_data->resource_upgrade_finished.load(std::memory_order_acquire),
+        shared.data->use_resource_cloning);
+  }
+#endif
 
   if (local_applied_target != nullptr) {
     changed = true;
