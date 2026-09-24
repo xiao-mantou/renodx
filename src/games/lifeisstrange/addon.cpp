@@ -614,7 +614,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           renodx::mods::swapchain::device_proxy_wait_idle_destination = false;
         } else if (readback_validation) {
           // Keep only intermediate render-target upgrades for the readback probe.
+          // Use create-time upgrades instead of runtime view cloning: D3D9 can
+          // destroy and recreate RTV handles while a frame is being rebuilt.
           // The final SDR swap chain and D3D11 proxy remain disabled in this pass.
+          renodx::mods::swapchain::use_resource_cloning = false;
           renodx::mods::swapchain::swap_chain_upgrade_targets.clear();
           renodx::mods::swapchain::use_device_proxy = false;
           renodx::mods::swapchain::set_color_space = true;
@@ -653,6 +656,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::swapchain::use_device_proxy = false;
       renodx::mods::swapchain::set_color_space = true;
     } else if (readback_validation) {
+      renodx::mods::swapchain::use_resource_cloning = false;
       renodx::mods::swapchain::swap_chain_upgrade_targets.clear();
       renodx::mods::swapchain::use_device_proxy = false;
       renodx::mods::swapchain::set_color_space = true;
