@@ -387,10 +387,13 @@ const auto UPGRADE_TYPE_OUTPUT_RATIO = 2.f;
 const auto UPGRADE_TYPE_ANY = 3.f;
 
 bool initialized = false;
-constexpr bool vanilla_shader_validation = true;
+constexpr bool vanilla_shader_validation = false;
 // Disabled until readback can be implemented without forcing D3D9 draw replay.
 constexpr bool readback_validation = false;
 constexpr bool readback_resource_upgrade = false;
+constexpr bool intermediate_upgrade_validation = true;
+constexpr bool dx11_proxy_validation = false;
+constexpr bool isolate_06a2_shader = true;
 
 }  // namespace
 
@@ -407,7 +410,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       }
 
       if (!initialized) {
-        if (vanilla_shader_validation || readback_validation) {
+        if (vanilla_shader_validation || readback_validation || isolate_06a2_shader) {
           // Keep this probe limited to the 06A2 replacement.
           custom_shaders.erase(0xFC2A0632u);
         }
@@ -492,7 +495,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
         reshade::log::message(
             reshade::log::level::info,
-            "LifeIsStrange RenoDX build 2026.09.24-no-readback-v14: 06A2 replacement only");
+            "LifeIsStrange RenoDX build 2026.09.24-intermediate-v15: 06A2 replacement + FP16 intermediate upgrade, DX11 proxy disabled");
 
         {
           auto* setting = new renodx::utils::settings::Setting{
@@ -629,6 +632,18 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           renodx::mods::swapchain::set_color_space = true;
           renodx::mods::swapchain::device_proxy_wait_idle_source = false;
           renodx::mods::swapchain::device_proxy_wait_idle_destination = false;
+        } else {
+          if (!intermediate_upgrade_validation) {
+            renodx::mods::swapchain::resource_upgrade_infos.clear();
+          }
+          renodx::mods::swapchain::use_resource_cloning = intermediate_upgrade_validation || dx11_proxy_validation;
+          if (!dx11_proxy_validation) {
+            renodx::mods::swapchain::swap_chain_upgrade_targets.clear();
+            renodx::mods::swapchain::use_device_proxy = false;
+            renodx::mods::swapchain::set_color_space = true;
+            renodx::mods::swapchain::device_proxy_wait_idle_source = false;
+            renodx::mods::swapchain::device_proxy_wait_idle_destination = false;
+          }
         }
 
         initialized = true;
@@ -671,6 +686,16 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::swapchain::swap_chain_upgrade_targets.clear();
       renodx::mods::swapchain::use_device_proxy = false;
       renodx::mods::swapchain::set_color_space = true;
+    } else {
+      if (!intermediate_upgrade_validation) {
+        renodx::mods::swapchain::resource_upgrade_infos.clear();
+      }
+      renodx::mods::swapchain::use_resource_cloning = intermediate_upgrade_validation || dx11_proxy_validation;
+      if (!dx11_proxy_validation) {
+        renodx::mods::swapchain::swap_chain_upgrade_targets.clear();
+        renodx::mods::swapchain::use_device_proxy = false;
+        renodx::mods::swapchain::set_color_space = true;
+      }
     }
   }
   renodx::mods::swapchain::Use(fdw_reason, &shader_injection);
