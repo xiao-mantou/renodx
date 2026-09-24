@@ -387,7 +387,9 @@ const auto UPGRADE_TYPE_OUTPUT_RATIO = 2.f;
 const auto UPGRADE_TYPE_ANY = 3.f;
 
 bool initialized = false;
-constexpr bool vanilla_shader_validation = false;
+// Baseline pass: keep only the SM3 replacement while isolating all resource
+// upgrades and the D3D11/HDR10 presentation proxy.
+constexpr bool vanilla_shader_validation = true;
 // Disabled until readback can be implemented without forcing D3D9 draw replay.
 constexpr bool readback_validation = false;
 constexpr bool readback_resource_upgrade = false;
@@ -495,7 +497,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
         reshade::log::message(
             reshade::log::level::info,
-            "LifeIsStrange RenoDX build 2026.09.24-hdr-proxy-v16: 06A2 replacement + FP16 intermediate upgrade + DX11 proxy");
+            "LifeIsStrange RenoDX build 2026.09.24-baseline-v17: 06A2 replacement only; upgrades and HDR proxy disabled");
 
         {
           auto* setting = new renodx::utils::settings::Setting{
