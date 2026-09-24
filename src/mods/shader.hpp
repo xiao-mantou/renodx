@@ -199,6 +199,7 @@ static bool use_root_signature_cbv = false;
 // Diagnostic switch for games whose DX12 replacement pipelines are not yet validated.
 static bool disable_custom_replacements_d3d12 = false;
 static bool disable_shader_injection_d3d12 = false;
+static uint32_t d3d12_custom_replacement_allow_hash = 0u;
 static float* resource_tag_float = nullptr;
 static int32_t expected_constant_buffer_index = -1;
 static uint32_t expected_constant_buffer_space = 0;
@@ -1950,7 +1951,8 @@ inline constexpr auto OnCommandAction = []<typename T, typename Context>(
     }
 
     if (disable_custom_replacements_d3d12
-        && context.cmd_list->get_device()->get_api() == reshade::api::device_api::d3d12) {
+        && context.cmd_list->get_device()->get_api() == reshade::api::device_api::d3d12
+        && shader_hash != d3d12_custom_replacement_allow_hash) {
       return response;
     }
 
