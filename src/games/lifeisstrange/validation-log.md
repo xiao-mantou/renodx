@@ -5,4 +5,5 @@
 - The `HlslDecompiler` fork builds and decompiles this CSO in normal and `--ast` modes; both emit identical assembly.
 - Normal-mode output and the DevKit `.msasm` are the authority for register masks and swizzles. AST output is inspection-only.
 - This pass corrected nine confirmed SM3-to-HLSL differences in `0x06A2A81D`, including exact `def` constant bits.
-- HDR, ToneMap, resource upgrades, and proxy behavior are unchanged. Runtime equivalence must pass before HDR work continues.
+- HDR and ToneMap behavior are unchanged. The readback pass temporarily enables only intermediate FP16 resource upgrades and disables the final proxy.
+- Readback validation keeps only intermediate FP16 render-target upgrades, disables final swap/proxy, and samples every 120 draws.

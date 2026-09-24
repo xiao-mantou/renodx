@@ -28,7 +28,7 @@ struct ReadbackConfig {
   std::uint32_t render_target_index = 0u;
   std::uint32_t mip_level = 0u;
   std::uint32_t layer = 0u;
-  std::uint32_t sample_interval = 60u;
+  std::uint32_t sample_interval = 120u;
 };
 
 struct ReadbackState {

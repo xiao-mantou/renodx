@@ -388,6 +388,7 @@ const auto UPGRADE_TYPE_ANY = 3.f;
 
 bool initialized = false;
 constexpr bool vanilla_shader_validation = true;
+constexpr bool readback_validation = true;
 
 }  // namespace
 
@@ -402,13 +403,13 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::register_event<reshade::addon_event::destroy_command_queue>(lifeisstrange::readback::OnDestroyCommandQueue);
 
       if (!initialized) {
-        if (vanilla_shader_validation) {
+        if (vanilla_shader_validation || readback_validation) {
           // Keep this probe limited to the 06A2 replacement. The overlay shader
-          // and post-draw readback both request replay and obscure frame-flow failures.
+          // must not add another draw while the readback probe is active.
           custom_shaders.erase(0xFC2A0632u);
         }
 
-        if (!vanilla_shader_validation) {
+        if (readback_validation) {
           if (auto shader = custom_shaders.find(lifeisstrange::readback::config.shader_hash); shader != custom_shaders.end()) {
             shader->second.on_drawn = &lifeisstrange::readback::OnDrawn;
           } else {
@@ -488,7 +489,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
         reshade::log::message(
             reshade::log::level::info,
-            "LifeIsStrange RenoDX build 2026.09.23-vanilla-frameflow-v12: 06A2 no-op, overlay/readback isolated");
+            "LifeIsStrange RenoDX build 2026.09.24-readback-v13: 06A2 replacement, FP16 readback only, final proxy disabled");
 
         {
           auto* setting = new renodx::utils::settings::Setting{
@@ -602,11 +603,19 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           }
         }
 
-        if (vanilla_shader_validation) {
+        if (vanilla_shader_validation && !readback_validation) {
           // Isolate the SM3 replacement from the FP16 resource and D3D11 proxy paths.
           renodx::mods::swapchain::resource_upgrade_infos.clear();
           renodx::mods::swapchain::swap_chain_upgrade_targets.clear();
           renodx::mods::swapchain::use_resource_cloning = false;
+          renodx::mods::swapchain::use_device_proxy = false;
+          renodx::mods::swapchain::set_color_space = true;
+          renodx::mods::swapchain::device_proxy_wait_idle_source = false;
+          renodx::mods::swapchain::device_proxy_wait_idle_destination = false;
+        } else if (readback_validation) {
+          // Keep only intermediate render-target upgrades for the readback probe.
+          // The final SDR swap chain and D3D11 proxy remain disabled in this pass.
+          renodx::mods::swapchain::swap_chain_upgrade_targets.clear();
           renodx::mods::swapchain::use_device_proxy = false;
           renodx::mods::swapchain::set_color_space = true;
           renodx::mods::swapchain::device_proxy_wait_idle_source = false;
@@ -637,10 +646,14 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     renodx::mods::swapchain::SetUseHDR10();
     renodx::mods::swapchain::use_resize_buffer = false;
     renodx::mods::swapchain::set_color_space = false;
-    if (vanilla_shader_validation) {
+    if (vanilla_shader_validation && !readback_validation) {
       renodx::mods::swapchain::resource_upgrade_infos.clear();
       renodx::mods::swapchain::swap_chain_upgrade_targets.clear();
       renodx::mods::swapchain::use_resource_cloning = false;
+      renodx::mods::swapchain::use_device_proxy = false;
+      renodx::mods::swapchain::set_color_space = true;
+    } else if (readback_validation) {
+      renodx::mods::swapchain::swap_chain_upgrade_targets.clear();
       renodx::mods::swapchain::use_device_proxy = false;
       renodx::mods::swapchain::set_color_space = true;
     }
