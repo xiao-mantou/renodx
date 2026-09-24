@@ -227,7 +227,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // DX12 path set this explicitly; leaving it at the auto-selected b0
       // causes replacement pipelines to be built against the wrong layout.
       renodx::mods::shader::expected_constant_buffer_index = 13;
-      renodx::mods::shader::d3d12_custom_replacement_allow_hash = 0x268BAB6D;
+      renodx::mods::shader::d3d12_custom_replacement_allow_hash = 0x3E36DA5B;
       renodx::utils::shader::SetReplacementFilter(&AllowD3D12Replacement);
       renodx::utils::shader::use_replace_on_bind = false;
 
