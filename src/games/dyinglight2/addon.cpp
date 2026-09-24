@@ -271,10 +271,29 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
     renodx::mods::swapchain::v2::Use(fdw_reason, &shader_injection);
   if (fdw_reason == DLL_PROCESS_ATTACH) {
-    if (auto shader = custom_shaders.find(0xF34DDC49); shader != custom_shaders.end()) {
-      shader->second.on_replace = [](reshade::api::command_list* cmd_list) {
-        return cmd_list->get_device()->get_api() != reshade::api::device_api::d3d12;
-      };
+    // TGH UI replacements are validated on DX11 only; isolate all of them on DX12.
+    constexpr uint32_t dl2_ui_shader_hashes[] = {
+        0x1BF90CDB,
+        0x2280559E,
+        0x2BECAD9C,
+        0x43B22618,
+        0x54F3F767,
+        0x61DBDE91,
+        0x6C349427,
+        0x7D1BA5D4,
+        0x93053DEF,
+        0xC6ADA2E9,
+        0xE46618DA,
+        0xEDC2563A,
+        0xEFC06591,
+        0xF34DDC49,
+    };
+    for (const auto shader_hash : dl2_ui_shader_hashes) {
+      if (auto shader = custom_shaders.find(shader_hash); shader != custom_shaders.end()) {
+        shader->second.on_replace = [](reshade::api::command_list* cmd_list) {
+          return cmd_list->get_device()->get_api() != reshade::api::device_api::d3d12;
+        };
+      }
     }
   }
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
