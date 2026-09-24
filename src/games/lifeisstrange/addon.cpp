@@ -388,9 +388,8 @@ const auto UPGRADE_TYPE_ANY = 3.f;
 
 bool initialized = false;
 constexpr bool vanilla_shader_validation = true;
-constexpr bool readback_validation = true;
-// Stage 1 isolates the callback from resource replacement. Enable only after
-// the callback-only build is confirmed stable in the game.
+// Disabled until readback can be implemented without forcing D3D9 draw replay.
+constexpr bool readback_validation = false;
 constexpr bool readback_resource_upgrade = false;
 
 }  // namespace
@@ -402,13 +401,14 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   switch (fdw_reason) {
     case DLL_PROCESS_ATTACH:
       if (!reshade::register_addon(h_module)) return FALSE;
-      reshade::register_event<reshade::addon_event::init_command_queue>(lifeisstrange::readback::OnInitCommandQueue);
-      reshade::register_event<reshade::addon_event::destroy_command_queue>(lifeisstrange::readback::OnDestroyCommandQueue);
+      if (readback_validation) {
+        reshade::register_event<reshade::addon_event::init_command_queue>(lifeisstrange::readback::OnInitCommandQueue);
+        reshade::register_event<reshade::addon_event::destroy_command_queue>(lifeisstrange::readback::OnDestroyCommandQueue);
+      }
 
       if (!initialized) {
         if (vanilla_shader_validation || readback_validation) {
-          // Keep this probe limited to the 06A2 replacement. The overlay shader
-          // must not add another draw while the readback probe is active.
+          // Keep this probe limited to the 06A2 replacement.
           custom_shaders.erase(0xFC2A0632u);
         }
 
@@ -423,7 +423,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         } else {
           reshade::log::message(
               reshade::log::level::info,
-              "LifeIsStrange Readback: disabled for vanilla 06A2 no-op frame-flow validation.");
+              "LifeIsStrange Readback: disabled; no readback callback or GPU readback is active.");
         }
 
         renodx::mods::shader::force_pipeline_cloning = true;
@@ -492,7 +492,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
         reshade::log::message(
             reshade::log::level::info,
-            "LifeIsStrange RenoDX build 2026.09.24-readback-v13: 06A2 replacement, FP16 readback only, final proxy disabled");
+            "LifeIsStrange RenoDX build 2026.09.24-no-readback-v14: 06A2 replacement only");
 
         {
           auto* setting = new renodx::utils::settings::Setting{
@@ -636,8 +636,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
       break;
     case DLL_PROCESS_DETACH:
-      reshade::unregister_event<reshade::addon_event::init_command_queue>(lifeisstrange::readback::OnInitCommandQueue);
-      reshade::unregister_event<reshade::addon_event::destroy_command_queue>(lifeisstrange::readback::OnDestroyCommandQueue);
+      if (readback_validation) {
+        reshade::unregister_event<reshade::addon_event::init_command_queue>(lifeisstrange::readback::OnInitCommandQueue);
+        reshade::unregister_event<reshade::addon_event::destroy_command_queue>(lifeisstrange::readback::OnDestroyCommandQueue);
+      }
       reshade::unregister_addon(h_module);
       break;
   }
