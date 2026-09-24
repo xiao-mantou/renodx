@@ -223,7 +223,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::shader::force_pipeline_cloning = true;
       renodx::mods::shader::disable_custom_replacements_d3d12 = true;
       renodx::mods::shader::disable_shader_injection_d3d12 = false;
-      renodx::mods::shader::d3d12_custom_replacement_allow_hash = 0x268BAB6D;
+      // DX12 replacement pipelines are not yet compatible with the TGH layout;
+      // keep layout injection isolated while validating the unmodified path.
+      renodx::mods::shader::d3d12_custom_replacement_allow_hash = 0u;
       renodx::utils::shader::SetReplacementFilter(&AllowD3D12Replacement);
       renodx::utils::shader::use_replace_on_bind = false;
 
