@@ -444,28 +444,22 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             .old_format = reshade::api::format::b8g8r8a8_unorm,
             .new_format = reshade::api::format::r16g16b16a16_float,
             .use_resource_view_cloning = true,
-            .use_resource_view_hot_swap = true,
             .dimensions = {
                 .width = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
                 .height = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
                 .depth = renodx::utils::resource::ResourceUpgradeInfo::ANY,
             },
-            .usage_include = reshade::api::resource_usage::render_target,
-            .usage_exclude = reshade::api::resource_usage::present,
             .name = "LifeIsStrange_06A2_Intermediate_B8G8R8A8",
         });
         renodx::mods::swapchain::resource_upgrade_infos.push_back({
             .old_format = reshade::api::format::r8g8b8a8_unorm,
             .new_format = reshade::api::format::r16g16b16a16_float,
             .use_resource_view_cloning = true,
-            .use_resource_view_hot_swap = true,
             .dimensions = {
                 .width = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
                 .height = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
                 .depth = renodx::utils::resource::ResourceUpgradeInfo::ANY,
             },
-            .usage_include = reshade::api::resource_usage::render_target,
-            .usage_exclude = reshade::api::resource_usage::present,
             .name = "LifeIsStrange_06A2_Intermediate_R8G8B8A8",
         });
         renodx::mods::swapchain::resource_upgrade_infos.push_back({
