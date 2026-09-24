@@ -387,14 +387,14 @@ const auto UPGRADE_TYPE_OUTPUT_RATIO = 2.f;
 const auto UPGRADE_TYPE_ANY = 3.f;
 
 bool initialized = false;
-// Baseline pass: keep only the SM3 replacement while isolating all resource
-// upgrades and the D3D11/HDR10 presentation proxy.
-constexpr bool vanilla_shader_validation = true;
+// Intermediate-only pass: keep the SM3 replacement and create-time FP16
+// render-target upgrades, while isolating the D3D11/HDR10 presentation proxy.
+constexpr bool vanilla_shader_validation = false;
 // Disabled until readback can be implemented without forcing D3D9 draw replay.
 constexpr bool readback_validation = false;
 constexpr bool readback_resource_upgrade = false;
 constexpr bool intermediate_upgrade_validation = true;
-constexpr bool dx11_proxy_validation = true;
+constexpr bool dx11_proxy_validation = false;
 constexpr bool isolate_06a2_shader = true;
 
 }  // namespace
@@ -474,30 +474,34 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             .name = "LifeIsStrange_Intermediate_R16G16B16A16_UNORM",
         });
 
-        // Match the DX9 proxy path used by Need for Speed: The Run: keep the
-        // present backbuffer on an FP16 view clone with a stable view handle.
-        renodx::mods::swapchain::swapchain_proxy_compatibility_mode = false;
-        renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
-            .old_format = reshade::api::format::b8g8r8a8_unorm,
-            .new_format = reshade::api::format::r16g16b16a16_float,
-            .ignore_size = true,
-            .use_resource_view_cloning = true,
-            .use_resource_view_hot_swap = true,
-            .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
-            .usage_include = reshade::api::resource_usage::present,
-        });
+        if (dx11_proxy_validation) {
+          // Match the DX9 proxy path used by Need for Speed: The Run: keep the
+          // present backbuffer on an FP16 view clone with a stable view handle.
+          renodx::mods::swapchain::swapchain_proxy_compatibility_mode = false;
+          renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
+              .old_format = reshade::api::format::b8g8r8a8_unorm,
+              .new_format = reshade::api::format::r16g16b16a16_float,
+              .ignore_size = true,
+              .use_resource_view_cloning = true,
+              .use_resource_view_hot_swap = true,
+              .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::ANY,
+              .usage_include = reshade::api::resource_usage::present,
+          });
 
-        // Native DX9 games use the D3D11 proxy for the final HDR swap. The
-        // existing DX11 fullscreen shaders consume the FP16 proxy resource.
-        renodx::mods::swapchain::set_color_space = false;
-        renodx::mods::swapchain::use_device_proxy = true;
-        renodx::mods::swapchain::swap_chain_proxy_vertex_shader = __swap_chain_proxy_vertex_shader_dx11;
-        renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx11;
-        renodx::mods::swapchain::SetUseHDR10();
+          // Native DX9 games use the D3D11 proxy for the final HDR swap. The
+          // existing DX11 fullscreen shaders consume the FP16 proxy resource.
+          renodx::mods::swapchain::set_color_space = false;
+          renodx::mods::swapchain::use_device_proxy = true;
+          renodx::mods::swapchain::swap_chain_proxy_vertex_shader = __swap_chain_proxy_vertex_shader_dx11;
+          renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx11;
+          renodx::mods::swapchain::SetUseHDR10();
+        }
 
         reshade::log::message(
             reshade::log::level::info,
-            "LifeIsStrange RenoDX build 2026.09.24-baseline-v17: 06A2 replacement only; upgrades and HDR proxy disabled");
+            dx11_proxy_validation
+                ? "LifeIsStrange RenoDX build 2026.09.24-hdr-proxy-v18: 06A2 replacement + FP16 intermediate upgrade + DX11 proxy"
+                : "LifeIsStrange RenoDX build 2026.09.24-intermediate-v18: 06A2 replacement + FP16 intermediate upgrade; proxy/readback disabled");
 
         {
           auto* setting = new renodx::utils::settings::Setting{
@@ -546,7 +550,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
               .key = "SwapChainEncoding",
               .binding = &shader_injection.swap_chain_encoding,
               .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-              .default_value = 4.f,
+              .default_value = dx11_proxy_validation ? 4.f : 0.f,
               .label = "Encoding",
               .section = "Display Output",
               .labels = {"None", "SRGB", "2.2", "2.4", "HDR10", "scRGB"},
@@ -560,10 +564,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
               .is_visible = []() { return current_settings_mode >= 2; },
           };
           renodx::utils::settings::LoadSetting(renodx::utils::settings::global_name, setting);
-          renodx::mods::swapchain::SetUseHDR10();
+          renodx::mods::swapchain::SetUseHDR10(dx11_proxy_validation);
           renodx::mods::swapchain::use_resize_buffer = false;
-          renodx::mods::swapchain::set_color_space = false;
-          shader_injection.swap_chain_encoding_color_space = 1.f;
+          renodx::mods::swapchain::set_color_space = !dx11_proxy_validation;
+          shader_injection.swap_chain_encoding_color_space = dx11_proxy_validation ? 1.f : 0.f;
           settings.push_back(setting);
         }
 
@@ -670,10 +674,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     renodx::utils::settings::UpdateSetting("SwapChainDecoding", 1.f);
     renodx::utils::settings::UpdateSetting("SwapChainGammaCorrection", 0.f);
     renodx::utils::settings::UpdateSetting("SwapChainClampColorSpace", 0.f);
-    renodx::utils::settings::UpdateSetting("SwapChainEncoding", 4.f);
-    renodx::mods::swapchain::SetUseHDR10();
+    renodx::utils::settings::UpdateSetting("SwapChainEncoding", dx11_proxy_validation ? 4.f : 0.f);
+    renodx::mods::swapchain::SetUseHDR10(dx11_proxy_validation);
     renodx::mods::swapchain::use_resize_buffer = false;
-    renodx::mods::swapchain::set_color_space = false;
+    renodx::mods::swapchain::set_color_space = !dx11_proxy_validation;
     if (vanilla_shader_validation && !readback_validation) {
       renodx::mods::swapchain::resource_upgrade_infos.clear();
       renodx::mods::swapchain::swap_chain_upgrade_targets.clear();
