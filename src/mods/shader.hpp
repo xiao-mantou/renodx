@@ -196,6 +196,9 @@ static bool push_injections_on_present = false;
 static bool revert_constant_buffer_ranges = false;
 static bool allow_undersized_shader_injection = true;
 static bool use_root_signature_cbv = false;
+// Diagnostic switch for games whose DX12 replacement pipelines are not yet validated.
+static bool disable_custom_replacements_d3d12 = false;
+static bool disable_shader_injection_d3d12 = false;
 static float* resource_tag_float = nullptr;
 static int32_t expected_constant_buffer_index = -1;
 static uint32_t expected_constant_buffer_space = 0;
@@ -668,6 +671,10 @@ static bool OnCreatePipelineLayout(
     reshade::api::device* device,
     uint32_t& param_count,
     reshade::api::pipeline_layout_param*& params) {
+  if (disable_shader_injection_d3d12
+      && device->get_api() == reshade::api::device_api::d3d12) {
+    return true;
+  }
   uint32_t cbv_index = 0;
   uint32_t pc_count = 0;
   uint32_t pdss_index = -1;
@@ -1157,6 +1164,10 @@ static void OnInitPipelineLayout(
     const reshade::api::pipeline_layout_param* params,
     reshade::api::pipeline_layout layout) {
   assert(layout.handle != 0u);
+  if (disable_shader_injection_d3d12
+      && device->get_api() == reshade::api::device_api::d3d12) {
+    return;
+  }
   const auto original_layout = layout;
   if (on_init_pipeline_layout != nullptr) {
     if (!on_init_pipeline_layout(device, layout, {params, param_count})) return;
@@ -1936,6 +1947,11 @@ inline constexpr auto OnCommandAction = []<typename T, typename Context>(
       const auto custom_shader_it = custom_shaders.find(shader_hash);
       if (custom_shader_it == custom_shaders.end()) return response;
       custom_shader_info = &custom_shader_it->second;
+    }
+
+    if (disable_custom_replacements_d3d12
+        && context.cmd_list->get_device()->get_api() == reshade::api::device_api::d3d12) {
+      return response;
     }
 
 #ifdef DEBUG_LEVEL_1

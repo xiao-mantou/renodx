@@ -212,6 +212,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
       renodx::mods::shader::allow_multiple_push_constants = true;
       renodx::mods::shader::force_pipeline_cloning = true;
+      renodx::mods::shader::disable_custom_replacements_d3d12 = true;
+      renodx::mods::shader::disable_shader_injection_d3d12 = true;
+      renodx::utils::shader::use_replace_on_bind = false;
 
       renodx::mods::swapchain::v2::SetUseHDR10(true);
       renodx::mods::swapchain::v2::prevent_full_screen = false;
