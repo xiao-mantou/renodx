@@ -395,8 +395,18 @@ constexpr bool vanilla_shader_validation = false;
 constexpr bool readback_validation = false;
 constexpr bool readback_resource_upgrade = false;
 constexpr bool intermediate_upgrade_validation = true;
-constexpr bool dx11_proxy_validation = true;
+bool dx11_proxy_validation = true;
 constexpr bool isolate_06a2_shader = true;
+
+void LoadDX11ProxySetting() {
+  int enabled = 1;
+  reshade::get_config_value(
+      nullptr,
+      renodx::utils::settings::global_name.c_str(),
+      "LifeIsStrange_EnableDX11Proxy",
+      enabled);
+  dx11_proxy_validation = enabled != 0;
+}
 
 void EnsureIntermediateUpgradeInfos() {
   if (vanilla_shader_validation
@@ -463,6 +473,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   switch (fdw_reason) {
     case DLL_PROCESS_ATTACH:
       if (!reshade::register_addon(h_module)) return FALSE;
+      // This is a startup-only switch. Device and swapchain proxy state cannot
+      // be changed safely after the D3D9 device has been initialized.
+      LoadDX11ProxySetting();
       if (readback_validation) {
         reshade::register_event<reshade::addon_event::init_command_queue>(lifeisstrange::readback::OnInitCommandQueue);
         reshade::register_event<reshade::addon_event::destroy_command_queue>(lifeisstrange::readback::OnDestroyCommandQueue);
@@ -562,6 +575,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             dx11_proxy_validation
                 ? "LifeIsStrange RenoDX build 2026.09.26-06a2-fixed4-v20: fixed RGB=4 at 06A2 + HDR10 proxy"
                 : "LifeIsStrange RenoDX build 2026.09.24-intermediate-v18: 06A2 replacement + FP16 intermediate upgrade; proxy/readback disabled");
+        reshade::log::message(
+            reshade::log::level::info,
+            dx11_proxy_validation
+                ? "LifeIsStrange: DX11 proxy enabled (LifeIsStrange_EnableDX11Proxy=1)"
+                : "LifeIsStrange: DX11 proxy disabled (LifeIsStrange_EnableDX11Proxy=0)");
 
         {
           auto* setting = new renodx::utils::settings::Setting{
