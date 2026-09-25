@@ -395,7 +395,7 @@ constexpr bool vanilla_shader_validation = false;
 constexpr bool readback_validation = false;
 constexpr bool readback_resource_upgrade = false;
 constexpr bool intermediate_upgrade_validation = true;
-constexpr bool dx11_proxy_validation = false;
+constexpr bool dx11_proxy_validation = true;
 constexpr bool isolate_06a2_shader = true;
 
 void EnsureIntermediateUpgradeInfos() {
