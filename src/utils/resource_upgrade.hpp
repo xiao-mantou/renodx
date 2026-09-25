@@ -992,6 +992,8 @@ struct CloneUpgradeTargetMatch {
 };
 
 #if defined(RENODX_LIFEISSTRANGE_RESOURCE_UPGRADE_DIAGNOSTIC)
+inline std::atomic<uint32_t> life_is_strange_resource_diagnostic_count = 0;
+
 inline bool IsLifeIsStrangeIntermediateCandidate(const reshade::api::resource_desc& desc) {
   if (desc.type != reshade::api::resource_type::texture_3d
       && desc.type != reshade::api::resource_type::texture_2d
@@ -1012,10 +1014,14 @@ inline void LogLifeIsStrangeIntermediateDiagnostic(
     const bool target_match = false) {
   std::stringstream s;
   s << "LifeIsStrange resource diagnostic [" << stage << "]"
-    << ", type=" << desc.type
-    << ", format=" << desc.texture.format
-    << ", size=" << desc.texture.width << "x" << desc.texture.height
-    << ", usage=0x" << std::hex << static_cast<uint32_t>(desc.usage)
+    << ", type=" << desc.type;
+  if (desc.type == reshade::api::resource_type::buffer) {
+    s << ", buffer_size=" << desc.buffer.size;
+  } else {
+    s << ", format=" << desc.texture.format
+      << ", size=" << desc.texture.width << "x" << desc.texture.height;
+  }
+  s << ", usage=0x" << std::hex << static_cast<uint32_t>(desc.usage)
     << ", state=0x" << static_cast<uint32_t>(state) << std::dec
     << ", backbuffer=" << back_buffer_desc.texture.width << "x" << back_buffer_desc.texture.height
     << ", backbuffer_format=" << back_buffer_desc.texture.format
@@ -1371,6 +1377,15 @@ inline void OnInitResourceInfo(renodx::utils::resource::ResourceInfo* resource_i
   bool changed = false;
 
 #if defined(RENODX_LIFEISSTRANGE_RESOURCE_UPGRADE_DIAGNOSTIC)
+  if (life_is_strange_resource_diagnostic_count.fetch_add(1, std::memory_order_relaxed) < 128) {
+    LogLifeIsStrangeIntermediateDiagnostic(
+        "OnInitResourceInfo-entry",
+        desc,
+        private_data->back_buffer_desc,
+        initial_state,
+        private_data->resource_upgrade_finished.load(std::memory_order_acquire),
+        shared.data->use_resource_cloning);
+  }
   if (IsLifeIsStrangeIntermediateCandidate(desc)) {
     LogLifeIsStrangeIntermediateDiagnostic(
         "OnInitResourceInfo",
