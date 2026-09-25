@@ -560,7 +560,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         reshade::log::message(
             reshade::log::level::info,
             dx11_proxy_validation
-                ? "LifeIsStrange RenoDX build 2026.09.24-hdr-proxy-v18: 06A2 replacement + FP16 intermediate upgrade + DX11 proxy"
+                ? "LifeIsStrange RenoDX build 2026.09.26-proxy-fixed4-v19: fixed RGB=4 proxy + HDR10 output"
                 : "LifeIsStrange RenoDX build 2026.09.24-intermediate-v18: 06A2 replacement + FP16 intermediate upgrade; proxy/readback disabled");
 
         {
