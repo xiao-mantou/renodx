@@ -143,7 +143,12 @@ float4 main(PS_IN i) : COLOR {
   r3.z = rcp(r1.x);
   r3.w = rcp(r1.y);
   r3.xy = rcp(r1.z);
-  r0 = saturate(r0 * r3);
+  // Keep HDR scene values reversible through the SDR-domain LUT. The color
+  // channels used by the original SM3 LUT addressing are r0.x, r0.y and r0.w.
+  r0 *= r3;
+  float hdr_lut_scale = max(max(r0.x, r0.y), r0.w);
+  hdr_lut_scale = max(hdr_lut_scale, 1.f);
+  r0 = saturate(r0 / hdr_lut_scale);
   r1.xyw = r0.xwz * c26.xzy;
   r0.x = frac(r1.x);
   r0.x = -r0.x + r1.x;
@@ -173,6 +178,7 @@ float4 main(PS_IN i) : COLOR {
   r3 = lerp(r2, r1, r0.y);
   // ps_3_0 lrp r1, r0.x, r6, r3 expands to lerp(r3, r6, r0.x).
   r1 = lerp(r3, r6, r0.x);
+  r1.xyz *= hdr_lut_scale;
 
   r0 = tex2D(DNEVignetTexture, i.texcoord2.zw);
   r0.x = saturate(dot(r0, DNEVignetMaskFactors));
@@ -184,5 +190,5 @@ float4 main(PS_IN i) : COLOR {
   r0.w = r2.x * c24.y + c24.w;
   r0.w *= ImageAdjustments1.w;
 
-  return float4(saturate(r1.xyz * r0.xyz + r0.w), r1.w);
+  return float4(r1.xyz * r0.xyz + r0.w, r1.w);
 }
