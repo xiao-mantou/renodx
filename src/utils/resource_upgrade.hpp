@@ -993,13 +993,12 @@ struct CloneUpgradeTargetMatch {
 
 #if defined(RENODX_LIFEISSTRANGE_RESOURCE_UPGRADE_DIAGNOSTIC)
 inline bool IsLifeIsStrangeIntermediateCandidate(const reshade::api::resource_desc& desc) {
-  if (desc.type != reshade::api::resource_type::texture_2d
+  if (desc.type != reshade::api::resource_type::texture_3d
+      && desc.type != reshade::api::resource_type::texture_2d
       && desc.type != reshade::api::resource_type::surface) {
     return false;
   }
-  if (desc.texture.width != 1920 || desc.texture.height != 1080) return false;
-  return desc.texture.format == reshade::api::format::b8g8r8a8_unorm
-         || desc.texture.format == reshade::api::format::r8g8b8a8_unorm;
+  return desc.texture.width >= 1000 && desc.texture.height >= 500;
 }
 
 inline void LogLifeIsStrangeIntermediateDiagnostic(
@@ -1013,6 +1012,7 @@ inline void LogLifeIsStrangeIntermediateDiagnostic(
     const bool target_match = false) {
   std::stringstream s;
   s << "LifeIsStrange resource diagnostic [" << stage << "]"
+    << ", type=" << desc.type
     << ", format=" << desc.texture.format
     << ", size=" << desc.texture.width << "x" << desc.texture.height
     << ", usage=0x" << std::hex << static_cast<uint32_t>(desc.usage)
