@@ -1347,6 +1347,16 @@ static bool OnCreateResource(
 }
 
 inline void OnInitResourceInfo(renodx::utils::resource::ResourceInfo* resource_info) {
+#if defined(RENODX_LIFEISSTRANGE_RESOURCE_UPGRADE_DIAGNOSTIC)
+  if (resource_info != nullptr
+      && life_is_strange_resource_diagnostic_count.load(std::memory_order_relaxed) < 128) {
+    std::stringstream s;
+    s << "LifeIsStrange resource diagnostic [OnInitResourceInfo-handler]"
+      << ", handler=" << shared.IsEventHandler()
+      << ", resource=0x" << std::hex << resource_info->resource.handle << std::dec;
+    reshade::log::message(reshade::log::level::info, s.str().c_str());
+  }
+#endif
   if (!shared.IsEventHandler()) return;
 
   auto* device = resource_info->device;
