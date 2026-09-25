@@ -248,6 +248,32 @@ class Shared {
     return current_module->active && current_control->event_handler == current_module;
   }
 
+  // Some host configurations leave a shared module selected as the handler
+  // after another addon has been unloaded. Allow an addon with an explicit
+  // owner policy to reclaim the shared event stream.
+  bool ClaimEventHandler() {
+    auto* current_control = control;
+    auto* current_module = module;
+    if (current_control == nullptr || current_module == nullptr || !current_module->active) {
+      return false;
+    }
+    if (current_control->event_handler == current_module) return true;
+
+    auto* previous_handler = current_control->event_handler;
+    if (previous_handler != nullptr && previous_handler->active) {
+      internal::UnregisterReshadeEvents(previous_handler);
+    } else if (previous_handler != nullptr) {
+      // Do not call function pointers from an inactive module that may have
+      // already been unloaded. Normal detach has already unregistered them.
+      for (auto* event = previous_handler->events; event != nullptr; event = event->next) {
+        event->reshade_registered = false;
+      }
+    }
+    current_control->event_handler = current_module;
+    internal::SyncReshadeEvents(*current_control);
+    return true;
+  }
+
   bool RegisterModule() {
     return RegisterModule([]() {});
   }

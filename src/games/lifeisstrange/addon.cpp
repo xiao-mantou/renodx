@@ -440,6 +440,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
         renodx::mods::swapchain::expected_constant_buffer_index = 13;
         renodx::mods::swapchain::expected_constant_buffer_space = 50;
+        // Life Is Strange must own the shared resource-upgrade event stream.
+        // ReShade can retain a stale handler record after addon reloads.
+        renodx::utils::resource::upgrade::force_event_handler = true;
         renodx::mods::swapchain::use_resource_cloning = true;
         renodx::mods::swapchain::resource_upgrade_infos.push_back({
             .old_format = reshade::api::format::b8g8r8a8_unorm,

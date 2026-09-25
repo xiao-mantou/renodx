@@ -91,6 +91,9 @@ static cross_addon::Shared<SharedData> shared;
 static bool use_resource_cloning = false;
 static bool use_resource_cloning_dx12_only = false;
 static bool use_auto_cloning = false;
+// Disabled by default. Game-specific addons may claim ownership when a stale
+// cross-addon handler would otherwise suppress resource-upgrade callbacks.
+static bool force_event_handler = false;
 // Allow eligible Vulkan clone bases to handle old-format buffer transfers without a private bridge.
 static bool use_vulkan_copy_usage = true;
 enum class VulkanBufferTextureTransferMode {
@@ -4102,6 +4105,14 @@ static void Use(DWORD fdw_reason) {
 #ifdef DEBUG_LEVEL_0
         reshade::log::message(reshade::log::level::info, "Resource upgrade attached.");
 #endif
+      }
+
+      if (force_event_handler) {
+        const bool claimed = shared.ClaimEventHandler();
+        std::stringstream s;
+        s << "Resource upgrade handler claim: claimed=" << claimed
+          << ", handler=" << shared.IsEventHandler();
+        reshade::log::message(reshade::log::level::info, s.str().c_str());
       }
 
       shared.RegisterEvent<reshade::addon_event::init_device>(OnInitDevice);
