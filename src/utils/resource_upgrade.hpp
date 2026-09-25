@@ -878,6 +878,15 @@ static bool SetUpgradeInfos(reshade::api::device* device, std::span<renodx::util
   private_data->upgrade_counts = std::vector<std::atomic<uint32_t>>(private_data->upgrade_infos.size());
   private_data->upgrade_completed = std::vector<std::atomic<bool>>(private_data->upgrade_infos.size());
   private_data->resource_upgrade_finished.store(false, std::memory_order_release);
+#if defined(RENODX_LIFEISSTRANGE_RESOURCE_UPGRADE_DIAGNOSTIC)
+  std::stringstream s;
+  s << "LifeIsStrange resource diagnostic [SetUpgradeInfos]"
+    << ", resources=" << private_data->upgrade_infos.size()
+    << ", counts=" << private_data->upgrade_counts.size()
+    << ", completed=" << private_data->upgrade_completed.size()
+    << ", api=" << static_cast<uint32_t>(device->get_api());
+  reshade::log::message(reshade::log::level::info, s.str().c_str());
+#endif
   return true;
 }
 
@@ -1050,6 +1059,18 @@ inline CloneUpgradeTargetMatch FindCloneUpgradeTarget(
   auto& upgrade_completed = data->upgrade_completed;
   const uint32_t len = upgrade_infos.size();
   if (upgrade_counts.size() < len || upgrade_completed.size() < len) {
+#if defined(RENODX_LIFEISSTRANGE_RESOURCE_UPGRADE_DIAGNOSTIC)
+    if (IsLifeIsStrangeIntermediateCandidate(desc)) {
+      std::stringstream s;
+      s << "LifeIsStrange resource diagnostic [FindCloneUpgradeTarget-state]"
+        << ", resources=" << len
+        << ", counts=" << upgrade_counts.size()
+        << ", completed=" << upgrade_completed.size()
+        << ", format=" << desc.texture.format
+        << ", size=" << desc.texture.width << "x" << desc.texture.height;
+      reshade::log::message(reshade::log::level::info, s.str().c_str());
+    }
+#endif
     match.all_completed = false;
     return match;
   }
@@ -1448,6 +1469,16 @@ inline void OnInitResourceInfo(renodx::utils::resource::ResourceInfo* resource_i
     auto* found_target = std::exchange(local_applied_clone_target, nullptr);
     if (resource_info->is_swap_chain) {
       // Swapchain upgrades can only be handled on CreateSwapchain
+#if defined(RENODX_LIFEISSTRANGE_RESOURCE_UPGRADE_DIAGNOSTIC)
+      if (IsLifeIsStrangeIntermediateCandidate(desc)) {
+        std::stringstream s;
+        s << "LifeIsStrange resource diagnostic [OnInitResourceInfo-swapchain-skip]"
+          << ", resource=0x" << std::hex << resource.handle << std::dec
+          << ", format=" << desc.texture.format
+          << ", size=" << desc.texture.width << "x" << desc.texture.height;
+        reshade::log::message(reshade::log::level::info, s.str().c_str());
+      }
+#endif
       return;
     }
 
