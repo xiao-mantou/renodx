@@ -704,7 +704,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           }
           renodx::mods::swapchain::use_resource_cloning = intermediate_upgrade_validation || dx11_proxy_validation;
           if (!dx11_proxy_validation) {
-            renodx::mods::swapchain::swap_chain_upgrade_targets.clear();
+            // In swapchain v2 this is an alias of resource_upgrade_infos.
+            // Keep the intermediate FP16 rules when the final proxy is off.
             renodx::mods::swapchain::use_device_proxy = false;
             renodx::mods::swapchain::set_color_space = true;
             renodx::mods::swapchain::device_proxy_wait_idle_source = false;
@@ -759,7 +760,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       }
       renodx::mods::swapchain::use_resource_cloning = intermediate_upgrade_validation || dx11_proxy_validation;
       if (!dx11_proxy_validation) {
-        renodx::mods::swapchain::swap_chain_upgrade_targets.clear();
+        // In swapchain v2 this is an alias of resource_upgrade_infos.
+        // Keep the intermediate FP16 rules when the final proxy is off.
         renodx::mods::swapchain::use_device_proxy = false;
         renodx::mods::swapchain::set_color_space = true;
       }
