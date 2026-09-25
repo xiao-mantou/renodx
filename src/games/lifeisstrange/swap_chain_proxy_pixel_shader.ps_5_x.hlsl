@@ -8,5 +8,5 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
   // Proxy-only validation: bypass the game frame and send a uniform HDR value
   // through the actual HDR10 output path. RGB=4 corresponds to about 812 nits
   // with the current 203-nit reference white.
-  return renodx::draw::SwapChainPass(float3(4.f, 4.f, 4.f));
+  return float4(renodx::draw::SwapChainPass(float3(4.f, 4.f, 4.f)), 1.f);
 }
