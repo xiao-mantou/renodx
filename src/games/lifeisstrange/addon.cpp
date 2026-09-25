@@ -398,6 +398,62 @@ constexpr bool intermediate_upgrade_validation = true;
 constexpr bool dx11_proxy_validation = false;
 constexpr bool isolate_06a2_shader = true;
 
+void EnsureIntermediateUpgradeInfos() {
+  if (vanilla_shader_validation
+      || !intermediate_upgrade_validation
+      || (readback_validation && !readback_resource_upgrade)) {
+    return;
+  }
+
+  auto& infos = renodx::mods::swapchain::resource_upgrade_infos;
+  auto has_rule = [&infos](const char* name) {
+    for (const auto& info : infos) {
+      if (info.name == name) return true;
+    }
+    return false;
+  };
+
+  if (!has_rule("LifeIsStrange_06A2_Intermediate_B8G8R8A8")) {
+    infos.push_back({
+        .old_format = reshade::api::format::b8g8r8a8_unorm,
+        .new_format = reshade::api::format::r16g16b16a16_float,
+        .use_resource_view_cloning = true,
+        .dimensions = {
+            .width = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
+            .height = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
+            .depth = renodx::utils::resource::ResourceUpgradeInfo::ANY,
+        },
+        .name = "LifeIsStrange_06A2_Intermediate_B8G8R8A8",
+    });
+  }
+  if (!has_rule("LifeIsStrange_06A2_Intermediate_R8G8B8A8")) {
+    infos.push_back({
+        .old_format = reshade::api::format::r8g8b8a8_unorm,
+        .new_format = reshade::api::format::r16g16b16a16_float,
+        .use_resource_view_cloning = true,
+        .dimensions = {
+            .width = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
+            .height = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
+            .depth = renodx::utils::resource::ResourceUpgradeInfo::ANY,
+        },
+        .name = "LifeIsStrange_06A2_Intermediate_R8G8B8A8",
+    });
+  }
+  if (!has_rule("LifeIsStrange_Intermediate_R16G16B16A16_UNORM")) {
+    infos.push_back({
+        .old_format = reshade::api::format::r16g16b16a16_unorm,
+        .new_format = reshade::api::format::r16g16b16a16_float,
+        .dimensions = {
+            .width = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
+            .height = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
+            .depth = renodx::utils::resource::ResourceUpgradeInfo::ANY,
+        },
+        .usage_include = reshade::api::resource_usage::render_target,
+        .name = "LifeIsStrange_Intermediate_R16G16B16A16_UNORM",
+    });
+  }
+}
+
 }  // namespace
 
 extern "C" __declspec(dllexport) constexpr const char* NAME = "RenoDX";
@@ -671,6 +727,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
   if (fdw_reason == DLL_PROCESS_ATTACH) {
+    EnsureIntermediateUpgradeInfos();
     // Make the first proxy validation deterministic even if an older SDR preset
     // is still stored in ReShade.ini. These values affect only shader bindings.
     renodx::utils::settings::UpdateSetting("ToneMapType", 0.f);
