@@ -401,7 +401,7 @@ constexpr bool intermediate_upgrade_validation = true;
 bool dx11_proxy_validation = true;
 constexpr bool isolate_06a2_shader = true;
 bool force_06a2_white_validation = true;
-bool force_proxy_white_validation = true;
+bool force_proxy_white_validation = false;
 
 void LoadDX11ProxySetting() {
   int enabled = 1;
@@ -412,7 +412,7 @@ void LoadDX11ProxySetting() {
       enabled);
   dx11_proxy_validation = enabled != 0;
 
-  enabled = 1;
+  enabled = 0;
   reshade::get_config_value(
       nullptr,
       renodx::utils::settings::global_name.c_str(),
