@@ -22,6 +22,9 @@
 #include "./shared.h"
 
 #include <string>
+#include <array>
+#include <mutex>
+#include <unordered_map>
 
 namespace {
 
@@ -403,6 +406,96 @@ constexpr bool isolate_06a2_shader = true;
 bool force_06a2_white_validation = true;
 bool force_proxy_white_validation = false;
 
+struct IntermediateSrvTraceState {
+  std::array<reshade::api::resource_view, 6> views = {};
+};
+
+std::mutex intermediate_srv_trace_mutex;
+std::unordered_map<reshade::api::command_list*, IntermediateSrvTraceState> intermediate_srv_trace_states;
+
+void TraceIntermediatePushDescriptors(
+    reshade::api::command_list* cmd_list,
+    reshade::api::shader_stage stages,
+    reshade::api::pipeline_layout layout,
+    uint32_t layout_param,
+    const reshade::api::descriptor_table_update& update) {
+  if (cmd_list == nullptr || cmd_list->get_device()->get_api() != reshade::api::device_api::d3d9
+      || !renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::pixel)) {
+    return;
+  }
+
+  uint32_t register_index = 0u;
+  bool found_register = false;
+  renodx::utils::pipeline_layout::GetPipelineLayoutData(layout, [&](const auto* layout_data) {
+    if (layout_param >= layout_data->params.size()) return;
+    const auto& param = layout_data->params[layout_param];
+    if (param.type == reshade::api::pipeline_layout_param_type::push_descriptors) {
+      register_index = param.push_descriptors.dx_register_index + update.binding;
+      found_register = true;
+    } else if (param.type == reshade::api::pipeline_layout_param_type::push_descriptors_with_ranges
+               && update.binding < param.descriptor_table.count) {
+      register_index = param.descriptor_table.ranges[update.binding].dx_register_index + update.array_offset;
+      found_register = true;
+    }
+  });
+  if (!found_register || register_index >= 6u) return;
+
+  const bool is_srv = update.type == reshade::api::descriptor_type::shader_resource_view
+                      || update.type == reshade::api::descriptor_type::texture_shader_resource_view
+                      || update.type == reshade::api::descriptor_type::sampler_with_resource_view;
+  if (!is_srv) return;
+
+  std::lock_guard lock(intermediate_srv_trace_mutex);
+  auto& state = intermediate_srv_trace_states[cmd_list];
+  for (uint32_t i = 0; i < update.count && register_index + i < 6u; ++i) {
+    reshade::api::resource_view view = {0u};
+    if (update.type == reshade::api::descriptor_type::sampler_with_resource_view) {
+      view = static_cast<const reshade::api::sampler_with_resource_view*>(update.descriptors)[i].view;
+    } else {
+      view = static_cast<const reshade::api::resource_view*>(update.descriptors)[i];
+    }
+    state.views[register_index + i] = view;
+  }
+}
+
+void TraceIntermediateSrvInputs(reshade::api::command_list* cmd_list, std::stringstream& message) {
+  IntermediateSrvTraceState state;
+  {
+    std::lock_guard lock(intermediate_srv_trace_mutex);
+    const auto pair = intermediate_srv_trace_states.find(cmd_list);
+    if (pair == intermediate_srv_trace_states.end()) {
+      message << ", srvs=untracked";
+      return;
+    }
+    state = pair->second;
+  }
+
+  auto* device = cmd_list->get_device();
+  for (uint32_t slot = 0; slot < state.views.size(); ++slot) {
+    const auto view = state.views[slot];
+    message << ", s" << slot << "=0x" << std::hex << std::uppercase << view.handle << std::dec;
+    if (view.handle == 0u) continue;
+    const auto resource = renodx::utils::resource::GetResourceFromView(device, view);
+    message << "{view_format=" << renodx::utils::resource::GetResourceViewDesc(device, view).format
+            << ",resource=0x" << std::hex << std::uppercase << resource.handle << std::dec;
+    if (resource.handle != 0u) {
+      message << ",resource_format=" << device->get_resource_desc(resource).texture.format;
+    }
+    renodx::utils::resource::GetResourceViewInfo(view, [&](const auto& info) {
+      message << ",is_clone=" << (info.is_clone ? 1 : 0)
+              << ",clone_enabled=" << (info.clone_enabled ? 1 : 0)
+              << ",clone_view=0x" << std::hex << std::uppercase << info.clone.handle
+              << ",clone_resource=0x" << info.clone_resource.handle << std::dec;
+    });
+    message << "}";
+  }
+}
+
+void ClearIntermediateSrvTrace(reshade::api::command_list* cmd_list) {
+  std::lock_guard lock(intermediate_srv_trace_mutex);
+  intermediate_srv_trace_states.erase(cmd_list);
+}
+
 // Records the actual RTV bound at the two consecutive post-process draws.
 // This is intentionally a pre-replacement callback: it does not allocate,
 // activate, rewrite, or read back any resource.
@@ -452,6 +545,10 @@ bool TraceIntermediateDrawBindings(
       message << "}";
     });
     if (!found_info) message << "{view_info=missing}";
+  }
+
+  if (shader_hash == 0x51229A9Bu) {
+    TraceIntermediateSrvInputs(cmd_list, message);
   }
 
   reshade::log::message(reshade::log::level::info, message.str().c_str());
@@ -559,6 +656,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         reshade::register_event<reshade::addon_event::init_command_queue>(lifeisstrange::readback::OnInitCommandQueue);
         reshade::register_event<reshade::addon_event::destroy_command_queue>(lifeisstrange::readback::OnDestroyCommandQueue);
       }
+      reshade::register_event<reshade::addon_event::push_descriptors>(TraceIntermediatePushDescriptors);
+      reshade::register_event<reshade::addon_event::destroy_command_list>(ClearIntermediateSrvTrace);
 
       if (!initialized) {
         if (vanilla_shader_validation || readback_validation || isolate_06a2_shader) {
@@ -838,6 +937,12 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
       break;
     case DLL_PROCESS_DETACH:
+      reshade::unregister_event<reshade::addon_event::push_descriptors>(TraceIntermediatePushDescriptors);
+      reshade::unregister_event<reshade::addon_event::destroy_command_list>(ClearIntermediateSrvTrace);
+      {
+        std::lock_guard lock(intermediate_srv_trace_mutex);
+        intermediate_srv_trace_states.clear();
+      }
       if (readback_validation) {
         reshade::unregister_event<reshade::addon_event::init_command_queue>(lifeisstrange::readback::OnInitCommandQueue);
         reshade::unregister_event<reshade::addon_event::destroy_command_queue>(lifeisstrange::readback::OnDestroyCommandQueue);
