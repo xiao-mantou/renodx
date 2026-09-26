@@ -767,6 +767,8 @@ static reshade::api::resource_view* ApplyRenderTargetClones(
 
 #if defined(RENODX_LIFEISSTRANGE_RESOURCE_UPGRADE_DIAGNOSTIC)
     if (is_swap_chain
+        && clone_enabled
+        && new_resource_view.handle != 0u
         && life_is_strange_swapchain_rtv_diagnostic_count.fetch_add(1, std::memory_order_relaxed) < 12) {
       reshade::api::resource clone_resource = {0u};
       reshade::api::format clone_format = reshade::api::format::unknown;

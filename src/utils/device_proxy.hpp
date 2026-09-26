@@ -1758,8 +1758,16 @@ static void OnPresent(
     renodx::utils::resource::upgrade::RewriteRenderTargets(cmd_list, rtvs.size(), rtvs.data(), dsv);
     if (!proxy_clone_rewrite_logged) {
       reshade::api::format clone_format = reshade::api::format::unknown;
+      reshade::api::resource_view replacement_rtv = {0u};
+      reshade::api::resource replacement_resource = {0u};
+      reshade::api::format replacement_format = reshade::api::format::unknown;
       size_t view_count = 0;
       bool clone_enabled = false;
+      if (!rtvs.empty()) {
+        replacement_rtv = renodx::utils::resource::upgrade::GetResourceViewClone(rtvs.front());
+        replacement_resource = renodx::utils::resource::GetResourceFromView(device, replacement_rtv);
+        replacement_format = renodx::utils::resource::GetResourceDesc(device, replacement_resource).texture.format;
+      }
       renodx::utils::resource::GetResourceInfo(current_back_buffer, [&](const renodx::utils::resource::ResourceInfo& info) {
         if (info.destroyed) return;
         clone_format = info.clone_desc.texture.format;
@@ -1772,7 +1780,10 @@ static void OnPresent(
         << ", clone_format=" << clone_format
         << ", clone_enabled=" << clone_enabled
         << ", tracked_views=" << view_count
-        << ", bound_rtvs=" << rtvs.size() << ")";
+        << ", bound_rtvs=" << rtvs.size()
+        << ", replacement_rtv=" << PRINT_PTR(replacement_rtv.handle)
+        << ", replacement_resource=" << PRINT_PTR(replacement_resource.handle)
+        << ", replacement_format=" << replacement_format << ")";
       reshade::log::message(reshade::log::level::info, s.str().c_str());
       proxy_clone_rewrite_logged = true;
     }
