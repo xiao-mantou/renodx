@@ -401,6 +401,7 @@ constexpr bool intermediate_upgrade_validation = true;
 bool dx11_proxy_validation = true;
 constexpr bool isolate_06a2_shader = true;
 bool force_06a2_white_validation = true;
+bool force_proxy_white_validation = true;
 
 void LoadDX11ProxySetting() {
   int enabled = 1;
@@ -418,6 +419,14 @@ void LoadDX11ProxySetting() {
       "LifeIsStrange_Force06A2White",
       enabled);
   force_06a2_white_validation = enabled != 0;
+
+  enabled = 1;
+  reshade::get_config_value(
+      nullptr,
+      renodx::utils::settings::global_name.c_str(),
+      "LifeIsStrange_ForceProxyWhite",
+      enabled);
+  force_proxy_white_validation = enabled != 0;
 }
 
 void EnsureIntermediateUpgradeInfos() {
@@ -489,6 +498,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // be changed safely after the D3D9 device has been initialized.
       LoadDX11ProxySetting();
       shader_injection.lifeisstrange_force_06a2_white = force_06a2_white_validation ? 1.f : 0.f;
+      shader_injection.lifeisstrange_force_proxy_white = force_proxy_white_validation ? 1.f : 0.f;
+      shader_injection.swap_chain_output_preset = dx11_proxy_validation ? 1.f : 0.f;
       if (readback_validation) {
         reshade::register_event<reshade::addon_event::init_command_queue>(lifeisstrange::readback::OnInitCommandQueue);
         reshade::register_event<reshade::addon_event::destroy_command_queue>(lifeisstrange::readback::OnDestroyCommandQueue);
@@ -590,6 +601,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += ", features=06A2_final_saturation_removed+FP16_intermediate";
         build_log += ", force_06A2_white=";
         build_log += force_06a2_white_validation ? "1" : "0";
+        build_log += ", force_proxy_white=";
+        build_log += force_proxy_white_validation ? "1" : "0";
+        build_log += ", swap_chain_output_preset=";
+        build_log += dx11_proxy_validation ? "HDR10" : "SDR";
         reshade::log::message(reshade::log::level::info, build_log.c_str());
         reshade::log::message(
             reshade::log::level::info,
