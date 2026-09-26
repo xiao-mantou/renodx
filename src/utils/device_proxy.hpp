@@ -108,6 +108,10 @@ static std::atomic<uint32_t> proxy_teardown_deferred_presents = 0;
 static std::atomic<bool> proxy_same_hwnd_flip_established = false;
 
 static bool device_proxy_creation_failed = false;
+static bool proxy_host_backbuffer_logged = false;
+static bool proxy_clone_state_logged = false;
+static bool proxy_handoff_logged = false;
+static bool proxy_published_frame_logged = false;
 static renodx::utils::resource::ResourceUpgradeInfo proxy_clone_target = {
     .new_format = reshade::api::format::r16g16b16a16_float,
     .use_resource_view_hot_swap = true,
@@ -1104,6 +1108,10 @@ static void ReleaseProxySwapChain() {
 
 static void ResetProxyRuntimeStateAfterTeardown() {
   last_device_proxy_shared_resource = {0u};
+  proxy_host_backbuffer_logged = false;
+  proxy_clone_state_logged = false;
+  proxy_handoff_logged = false;
+  proxy_published_frame_logged = false;
   proxy_present_test_pending = true;
   proxy_invalid_call_streak = 0;
   proxy_device_needs_resize = false;
@@ -1461,6 +1469,10 @@ static void OnPresent(
     s << ", target_intermediate_format=" << current_target_intermediate_format;
     s << ")";
     reshade::log::message(reshade::log::level::info, s.str().c_str());
+    proxy_host_backbuffer_logged = false;
+    proxy_clone_state_logged = false;
+    proxy_handoff_logged = false;
+    proxy_published_frame_logged = false;
     if (proxy_device_reshade != nullptr) {
       DestroyProxySwapchainPasses(proxy_device_reshade);
       DestroyProxyDeviceResources(proxy_device_reshade);
@@ -1475,8 +1487,24 @@ static void OnPresent(
   auto current_back_buffer = swapchain->get_current_back_buffer();
   auto host_resource_desc = renodx::utils::resource::GetResourceDesc(device, current_back_buffer);
   if (host_resource_desc.type == reshade::api::resource_type::unknown) {
-    assert(host_resource_desc.type != reshade::api::resource_type::unknown);
+    std::stringstream s;
+    s << "utils::device_proxy::OnPresent(abort: unknown host backbuffer desc";
+    s << ", backbuffer=" << PRINT_PTR(current_back_buffer.handle);
+    s << ", device=" << PRINT_PTR(reinterpret_cast<uintptr_t>(device)) << ")";
+    reshade::log::message(reshade::log::level::error, s.str().c_str());
     return;
+  }
+
+  if (!proxy_host_backbuffer_logged) {
+    std::stringstream s;
+    s << "utils::device_proxy::OnPresent(host backbuffer";
+    s << ", handle=" << PRINT_PTR(current_back_buffer.handle);
+    s << ", type=" << host_resource_desc.type;
+    s << ", format=" << host_resource_desc.texture.format;
+    s << ", size=" << host_resource_desc.texture.width << "x" << host_resource_desc.texture.height;
+    s << ", api=" << device->get_api() << ")";
+    reshade::log::message(reshade::log::level::info, s.str().c_str());
+    proxy_host_backbuffer_logged = true;
   }
 
   HWND hwnd = static_cast<HWND>(swapchain->get_hwnd());
@@ -1586,8 +1614,21 @@ static void OnPresent(
     needs_clone_setup = false;
   });
   if (!found_existing_clone) {
-    assert(found_existing_clone);
+    std::stringstream s;
+    s << "utils::device_proxy::OnPresent(abort: host backbuffer has no ResourceInfo";
+    s << ", handle=" << PRINT_PTR(current_back_buffer.handle) << ")";
+    reshade::log::message(reshade::log::level::error, s.str().c_str());
     return;
+  }
+
+  if (!proxy_clone_state_logged) {
+    std::stringstream s;
+    s << "utils::device_proxy::OnPresent(host clone state";
+    s << ", clone=" << PRINT_PTR(swapchain_clone.handle);
+    s << ", needs_setup=" << (needs_clone_setup ? "true" : "false");
+    s << ", needs_rtv_rewrite=" << (needs_rtv_rewrite ? "true" : "false") << ")";
+    reshade::log::message(reshade::log::level::info, s.str().c_str());
+    proxy_clone_state_logged = true;
   }
 
   if (needs_clone_setup) {
@@ -1717,8 +1758,16 @@ static void OnPresent(
       s << ", dst=" << PRINT_PTR(shared_pair.host_shared_resource.handle);
       s << ")";
       reshade::log::message(reshade::log::level::error, s.str().c_str());
+      SetProxyRemovePending(true);
+      return;
+    } else if (!proxy_handoff_logged) {
+      std::stringstream s;
+      s << "utils::device_proxy::OnPresent(D3D9 StretchRect handoff succeeded";
+      s << ", src=" << PRINT_PTR(swapchain_clone.handle);
+      s << ", dst=" << PRINT_PTR(shared_pair.host_shared_resource.handle) << ")";
+      reshade::log::message(reshade::log::level::info, s.str().c_str());
+      proxy_handoff_logged = true;
     }
-    assert(SUCCEEDED(copy_hr));
   } else {
     queue->get_immediate_command_list()->copy_resource(swapchain_clone, shared_pair.host_shared_resource);
   }
@@ -1731,6 +1780,16 @@ static void OnPresent(
 
   // Publish the shared resource handoff for proxy consumption.
   last_device_proxy_shared_resource = shared_pair.proxy_shared_resource;
+
+  if (!proxy_published_frame_logged) {
+    std::stringstream s;
+    s << "utils::device_proxy::OnPresent(published shared frame";
+    s << ", host=" << PRINT_PTR(shared_pair.host_shared_resource.handle);
+    s << ", proxy=" << PRINT_PTR(shared_pair.proxy_shared_resource.handle);
+    s << ", proxy_swapchain=" << PRINT_PTR(reinterpret_cast<uintptr_t>(proxy_swap_chain)) << ")";
+    reshade::log::message(reshade::log::level::info, s.str().c_str());
+    proxy_published_frame_logged = true;
+  }
 
   UINT present_flags =
       (proxy_swap_chain == nullptr) ? 0u : proxy_present_flags.load();
