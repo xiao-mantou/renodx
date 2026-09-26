@@ -112,6 +112,12 @@ static bool proxy_host_backbuffer_logged = false;
 static bool proxy_clone_state_logged = false;
 static bool proxy_handoff_logged = false;
 static bool proxy_published_frame_logged = false;
+static bool proxy_consumer_entry_logged = false;
+static bool proxy_consumer_resource_logged = false;
+static bool proxy_consumer_copy_logged = false;
+static bool proxy_consumer_pass_logged = false;
+static bool proxy_consumer_pass_failure_logged = false;
+static bool proxy_present_logged = false;
 static renodx::utils::resource::ResourceUpgradeInfo proxy_clone_target = {
     .new_format = reshade::api::format::r16g16b16a16_float,
     .use_resource_view_hot_swap = true,
@@ -874,6 +880,16 @@ static void OnPresentForProxyDevice(reshade::api::device* device, reshade::api::
     return;
   }
 
+  if (!proxy_consumer_entry_logged) {
+    std::stringstream s;
+    s << "utils::device_proxy::OnPresentForProxyDevice(entered";
+    s << ", device=" << PRINT_PTR(reinterpret_cast<uintptr_t>(device));
+    s << ", swapchain=" << PRINT_PTR(reinterpret_cast<uintptr_t>(swapchain));
+    s << ", shared=" << PRINT_PTR(last_device_proxy_shared_resource.handle) << ")";
+    reshade::log::message(reshade::log::level::info, s.str().c_str());
+    proxy_consumer_entry_logged = true;
+  }
+
   const auto proxy_swapchain_settings = local_proxy_swapchain_settings;
 
   {
@@ -891,6 +907,16 @@ static void OnPresentForProxyDevice(reshade::api::device* device, reshade::api::
     if (!proxy_temp_resource_valid) {
       last_device_proxy_shared_resource = {0u};
       return;
+    }
+
+    if (!proxy_consumer_resource_logged) {
+      std::stringstream s;
+      s << "utils::device_proxy::OnPresentForProxyDevice(validated shared resource";
+      s << ", handle=" << PRINT_PTR(proxy_temp_resource.handle);
+      s << ", format=" << proxy_temp_desc.texture.format;
+      s << ", size=" << proxy_temp_desc.texture.width << "x" << proxy_temp_desc.texture.height << ")";
+      reshade::log::message(reshade::log::level::info, s.str().c_str());
+      proxy_consumer_resource_logged = true;
     }
 
     if (proxy_temp_desc.texture.format == reshade::api::format::unknown) {
@@ -959,6 +985,14 @@ static void OnPresentForProxyDevice(reshade::api::device* device, reshade::api::
     }
     cmd_list->copy_resource(proxy_temp_resource, proxy_device_resource);
     queue->flush_immediate_command_list();
+    if (!proxy_consumer_copy_logged) {
+      std::stringstream s;
+      s << "utils::device_proxy::OnPresentForProxyDevice(staging copy submitted";
+      s << ", source=" << PRINT_PTR(proxy_temp_resource.handle);
+      s << ", destination=" << PRINT_PTR(proxy_device_resource.handle) << ")";
+      reshade::log::message(reshade::log::level::info, s.str().c_str());
+      proxy_consumer_copy_logged = true;
+    }
     if (device_proxy_wait_idle_destination) {
       queue->wait_idle();
     }
@@ -985,8 +1019,20 @@ static void OnPresentForProxyDevice(reshade::api::device* device, reshade::api::
     pass_data.reset(pass);
   }
   if (!pass_data->Render(swapchain, queue, &proxy_device_resource)) {
+    if (!proxy_consumer_pass_failure_logged) {
+      reshade::log::message(reshade::log::level::error,
+                            "utils::device_proxy::OnPresentForProxyDevice(SwapchainProxyPass::Render failed)");
+      proxy_consumer_pass_failure_logged = true;
+    }
     pass_data->pass.DestroyAll(device);
     proxy_swapchain_passes.erase(back_buffer_handle);
+  } else if (!proxy_consumer_pass_logged) {
+    std::stringstream s;
+    s << "utils::device_proxy::OnPresentForProxyDevice(SwapchainProxyPass::Render succeeded";
+    s << ", backbuffer=" << PRINT_PTR(back_buffer_handle);
+    s << ", staging=" << PRINT_PTR(proxy_device_resource.handle) << ")";
+    reshade::log::message(reshade::log::level::info, s.str().c_str());
+    proxy_consumer_pass_logged = true;
   }
 }
 
@@ -1112,6 +1158,12 @@ static void ResetProxyRuntimeStateAfterTeardown() {
   proxy_clone_state_logged = false;
   proxy_handoff_logged = false;
   proxy_published_frame_logged = false;
+  proxy_consumer_entry_logged = false;
+  proxy_consumer_resource_logged = false;
+  proxy_consumer_copy_logged = false;
+  proxy_consumer_pass_logged = false;
+  proxy_consumer_pass_failure_logged = false;
+  proxy_present_logged = false;
   proxy_present_test_pending = true;
   proxy_invalid_call_streak = 0;
   proxy_device_needs_resize = false;
@@ -1473,6 +1525,12 @@ static void OnPresent(
     proxy_clone_state_logged = false;
     proxy_handoff_logged = false;
     proxy_published_frame_logged = false;
+    proxy_consumer_entry_logged = false;
+    proxy_consumer_resource_logged = false;
+    proxy_consumer_copy_logged = false;
+    proxy_consumer_pass_logged = false;
+    proxy_consumer_pass_failure_logged = false;
+    proxy_present_logged = false;
     if (proxy_device_reshade != nullptr) {
       DestroyProxySwapchainPasses(proxy_device_reshade);
       DestroyProxyDeviceResources(proxy_device_reshade);
@@ -1841,6 +1899,13 @@ static void OnPresent(
     reshade::log::message(reshade::log::level::error, s.str().c_str());
   } else {
     proxy_invalid_call_streak.store(0);
+    if (!proxy_present_logged) {
+      std::stringstream s;
+      s << "utils::device_proxy::OnPresent(Proxy DXGI Present succeeded";
+      s << ", flags=0x" << std::hex << present_flags << std::dec << ")";
+      reshade::log::message(reshade::log::level::info, s.str().c_str());
+      proxy_present_logged = true;
+    }
   }
 }
 static void Use(DWORD fdw_reason) {
