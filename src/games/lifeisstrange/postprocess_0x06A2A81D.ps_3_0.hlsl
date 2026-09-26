@@ -190,7 +190,7 @@ float4 main(PS_IN i) : COLOR {
   r0.w = r2.x * c24.y + c24.w;
   r0.w *= ImageAdjustments1.w;
 
-  // Forward-chain validation: prove that a fixed HDR value survives the D3D9
-  // 06A2 output resource and reaches the DX11 HDR10 proxy.
-  return float4(4.f, 4.f, 4.f, r1.w);
+  // Preserve the original final multiply/add while removing only its output
+  // saturation so HDR values can continue through the upgraded resource.
+  return float4(r1.xyz * r0.xyz + r0.w, r1.w);
 }
