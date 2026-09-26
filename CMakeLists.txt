@@ -54,6 +54,44 @@ endif()
 
 project(renodx VERSION 0.1.0 LANGUAGES CXX)
 
+set(RENODX_BUILD_VERSION "" CACHE STRING "Build identifier embedded in add-ons and tools")
+set(RENODX_BUILD_TIMESTAMP_UTC "" CACHE STRING "UTC build timestamp embedded in add-ons and tools")
+set(RENODX_SOURCE_DATE_EPOCH "" CACHE STRING "Source date epoch embedded in add-ons and tools")
+
+if(NOT RENODX_BUILD_VERSION)
+  execute_process(
+    COMMAND git rev-parse --short=12 HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE RENODX_GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+  if(RENODX_GIT_COMMIT)
+    set(RENODX_BUILD_VERSION "git-${RENODX_GIT_COMMIT}")
+  else()
+    set(RENODX_BUILD_VERSION "local")
+  endif()
+endif()
+
+if(NOT RENODX_BUILD_TIMESTAMP_UTC)
+  string(TIMESTAMP RENODX_BUILD_TIMESTAMP_UTC "%Y-%m-%dT%H:%M:%SZ" UTC)
+endif()
+
+if(NOT RENODX_SOURCE_DATE_EPOCH)
+  if(DEFINED ENV{SOURCE_DATE_EPOCH})
+    set(RENODX_SOURCE_DATE_EPOCH "$ENV{SOURCE_DATE_EPOCH}")
+  else()
+    set(RENODX_SOURCE_DATE_EPOCH "unknown")
+  endif()
+endif()
+
+message(STATUS "RenoDX build version: ${RENODX_BUILD_VERSION}")
+message(STATUS "RenoDX build timestamp (UTC): ${RENODX_BUILD_TIMESTAMP_UTC}")
+
+add_compile_definitions(
+  RENODX_BUILD_VERSION=\"${RENODX_BUILD_VERSION}\"
+  RENODX_BUILD_TIMESTAMP_UTC=\"${RENODX_BUILD_TIMESTAMP_UTC}\"
+  RENODX_SOURCE_DATE_EPOCH=\"${RENODX_SOURCE_DATE_EPOCH}\")
+
 option(RENODX_BUILD_TESTS "Build D3D12 regression tests" OFF)
 if(RENODX_BUILD_TESTS)
   enable_testing()

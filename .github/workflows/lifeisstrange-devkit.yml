@@ -50,7 +50,7 @@ jobs:
           arch: amd64_x86
 
       - name: Configure CMake (x86)
-        run: cmake --preset clang-x86 -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+        run: cmake --preset clang-x86 -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DRENODX_BUILD_VERSION=lifeisstrange-${{ github.sha }}
 
       - name: Build Life Is Strange addon, DevKit, and MCP bridge
         run: cmake --build --preset clang-x86-debug --target lifeisstrange devkit mcp_bridge --verbose

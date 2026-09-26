@@ -17,8 +17,11 @@
 #include "../../mods/shader.hpp"
 #include "../../mods/swapchain.hpp"
 #include "./readback.hpp"
+#include "../../utils/build_info.hpp"
 #include "../../utils/settings.hpp"
 #include "./shared.h"
+
+#include <string>
 
 namespace {
 
@@ -570,11 +573,12 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           renodx::mods::swapchain::SetUseHDR10();
         }
 
-        reshade::log::message(
-            reshade::log::level::info,
-            dx11_proxy_validation
-                ? "LifeIsStrange RenoDX build 2026.09.26-06a2-fixed4-v20: fixed RGB=4 at 06A2 + HDR10 proxy"
-                : "LifeIsStrange RenoDX build 2026.09.24-intermediate-v18: 06A2 replacement + FP16 intermediate upgrade; proxy/readback disabled");
+        std::string build_log = "LifeIsStrange RenoDX build: version=";
+        build_log += renodx::build_info::kBuildVersion;
+        build_log += ", timestamp_utc=";
+        build_log += renodx::build_info::kBuildTimestampUtc;
+        build_log += ", features=06A2_final_saturation_removed+FP16_intermediate";
+        reshade::log::message(reshade::log::level::info, build_log.c_str());
         reshade::log::message(
             reshade::log::level::info,
             dx11_proxy_validation
