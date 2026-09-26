@@ -71,6 +71,7 @@ struct ShaderInjectData {
   float swap_chain_encoding;
   float swap_chain_encoding_color_space;
   float custom_flip_uv_y;
+  float lifeisstrange_force_06a2_white;
 };
 
 #ifndef __cplusplus
@@ -108,6 +109,7 @@ float4 shader_injection[8] : register(c50);
 #define RENODX_SWAP_CHAIN_ENCODING           shader_injection[7][0]
 #define RENODX_SWAP_CHAIN_ENCODING_COLOR_SPACE shader_injection[7][1]
 #define CUSTOM_FLIP_UV_Y                     shader_injection[7][2]
+#define LIFEISSTRANGE_FORCE_06A2_WHITE       shader_injection[7][3]
 
 #else
 #if ((__SHADER_TARGET_MAJOR == 5 && __SHADER_TARGET_MINOR >= 1) || __SHADER_TARGET_MAJOR >= 6)
@@ -150,6 +152,7 @@ cbuffer shader_injection : register(b13) {
 #define RENODX_SWAP_CHAIN_ENCODING             shader_injection.swap_chain_encoding
 #define RENODX_SWAP_CHAIN_ENCODING_COLOR_SPACE shader_injection.swap_chain_encoding_color_space
 #define CUSTOM_FLIP_UV_Y                       shader_injection.custom_flip_uv_y
+#define LIFEISSTRANGE_FORCE_06A2_WHITE         shader_injection.lifeisstrange_force_06a2_white
 #endif
 
 #define RENODX_RENO_DRT_TONE_MAP_METHOD        renodx::tonemap::renodrt::config::tone_map_method::REINHARD
