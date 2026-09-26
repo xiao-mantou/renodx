@@ -738,11 +738,59 @@ static reshade::api::resource_view* ApplyRenderTargetClones(
     const uint32_t& count) {
   reshade::api::resource_view* new_rtvs = nullptr;
   bool changed = false;
+#if defined(RENODX_LIFEISSTRANGE_RESOURCE_UPGRADE_DIAGNOSTIC)
+  static std::atomic<uint32_t> life_is_strange_swapchain_rtv_diagnostic_count = 0;
+#endif
   for (uint32_t i = 0; i < count; ++i) {
     const reshade::api::resource_view& resource_view = rtvs[i];
     if (resource_view.handle == 0u) continue;
 
+    // Life Is Strange uses a D3D9-to-D3D11 proxy. Track only the swapchain
+    // RTV transition to prove the host subsequently renders into its FP16 clone.
+#if defined(RENODX_LIFEISSTRANGE_RESOURCE_UPGRADE_DIAGNOSTIC)
+    bool is_swap_chain = false;
+    bool clone_enabled = false;
+    reshade::api::resource original_resource = {0u};
+    reshade::api::resource_view tracked_clone = {0u};
+    reshade::api::format source_format = reshade::api::format::unknown;
+    utils::resource::GetResourceViewInfo(resource_view, [&](const utils::resource::ResourceViewInfo& info) {
+      if (info.destroyed || info.is_clone || !info.is_swap_chain) return;
+      is_swap_chain = true;
+      clone_enabled = info.clone_enabled;
+      original_resource = info.original_resource;
+      tracked_clone = info.clone;
+      source_format = info.desc.format;
+    });
+#endif
+
     const auto new_resource_view = GetResourceViewClone(resource_view);
+
+#if defined(RENODX_LIFEISSTRANGE_RESOURCE_UPGRADE_DIAGNOSTIC)
+    if (is_swap_chain
+        && life_is_strange_swapchain_rtv_diagnostic_count.fetch_add(1, std::memory_order_relaxed) < 12) {
+      reshade::api::resource clone_resource = {0u};
+      reshade::api::format clone_format = reshade::api::format::unknown;
+      if (new_resource_view.handle != 0u) {
+        utils::resource::GetResourceViewInfo(new_resource_view, [&](const utils::resource::ResourceViewInfo& info) {
+          if (!info.destroyed) clone_resource = info.original_resource;
+        });
+        utils::resource::GetResourceInfo(clone_resource, [&](const utils::resource::ResourceInfo& info) {
+          if (!info.destroyed) clone_format = info.desc.texture.format;
+        });
+      }
+      std::stringstream s;
+      s << "LifeIsStrange resource diagnostic [ApplyRenderTargetClones-swapchain]"
+        << ", source_view=" << PRINT_PTR(resource_view.handle)
+        << ", source_resource=" << PRINT_PTR(original_resource.handle)
+        << ", source_format=" << source_format
+        << ", clone_enabled=" << clone_enabled
+        << ", tracked_clone_view=" << PRINT_PTR(tracked_clone.handle)
+        << ", replacement_view=" << PRINT_PTR(new_resource_view.handle)
+        << ", replacement_resource=" << PRINT_PTR(clone_resource.handle)
+        << ", replacement_format=" << clone_format;
+      reshade::log::message(reshade::log::level::info, s.str().c_str());
+    }
+#endif
     if (new_resource_view.handle == 0u) continue;
 
 #ifdef DEBUG_LEVEL_1

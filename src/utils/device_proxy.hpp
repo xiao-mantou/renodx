@@ -110,6 +110,7 @@ static std::atomic<bool> proxy_same_hwnd_flip_established = false;
 static bool device_proxy_creation_failed = false;
 static bool proxy_host_backbuffer_logged = false;
 static bool proxy_clone_state_logged = false;
+static bool proxy_clone_rewrite_logged = false;
 static bool proxy_handoff_logged = false;
 static bool proxy_published_frame_logged = false;
 static bool proxy_consumer_entry_logged = false;
@@ -1156,6 +1157,7 @@ static void ResetProxyRuntimeStateAfterTeardown() {
   last_device_proxy_shared_resource = {0u};
   proxy_host_backbuffer_logged = false;
   proxy_clone_state_logged = false;
+  proxy_clone_rewrite_logged = false;
   proxy_handoff_logged = false;
   proxy_published_frame_logged = false;
   proxy_consumer_entry_logged = false;
@@ -1523,6 +1525,7 @@ static void OnPresent(
     reshade::log::message(reshade::log::level::info, s.str().c_str());
     proxy_host_backbuffer_logged = false;
     proxy_clone_state_logged = false;
+    proxy_clone_rewrite_logged = false;
     proxy_handoff_logged = false;
     proxy_published_frame_logged = false;
     proxy_consumer_entry_logged = false;
@@ -1753,6 +1756,26 @@ static void OnPresent(
     auto rtvs = renodx::utils::swapchain::GetRenderTargets(cmd_list);
     auto dsv = renodx::utils::swapchain::GetDepthStencil(cmd_list);
     renodx::utils::resource::upgrade::RewriteRenderTargets(cmd_list, rtvs.size(), rtvs.data(), dsv);
+    if (!proxy_clone_rewrite_logged) {
+      reshade::api::format clone_format = reshade::api::format::unknown;
+      size_t view_count = 0;
+      bool clone_enabled = false;
+      renodx::utils::resource::GetResourceInfo(current_back_buffer, [&](const renodx::utils::resource::ResourceInfo& info) {
+        if (info.destroyed) return;
+        clone_format = info.clone_desc.texture.format;
+        view_count = info.resource_view_handles.size();
+        clone_enabled = info.clone_enabled;
+      });
+      std::stringstream s;
+      s << "utils::device_proxy::OnPresent(host clone rewrite issued"
+        << ", clone=" << PRINT_PTR(swapchain_clone.handle)
+        << ", clone_format=" << clone_format
+        << ", clone_enabled=" << clone_enabled
+        << ", tracked_views=" << view_count
+        << ", bound_rtvs=" << rtvs.size() << ")";
+      reshade::log::message(reshade::log::level::info, s.str().c_str());
+      proxy_clone_rewrite_logged = true;
+    }
   }
 
   shared_pair = GetProxySharedResourcePair(shared_resource_source, swapchain_clone, hwnd);
