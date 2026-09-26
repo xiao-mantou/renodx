@@ -403,6 +403,61 @@ constexpr bool isolate_06a2_shader = true;
 bool force_06a2_white_validation = true;
 bool force_proxy_white_validation = false;
 
+// Records the actual RTV bound at the two consecutive post-process draws.
+// This is intentionally a pre-replacement callback: it does not allocate,
+// activate, rewrite, or read back any resource.
+bool TraceIntermediateDrawBindings(
+    reshade::api::command_list* cmd_list,
+    const std::uint32_t shader_hash,
+    const bool allow_replacement) {
+  static std::uint32_t trace_count_06a2 = 0u;
+  static std::uint32_t trace_count_51229 = 0u;
+  auto& trace_count = shader_hash == 0x06A2A81Du ? trace_count_06a2 : trace_count_51229;
+  if (cmd_list == nullptr || trace_count >= 24u) return allow_replacement;
+  ++trace_count;
+
+  const auto& render_targets = renodx::utils::swapchain::GetRenderTargets(cmd_list);
+  std::stringstream message;
+  message << "LifeIsStrange binding diagnostic [shader=0x" << std::hex << std::uppercase << shader_hash << std::dec
+          << ", sample=" << trace_count << "]";
+
+  if (render_targets.empty()) {
+    message << ", rtvs=0";
+  }
+
+  for (std::size_t index = 0u; index < render_targets.size(); ++index) {
+    const auto view = render_targets[index];
+    message << ", rtv" << index << "=0x" << std::hex << std::uppercase << view.handle << std::dec;
+    if (view.handle == 0u) continue;
+
+    bool found_info = false;
+    renodx::utils::resource::GetResourceViewInfo(view, [&](const renodx::utils::resource::ResourceViewInfo& info) {
+      found_info = true;
+      message << "{view_format=" << info.desc.format
+              << ", destroyed=" << (info.destroyed ? 1 : 0)
+              << ", is_clone=" << (info.is_clone ? 1 : 0)
+              << ", clone_enabled=" << (info.clone_enabled ? 1 : 0)
+              << ", original_resource=0x" << std::hex << std::uppercase << info.original_resource.handle
+              << ", clone_view=0x" << info.clone.handle
+              << ", clone_resource=0x" << info.clone_resource.handle << std::dec;
+
+      if (info.original_resource.handle != 0u) {
+        const auto original_desc = renodx::utils::resource::GetResourceDesc(cmd_list->get_device(), info.original_resource);
+        message << ", original_format=" << original_desc.texture.format;
+      }
+      if (info.clone_resource.handle != 0u) {
+        const auto clone_desc = renodx::utils::resource::GetResourceDesc(cmd_list->get_device(), info.clone_resource);
+        message << ", clone_format=" << clone_desc.texture.format;
+      }
+      message << "}";
+    });
+    if (!found_info) message << "{view_info=missing}";
+  }
+
+  reshade::log::message(reshade::log::level::info, message.str().c_str());
+  return allow_replacement;
+}
+
 void LoadDX11ProxySetting() {
   int enabled = 1;
   reshade::get_config_value(
@@ -533,6 +588,22 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
         renodx::mods::swapchain::expected_constant_buffer_index = 13;
         renodx::mods::swapchain::expected_constant_buffer_space = 50;
+
+        if (auto shader = custom_shaders.find(0x06A2A81Du); shader != custom_shaders.end()) {
+          shader->second.on_replace = [](reshade::api::command_list* cmd_list) {
+            return TraceIntermediateDrawBindings(cmd_list, 0x06A2A81Du, true);
+          };
+        }
+        custom_shaders.emplace(
+            0x51229A9Bu,
+            renodx::mods::shader::CustomShader{
+                .crc32 = 0x51229A9Bu,
+                .on_replace = [](reshade::api::command_list* cmd_list) {
+                  // Return false so the vanilla 51229A9B shader remains active.
+                  return TraceIntermediateDrawBindings(cmd_list, 0x51229A9Bu, false);
+                },
+            });
+
         // Life Is Strange must own the shared resource-upgrade event stream.
         // ReShade can retain a stale handler record after addon reloads.
         renodx::utils::resource::upgrade::force_event_handler = true;
