@@ -410,6 +410,8 @@ bool force_fc2a_white_validation = false;
 bool bypass_06a2_lut_validation = false;
 bool force_512_white_validation = false;
 float scene_exposure_validation = 1.f;
+bool ab_disable_06a2_replacement = false;
+bool ab_disable_intermediate_upgrade = false;
 
 struct IntermediateSrvTraceState {
   std::array<reshade::api::resource_view, 6> views = {};
@@ -839,7 +841,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::register_event<reshade::addon_event::destroy_command_list>(ClearIntermediateSrvTrace);
 
       if (!initialized) {
-        if (vanilla_shader_validation || readback_validation || (isolate_06a2_shader && !force_fc2a_white_validation)) {
+        if (vanilla_shader_validation || readback_validation || ab_disable_06a2_replacement
+            || (isolate_06a2_shader && !force_fc2a_white_validation)) {
           // Keep this probe limited to the 06A2 replacement.
           custom_shaders.erase(0xFC2A0632u);
         }
@@ -1120,7 +1123,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           if (!intermediate_upgrade_validation) {
             renodx::mods::swapchain::resource_upgrade_infos.clear();
           }
-          renodx::mods::swapchain::use_resource_cloning = intermediate_upgrade_validation || dx11_proxy_validation;
+        renodx::mods::swapchain::use_resource_cloning =
+            !ab_disable_intermediate_upgrade && (intermediate_upgrade_validation || dx11_proxy_validation);
           if (!dx11_proxy_validation) {
             // In swapchain v2 this is an alias of resource_upgrade_infos.
             // Keep the intermediate FP16 rules when the final proxy is off.
