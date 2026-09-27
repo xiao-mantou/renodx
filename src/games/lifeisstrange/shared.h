@@ -75,7 +75,7 @@ struct ShaderInjectData {
   float swap_chain_output_preset;
   float lifeisstrange_force_proxy_white;
   float reserved_0;
-  float reserved_1;
+  float lifeisstrange_bypass_06a2_lut;
 };
 
 #ifndef __cplusplus
@@ -116,6 +116,7 @@ float4 shader_injection[9] : register(c50);
 #define LIFEISSTRANGE_FORCE_06A2_WHITE       shader_injection[7][3]
 #define RENODX_SWAP_CHAIN_OUTPUT_PRESET       shader_injection[8][0]
 #define LIFEISSTRANGE_FORCE_PROXY_WHITE       shader_injection[8][1]
+#define LIFEISSTRANGE_BYPASS_06A2_LUT         shader_injection[8][3]
 
 #else
 #if ((__SHADER_TARGET_MAJOR == 5 && __SHADER_TARGET_MINOR >= 1) || __SHADER_TARGET_MAJOR >= 6)
@@ -161,6 +162,7 @@ cbuffer shader_injection : register(b13) {
 #define LIFEISSTRANGE_FORCE_06A2_WHITE         shader_injection.lifeisstrange_force_06a2_white
 #define RENODX_SWAP_CHAIN_OUTPUT_PRESET         shader_injection.swap_chain_output_preset
 #define LIFEISSTRANGE_FORCE_PROXY_WHITE         shader_injection.lifeisstrange_force_proxy_white
+#define LIFEISSTRANGE_BYPASS_06A2_LUT           shader_injection.lifeisstrange_bypass_06a2_lut
 #endif
 
 #define RENODX_RENO_DRT_TONE_MAP_METHOD        renodx::tonemap::renodrt::config::tone_map_method::REINHARD

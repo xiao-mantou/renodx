@@ -150,6 +150,7 @@ float4 main(PS_IN i) : COLOR {
   r0 *= r3;
   float hdr_lut_scale = max(max(r0.x, r0.y), r0.w);
   hdr_lut_scale = max(hdr_lut_scale, 1.f);
+  float3 hdr_lut_input = r0.xyz;
   r0 = saturate(r0 / hdr_lut_scale);
   r1.xyw = r0.xwz * c26.xzy;
   r0.x = frac(r1.x);
@@ -181,6 +182,10 @@ float4 main(PS_IN i) : COLOR {
   // ps_3_0 lrp r1, r0.x, r6, r3 expands to lerp(r3, r6, r0.x).
   r1 = lerp(r3, r6, r0.x);
   r1.xyz *= hdr_lut_scale;
+  // Diagnostic path: keep the pre-LUT HDR scene value and bypass only the
+  // SDR-domain LUT. All later vignette, grain, and final multiply operations
+  // remain active so this isolates LUT compression from the rest of the pass.
+  r1.xyz = lerp(r1.xyz, hdr_lut_input, step(0.5f, LIFEISSTRANGE_BYPASS_06A2_LUT));
 
   r0 = tex2D(DNEVignetTexture, i.texcoord2.zw);
   r0.x = saturate(dot(r0, DNEVignetMaskFactors));
