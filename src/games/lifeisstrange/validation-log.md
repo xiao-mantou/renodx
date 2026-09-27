@@ -27,8 +27,8 @@
 
 - `LifeIsStrange_ForceFC2AWhite=1` reaches `800+ nits` with the DX11 proxy enabled. This validates the FC2A-to-proxy output path only.
 - `LifeIsStrange_Force06A2White=1` also reaches `800+ nits`. This does not prove that normal HDR values survive the intervening 512 pass.
-- The next diagnostic boundary is therefore `06A2 -> 512 -> FC2A`, especially the 512 output and its B8 target.
+- The 512 replacement callback now requests and binds the existing FP16 clone only for its `1920x1080 B8G8R8A8_UNORM` RTV; smaller UI/intermediate draws are left unchanged.
 - Do not infer a pass chain from shader draw order alone. Use the producer RTV handle and the consumer SRV handle from the same snapshot.
-- Do not add another 512 replacement until its original SM3 assembly has been checked for output saturation and its replacement has an equivalent register/swizzle mapping.
+- The 512 white probe is diagnostic only; because the shader modulates sampled color by interpolated `v1`, judge it using the bound FP16 RTV and downstream output, not an assumption that the whole screen must become white.
 - The 512 MSASM has no `saturate` or `mad_sat`: it is exactly `texld r0`, `dp4 r0.w`, then `mul oC0, r0, v1`.
 - A strict-equivalent 512 HLSL probe now exists, but is disabled by default. Enable only `LifeIsStrange_Force512White=1` to replace the 512 shader and force output `4.0`.

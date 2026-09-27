@@ -560,9 +560,8 @@ void ClearIntermediateSrvTrace(reshade::api::command_list* cmd_list) {
   intermediate_srv_trace_states.erase(cmd_list);
 }
 
-// Records the actual RTV bound at the two consecutive post-process draws.
-// This is intentionally a pre-replacement callback: it does not allocate,
-// activate, rewrite, or read back any resource.
+// Records the actual RTV bound at the post-process draws and routes the
+// full-resolution 512 pass through its existing FP16 clone when available.
 bool TraceIntermediateDrawBindings(
     reshade::api::command_list* cmd_list,
     const std::uint32_t shader_hash,
@@ -577,11 +576,41 @@ bool TraceIntermediateDrawBindings(
   ++trace_count;
 
   auto render_targets = renodx::utils::swapchain::GetRenderTargets(cmd_list);
-  if (shader_hash == 0xFC2A0632u && !render_targets.empty()) {
+  if ((shader_hash == 0x51229A9Bu || shader_hash == 0xFC2A0632u) && !render_targets.empty()) {
     std::vector<reshade::api::resource_view> cloned_render_targets = render_targets;
     bool changed = false;
     for (std::size_t index = 0; index < cloned_render_targets.size(); ++index) {
-      const auto clone = renodx::mods::swapchain::GetResourceViewClone(render_targets[index]);
+      const auto view = render_targets[index];
+      if (shader_hash == 0x51229A9Bu) {
+        const auto resource = renodx::utils::resource::GetResourceFromView(cmd_list->get_device(), view);
+        if (resource.handle == 0u) continue;
+        const auto desc = cmd_list->get_device()->get_resource_desc(resource);
+        if (desc.type != reshade::api::resource_type::texture_2d
+            || desc.texture.format != reshade::api::format::b8g8r8a8_unorm
+            || desc.texture.width != 1920u
+            || desc.texture.height != 1080u) {
+          continue;
+        }
+
+        renodx::utils::resource::ResourceUpgradeInfo* upgrade_target = nullptr;
+        for (auto& target : renodx::mods::swapchain::resource_upgrade_infos) {
+          if (target.name == "LifeIsStrange_06A2_Intermediate_B8G8R8A8") {
+            upgrade_target = &target;
+            break;
+          }
+        }
+        if (upgrade_target != nullptr) {
+          renodx::utils::resource::UpdateResourceInfo(resource, [&](auto* resource_info) {
+            if (resource_info->clone_target == nullptr) resource_info->clone_target = upgrade_target;
+          });
+        }
+      }
+
+      auto clone = renodx::mods::swapchain::GetResourceViewClone(view);
+      if (clone.handle == 0u && shader_hash == 0x51229A9Bu) {
+        clone = renodx::utils::resource::upgrade::GetResourceViewClone(
+            view, {.require_enabled = false, .allow_create = true, .activate = true});
+      }
       if (clone.handle != 0u && clone.handle != render_targets[index].handle) {
         cloned_render_targets[index] = clone;
         changed = true;
@@ -595,11 +624,15 @@ bool TraceIntermediateDrawBindings(
       render_targets = cloned_render_targets;
       reshade::log::message(
           reshade::log::level::info,
-          "LifeIsStrange FC2A0632 RTV diagnostic: bound available FP16 clone");
+          shader_hash == 0x51229A9Bu
+              ? "LifeIsStrange 51229A9B RTV diagnostic: bound available FP16 clone"
+              : "LifeIsStrange FC2A0632 RTV diagnostic: bound available FP16 clone");
     } else {
       reshade::log::message(
           reshade::log::level::info,
-          "LifeIsStrange FC2A0632 RTV diagnostic: no clone available");
+          shader_hash == 0x51229A9Bu
+              ? "LifeIsStrange 51229A9B RTV diagnostic: no full-resolution B8 clone available"
+              : "LifeIsStrange FC2A0632 RTV diagnostic: no clone available");
     }
   }
   std::stringstream message;
