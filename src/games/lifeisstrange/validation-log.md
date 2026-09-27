@@ -30,3 +30,5 @@
 - The next diagnostic boundary is therefore `06A2 -> 512 -> FC2A`, especially the 512 output and its B8 target.
 - Do not infer a pass chain from shader draw order alone. Use the producer RTV handle and the consumer SRV handle from the same snapshot.
 - Do not add another 512 replacement until its original SM3 assembly has been checked for output saturation and its replacement has an equivalent register/swizzle mapping.
+- The 512 MSASM has no `saturate` or `mad_sat`: it is exactly `texld r0`, `dp4 r0.w`, then `mul oC0, r0, v1`.
+- A strict-equivalent 512 HLSL probe now exists, but is disabled by default. Enable only `LifeIsStrange_Force512White=1` to replace the 512 shader and force output `4.0`.

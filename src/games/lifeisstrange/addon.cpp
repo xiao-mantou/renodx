@@ -408,6 +408,7 @@ bool force_06a2_white_validation = true;
 bool force_proxy_white_validation = false;
 bool force_fc2a_white_validation = false;
 bool bypass_06a2_lut_validation = false;
+bool force_512_white_validation = false;
 
 struct IntermediateSrvTraceState {
   std::array<reshade::api::resource_view, 6> views = {};
@@ -703,6 +704,14 @@ void LoadDX11ProxySetting() {
       "LifeIsStrange_Bypass06A2LUT",
       enabled);
   bypass_06a2_lut_validation = enabled != 0;
+
+  enabled = 0;
+  reshade::get_config_value(
+      nullptr,
+      renodx::utils::settings::global_name.c_str(),
+      "LifeIsStrange_Force512White",
+      enabled);
+  force_512_white_validation = enabled != 0;
 }
 
 void EnsureIntermediateUpgradeInfos() {
@@ -777,6 +786,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       shader_injection.lifeisstrange_force_proxy_white = force_proxy_white_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_force_fc2a_white = force_fc2a_white_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_bypass_06a2_lut = bypass_06a2_lut_validation ? 1.f : 0.f;
+      shader_injection.lifeisstrange_force_512_white = force_512_white_validation ? 1.f : 0.f;
       shader_injection.swap_chain_output_preset = dx11_proxy_validation ? 1.f : 0.f;
       if (readback_validation) {
         reshade::register_event<reshade::addon_event::init_command_queue>(lifeisstrange::readback::OnInitCommandQueue);
@@ -789,6 +799,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         if (vanilla_shader_validation || readback_validation || (isolate_06a2_shader && !force_fc2a_white_validation)) {
           // Keep this probe limited to the 06A2 replacement.
           custom_shaders.erase(0xFC2A0632u);
+        }
+        if (!force_512_white_validation) {
+          custom_shaders.erase(0x51229A9Bu);
         }
 
         if (readback_validation) {
@@ -910,6 +923,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += force_proxy_white_validation ? "1" : "0";
         build_log += ", force_FC2A_white=";
         build_log += force_fc2a_white_validation ? "1" : "0";
+        build_log += ", force_512_white=";
+        build_log += force_512_white_validation ? "1" : "0";
         build_log += ", bypass_06A2_lut=";
         build_log += bypass_06a2_lut_validation ? "1" : "0";
         build_log += ", swap_chain_output_preset=";

@@ -76,11 +76,12 @@ struct ShaderInjectData {
   float lifeisstrange_force_proxy_white;
   float lifeisstrange_force_fc2a_white;
   float lifeisstrange_bypass_06a2_lut;
+  float lifeisstrange_force_512_white;
 };
 
 #ifndef __cplusplus
 #if (__SHADER_TARGET_MAJOR == 3)
-float4 shader_injection[9] : register(c50);
+float4 shader_injection[10] : register(c50);
 
 #define RENODX_PEAK_WHITE_NITS               shader_injection[0][0]
 #define RENODX_DIFFUSE_WHITE_NITS            shader_injection[0][1]
@@ -118,6 +119,7 @@ float4 shader_injection[9] : register(c50);
 #define LIFEISSTRANGE_FORCE_PROXY_WHITE       shader_injection[8][1]
 #define LIFEISSTRANGE_FORCE_FC2A_WHITE        shader_injection[8][2]
 #define LIFEISSTRANGE_BYPASS_06A2_LUT         shader_injection[8][3]
+#define LIFEISSTRANGE_FORCE_512_WHITE         shader_injection[9][0]
 
 #else
 #if ((__SHADER_TARGET_MAJOR == 5 && __SHADER_TARGET_MINOR >= 1) || __SHADER_TARGET_MAJOR >= 6)
@@ -165,6 +167,7 @@ cbuffer shader_injection : register(b13) {
 #define LIFEISSTRANGE_FORCE_PROXY_WHITE         shader_injection.lifeisstrange_force_proxy_white
 #define LIFEISSTRANGE_FORCE_FC2A_WHITE          shader_injection.lifeisstrange_force_fc2a_white
 #define LIFEISSTRANGE_BYPASS_06A2_LUT           shader_injection.lifeisstrange_bypass_06a2_lut
+#define LIFEISSTRANGE_FORCE_512_WHITE           shader_injection.lifeisstrange_force_512_white
 #endif
 
 #define RENODX_RENO_DRT_TONE_MAP_METHOD        renodx::tonemap::renodrt::config::tone_map_method::REINHARD
