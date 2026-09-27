@@ -12,3 +12,12 @@
 - `0x06A2A81D` output is confirmed bound to an `R16G16B16A16_FLOAT` clone.
 - `0x51229A9B` samples the intermediate through `s0`; key B8 input instances require explicit rebinding to their FP16 clone.
 - The next investigation stage is the chain after `0x51229A9B` toward the final output/proxy.
+
+## Main-menu DevKit snapshot (2026-09-27)
+
+- Captured with DevKit only; RenoDX/proxy was not active.
+- Relevant draw order in the captured frame was `0x51229A9B` draw 246, `0x06A2A81D` draw 247, then `0xFC2A0632` draw 252.
+- `0x51229A9B` draw 246 reads and writes a `482x272 R16G16B16A16_UNORM` resource.
+- `0x06A2A81D` draw 247 follows 512 and samples a `1920x1080 R16G16B16A16_FLOAT` scene resource.
+- `0xFC2A0632` draw 252 is the final relevant pass and writes to the `1920x1080 B8G8R8A8_UNORM` swapchain surface.
+- Therefore the tested main-menu order is `512 -> 06A2 -> FC2A -> swap`, not `06A2 -> 512 -> FC2A`.
