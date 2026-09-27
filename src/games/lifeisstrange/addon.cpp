@@ -419,6 +419,7 @@ void TraceIntermediatePushDescriptors(
     reshade::api::pipeline_layout layout,
     uint32_t layout_param,
     const reshade::api::descriptor_table_update& update) {
+  static thread_local bool applying_clone = false;
   if (cmd_list == nullptr || cmd_list->get_device()->get_api() != reshade::api::device_api::d3d9
       || !renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::pixel)) {
     return;
@@ -453,6 +454,39 @@ void TraceIntermediatePushDescriptors(
       view = static_cast<const reshade::api::sampler_with_resource_view*>(update.descriptors)[i].view;
     } else {
       view = static_cast<const reshade::api::resource_view*>(update.descriptors)[i];
+    }
+
+    // The 51229A9B pass samples s0 from the original B8 view even when the
+    // resource-upgrade system has already created an FP16 clone. Re-submit
+    // only that first slot with the existing clone view. This is a binding
+    // fix; it does not copy or read back any GPU data.
+    if (register_index + i == 0u && view.handle != 0u && !applying_clone) {
+      reshade::api::resource_view clone = {0u};
+      renodx::utils::resource::GetResourceViewInfo(view, [&](const auto& info) {
+        if (info.clone_enabled && info.clone.handle != 0u) clone = info.clone;
+      });
+      if (clone.handle != 0u) {
+        applying_clone = true;
+        if (update.type == reshade::api::descriptor_type::sampler_with_resource_view) {
+          auto descriptor = static_cast<const reshade::api::sampler_with_resource_view*>(update.descriptors)[i];
+          descriptor.view = clone;
+          reshade::api::descriptor_table_update replacement = update;
+          replacement.count = 1u;
+          replacement.binding += i;
+          replacement.array_offset = 0u;
+          replacement.descriptors = &descriptor;
+          cmd_list->push_descriptors(stages, layout, layout_param, replacement);
+        } else {
+          reshade::api::descriptor_table_update replacement = update;
+          replacement.count = 1u;
+          replacement.binding += i;
+          replacement.array_offset = 0u;
+          replacement.descriptors = &clone;
+          cmd_list->push_descriptors(stages, layout, layout_param, replacement);
+        }
+        applying_clone = false;
+        view = clone;
+      }
     }
     state.views[register_index + i] = view;
   }
