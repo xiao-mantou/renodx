@@ -406,6 +406,7 @@ bool dx11_proxy_validation = true;
 constexpr bool isolate_06a2_shader = true;
 bool force_06a2_white_validation = true;
 bool force_proxy_white_validation = false;
+bool force_fc2a_white_validation = false;
 bool bypass_06a2_lut_validation = false;
 
 struct IntermediateSrvTraceState {
@@ -691,6 +692,14 @@ void LoadDX11ProxySetting() {
   reshade::get_config_value(
       nullptr,
       renodx::utils::settings::global_name.c_str(),
+      "LifeIsStrange_ForceFC2AWhite",
+      enabled);
+  force_fc2a_white_validation = enabled != 0;
+
+  enabled = 0;
+  reshade::get_config_value(
+      nullptr,
+      renodx::utils::settings::global_name.c_str(),
       "LifeIsStrange_Bypass06A2LUT",
       enabled);
   bypass_06a2_lut_validation = enabled != 0;
@@ -766,6 +775,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       LoadDX11ProxySetting();
       shader_injection.lifeisstrange_force_06a2_white = force_06a2_white_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_force_proxy_white = force_proxy_white_validation ? 1.f : 0.f;
+      shader_injection.lifeisstrange_force_fc2a_white = force_fc2a_white_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_bypass_06a2_lut = bypass_06a2_lut_validation ? 1.f : 0.f;
       shader_injection.swap_chain_output_preset = dx11_proxy_validation ? 1.f : 0.f;
       if (readback_validation) {
@@ -776,7 +786,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::register_event<reshade::addon_event::destroy_command_list>(ClearIntermediateSrvTrace);
 
       if (!initialized) {
-        if (vanilla_shader_validation || readback_validation || isolate_06a2_shader) {
+        if (vanilla_shader_validation || readback_validation || (isolate_06a2_shader && !force_fc2a_white_validation)) {
           // Keep this probe limited to the 06A2 replacement.
           custom_shaders.erase(0xFC2A0632u);
         }
@@ -898,6 +908,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += force_06a2_white_validation ? "1" : "0";
         build_log += ", force_proxy_white=";
         build_log += force_proxy_white_validation ? "1" : "0";
+        build_log += ", force_FC2A_white=";
+        build_log += force_fc2a_white_validation ? "1" : "0";
         build_log += ", bypass_06A2_lut=";
         build_log += bypass_06a2_lut_validation ? "1" : "0";
         build_log += ", swap_chain_output_preset=";

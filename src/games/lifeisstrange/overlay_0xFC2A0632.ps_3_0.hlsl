@@ -13,5 +13,7 @@ float4 main(float2 texcoord : TEXCOORD) : COLOR {
     output_color = renodx::draw::RenderIntermediatePass(renodx::color::srgb::DecodeSafe(output_color));
   }
 
+  output_color = lerp(output_color, 4.f, step(0.5f, LIFEISSTRANGE_FORCE_FC2A_WHITE));
+
   return float4(output_color, 1.f);
 }

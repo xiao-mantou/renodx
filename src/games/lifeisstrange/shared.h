@@ -74,7 +74,7 @@ struct ShaderInjectData {
   float lifeisstrange_force_06a2_white;
   float swap_chain_output_preset;
   float lifeisstrange_force_proxy_white;
-  float reserved_0;
+  float lifeisstrange_force_fc2a_white;
   float lifeisstrange_bypass_06a2_lut;
 };
 
@@ -116,6 +116,7 @@ float4 shader_injection[9] : register(c50);
 #define LIFEISSTRANGE_FORCE_06A2_WHITE       shader_injection[7][3]
 #define RENODX_SWAP_CHAIN_OUTPUT_PRESET       shader_injection[8][0]
 #define LIFEISSTRANGE_FORCE_PROXY_WHITE       shader_injection[8][1]
+#define LIFEISSTRANGE_FORCE_FC2A_WHITE        shader_injection[8][2]
 #define LIFEISSTRANGE_BYPASS_06A2_LUT         shader_injection[8][3]
 
 #else
@@ -162,6 +163,7 @@ cbuffer shader_injection : register(b13) {
 #define LIFEISSTRANGE_FORCE_06A2_WHITE         shader_injection.lifeisstrange_force_06a2_white
 #define RENODX_SWAP_CHAIN_OUTPUT_PRESET         shader_injection.swap_chain_output_preset
 #define LIFEISSTRANGE_FORCE_PROXY_WHITE         shader_injection.lifeisstrange_force_proxy_white
+#define LIFEISSTRANGE_FORCE_FC2A_WHITE          shader_injection.lifeisstrange_force_fc2a_white
 #define LIFEISSTRANGE_BYPASS_06A2_LUT           shader_injection.lifeisstrange_bypass_06a2_lut
 #endif
 
