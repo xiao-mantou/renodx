@@ -23,6 +23,7 @@
 
 #include <string>
 #include <array>
+#include <algorithm>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -412,6 +413,7 @@ bool force_512_white_validation = false;
 float scene_exposure_validation = 1.f;
 bool ab_disable_06a2_replacement = false;
 bool ab_disable_intermediate_upgrade = false;
+bool intermediate_binding_diagnostic = false;
 
 struct IntermediateSrvTraceState {
   std::array<reshade::api::resource_view, 6> views = {};
@@ -427,7 +429,8 @@ void TraceIntermediatePushDescriptors(
     uint32_t layout_param,
     const reshade::api::descriptor_table_update& update) {
   static thread_local bool applying_clone = false;
-  if (cmd_list == nullptr || cmd_list->get_device()->get_api() != reshade::api::device_api::d3d9
+  if (!intermediate_binding_diagnostic || ab_disable_intermediate_upgrade
+      || cmd_list == nullptr || cmd_list->get_device()->get_api() != reshade::api::device_api::d3d9
       || !renodx::utils::bitwise::HasFlag(stages, reshade::api::shader_stage::pixel)) {
     return;
   }
@@ -717,7 +720,7 @@ void LoadDX11ProxySetting() {
       enabled);
   force_06a2_white_validation = enabled != 0;
 
-  enabled = 1;
+  enabled = 0;
   reshade::get_config_value(
       nullptr,
       renodx::utils::settings::global_name.c_str(),
@@ -772,6 +775,14 @@ void LoadDX11ProxySetting() {
       "LifeIsStrange_AB_DisableIntermediateUpgrade",
       enabled);
   ab_disable_intermediate_upgrade = enabled != 0;
+
+  enabled = 0;
+  reshade::get_config_value(
+      nullptr,
+      renodx::utils::settings::global_name.c_str(),
+      "LifeIsStrange_IntermediateBindingDiagnostic",
+      enabled);
+  intermediate_binding_diagnostic = enabled != 0;
   if (ab_disable_intermediate_upgrade && dx11_proxy_validation) {
     dx11_proxy_validation = false;
     reshade::log::message(
@@ -783,6 +794,7 @@ void LoadDX11ProxySetting() {
 void EnsureIntermediateUpgradeInfos() {
   if (vanilla_shader_validation
       || !intermediate_upgrade_validation
+      || ab_disable_intermediate_upgrade
       || (readback_validation && !readback_resource_upgrade)) {
     return;
   }
@@ -903,64 +915,28 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             return TraceIntermediateDrawBindings(cmd_list, 0x06A2A81Du, true);
           };
         }
-        custom_shaders.emplace(
-            0x51229A9Bu,
-            renodx::mods::shader::CustomShader{
-                .crc32 = 0x51229A9Bu,
-                .on_replace = [](reshade::api::command_list* cmd_list) {
-                  // Return false so the vanilla 51229A9B shader remains active.
-                  return TraceIntermediateDrawBindings(cmd_list, 0x51229A9Bu, false);
-                },
-            });
-        custom_shaders.emplace(
-            0xFC2A0632u,
-            renodx::mods::shader::CustomShader{
-                .crc32 = 0xFC2A0632u,
-                .on_replace = [](reshade::api::command_list* cmd_list) {
-                  // Keep the vanilla FC2A0632 shader while tracing the next pass.
-                  return TraceIntermediateDrawBindings(cmd_list, 0xFC2A0632u, false);
-                },
-            });
+        if (intermediate_binding_diagnostic && !ab_disable_intermediate_upgrade) {
+          custom_shaders.emplace(
+              0x51229A9Bu,
+              renodx::mods::shader::CustomShader{
+                  .crc32 = 0x51229A9Bu,
+                  .on_replace = [](reshade::api::command_list* cmd_list) {
+                    return TraceIntermediateDrawBindings(cmd_list, 0x51229A9Bu, false);
+                  },
+              });
+          custom_shaders.emplace(
+              0xFC2A0632u,
+              renodx::mods::shader::CustomShader{
+                  .crc32 = 0xFC2A0632u,
+                  .on_replace = [](reshade::api::command_list* cmd_list) {
+                    return TraceIntermediateDrawBindings(cmd_list, 0xFC2A0632u, false);
+                  },
+              });
+        }
 
         // Life Is Strange must own the shared resource-upgrade event stream.
-        // ReShade can retain a stale handler record after addon reloads.
         renodx::utils::resource::upgrade::force_event_handler = true;
-        renodx::mods::swapchain::use_resource_cloning = true;
-        renodx::mods::swapchain::resource_upgrade_infos.push_back({
-            .old_format = reshade::api::format::b8g8r8a8_unorm,
-            .new_format = reshade::api::format::r16g16b16a16_float,
-            .use_resource_view_cloning = true,
-            .dimensions = {
-                .width = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
-                .height = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
-                .depth = renodx::utils::resource::ResourceUpgradeInfo::ANY,
-            },
-            .name = "LifeIsStrange_06A2_Intermediate_B8G8R8A8",
-        });
-        renodx::mods::swapchain::resource_upgrade_infos.push_back({
-            .old_format = reshade::api::format::r8g8b8a8_unorm,
-            .new_format = reshade::api::format::r16g16b16a16_float,
-            .use_resource_view_cloning = true,
-            .dimensions = {
-                .width = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
-                .height = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
-                .depth = renodx::utils::resource::ResourceUpgradeInfo::ANY,
-            },
-            .name = "LifeIsStrange_06A2_Intermediate_R8G8B8A8",
-        });
-        renodx::mods::swapchain::resource_upgrade_infos.push_back({
-            .old_format = reshade::api::format::r16g16b16a16_unorm,
-            .new_format = reshade::api::format::r16g16b16a16_float,
-            .dimensions = {
-                .width = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
-                .height = renodx::utils::resource::ResourceUpgradeInfo::BACK_BUFFER,
-                .depth = renodx::utils::resource::ResourceUpgradeInfo::ANY,
-            },
-            .usage_include = reshade::api::resource_usage::render_target,
-            .name = "LifeIsStrange_Intermediate_R16G16B16A16_UNORM",
-        });
-
-        if (dx11_proxy_validation) {
+        if (dx11_proxy_validation && intermediate_upgrade_validation && !ab_disable_intermediate_upgrade) {
           // Match the DX9 proxy path used by Need for Speed: The Run: keep the
           // present backbuffer on an FP16 view clone with a stable view handle.
           renodx::mods::swapchain::swapchain_proxy_compatibility_mode = false;
@@ -980,7 +956,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           renodx::mods::swapchain::use_device_proxy = true;
           renodx::mods::swapchain::swap_chain_proxy_vertex_shader = __swap_chain_proxy_vertex_shader_dx11;
           renodx::mods::swapchain::swap_chain_proxy_pixel_shader = __swap_chain_proxy_pixel_shader_dx11;
-          renodx::mods::swapchain::SetUseHDR10();
+          renodx::mods::swapchain::SetUseHDR10(true);
         }
 
         std::string build_log = "LifeIsStrange RenoDX build: version=";
@@ -1004,6 +980,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += ab_disable_06a2_replacement ? "1" : "0";
         build_log += ", ab_disable_intermediate_upgrade=";
         build_log += ab_disable_intermediate_upgrade ? "1" : "0";
+        build_log += ", intermediate_binding_diagnostic=";
+        build_log += intermediate_binding_diagnostic ? "1" : "0";
         build_log += ", swap_chain_output_preset=";
         build_log += dx11_proxy_validation ? "HDR10" : "SDR";
         reshade::log::message(reshade::log::level::info, build_log.c_str());
@@ -1081,10 +1059,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           settings.push_back(setting);
         }
 
-        renodx::mods::swapchain::use_device_proxy = true;
-        // DX9 StretchRect is submitted asynchronously. Wait before publishing
-        // the shared resource to the D3D11 proxy so it cannot consume a partial frame.
-        renodx::mods::swapchain::device_proxy_wait_idle_source = true;
+        renodx::mods::swapchain::use_device_proxy = dx11_proxy_validation;
+        renodx::mods::swapchain::device_proxy_wait_idle_source = dx11_proxy_validation;
         renodx::mods::swapchain::device_proxy_wait_idle_destination = false;
 
         for (const auto& [key, format] : UPGRADE_TARGETS) {
@@ -1107,7 +1083,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           settings.push_back(setting);
 
           auto value = setting->GetValue();
-          if (value > 0) {
+          if (value > 0 && !ab_disable_intermediate_upgrade) {
             renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
                 .old_format = format,
                 .new_format = reshade::api::format::r16g16b16a16_float,
@@ -1149,14 +1125,19 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           renodx::mods::swapchain::device_proxy_wait_idle_source = false;
           renodx::mods::swapchain::device_proxy_wait_idle_destination = false;
         } else {
-          if (!intermediate_upgrade_validation) {
-            renodx::mods::swapchain::resource_upgrade_infos.clear();
+          auto& infos = renodx::mods::swapchain::resource_upgrade_infos;
+          if (!intermediate_upgrade_validation || ab_disable_intermediate_upgrade) {
+            infos.erase(
+                std::remove_if(infos.begin(), infos.end(), [](const auto& info) {
+                  return info.name == "LifeIsStrange_06A2_Intermediate_B8G8R8A8"
+                         || info.name == "LifeIsStrange_06A2_Intermediate_R8G8B8A8"
+                         || info.name == "LifeIsStrange_Intermediate_R16G16B16A16_UNORM";
+                }),
+                infos.end());
           }
-        renodx::mods::swapchain::use_resource_cloning =
-            !ab_disable_intermediate_upgrade && (intermediate_upgrade_validation || dx11_proxy_validation);
+          renodx::mods::swapchain::use_resource_cloning =
+              intermediate_upgrade_validation && !ab_disable_intermediate_upgrade;
           if (!dx11_proxy_validation) {
-            // In swapchain v2 this is an alias of resource_upgrade_infos.
-            // Keep the intermediate FP16 rules when the final proxy is off.
             renodx::mods::swapchain::use_device_proxy = false;
             renodx::mods::swapchain::set_color_space = true;
             renodx::mods::swapchain::device_proxy_wait_idle_source = false;
@@ -1197,32 +1178,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     renodx::mods::swapchain::SetUseHDR10(dx11_proxy_validation);
     renodx::mods::swapchain::use_resize_buffer = false;
     renodx::mods::swapchain::set_color_space = !dx11_proxy_validation;
-    if (vanilla_shader_validation && !readback_validation) {
-      renodx::mods::swapchain::resource_upgrade_infos.clear();
-      renodx::mods::swapchain::swap_chain_upgrade_targets.clear();
-      renodx::mods::swapchain::use_resource_cloning = false;
-      renodx::mods::swapchain::use_device_proxy = false;
-      renodx::mods::swapchain::set_color_space = true;
-    } else if (readback_validation) {
-      renodx::mods::swapchain::use_resource_cloning = false;
-      if (!readback_resource_upgrade) {
-        renodx::mods::swapchain::resource_upgrade_infos.clear();
-      }
-      renodx::mods::swapchain::swap_chain_upgrade_targets.clear();
-      renodx::mods::swapchain::use_device_proxy = false;
-      renodx::mods::swapchain::set_color_space = true;
-    } else {
-      if (!intermediate_upgrade_validation) {
-        renodx::mods::swapchain::resource_upgrade_infos.clear();
-      }
-      renodx::mods::swapchain::use_resource_cloning = intermediate_upgrade_validation || dx11_proxy_validation;
-      if (!dx11_proxy_validation) {
-        // In swapchain v2 this is an alias of resource_upgrade_infos.
-        // Keep the intermediate FP16 rules when the final proxy is off.
-        renodx::mods::swapchain::use_device_proxy = false;
-        renodx::mods::swapchain::set_color_space = true;
-      }
-    }
   }
   renodx::mods::swapchain::Use(fdw_reason, &shader_injection);
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
