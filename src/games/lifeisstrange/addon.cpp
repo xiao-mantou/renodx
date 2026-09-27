@@ -587,6 +587,23 @@ bool TraceIntermediateDrawBindings(
     if (view.handle == 0u) continue;
 
     bool found_info = false;
+    if (shader_hash == 0xFC2A0632u) {
+      const auto resource = renodx::utils::resource::GetResourceFromView(cmd_list->get_device(), view);
+      if (resource.handle != 0u) {
+        const auto desc = cmd_list->get_device()->get_resource_desc(resource);
+        message << "{resource=0x" << std::hex << std::uppercase << resource.handle << std::dec
+                << ",type=" << desc.type
+                << ",format=" << desc.texture.format
+                << ",size=" << desc.texture.width << "x" << desc.texture.height
+                << ",depth=" << desc.texture.depth
+                << ",levels=" << desc.texture.levels
+                << ",usage=" << desc.usage
+                << ",flags=0x" << std::hex << static_cast<uint32_t>(desc.flags) << std::dec
+                << "}";
+      } else {
+        message << "{resource=missing}";
+      }
+    }
     renodx::utils::resource::GetResourceViewInfo(view, [&](const renodx::utils::resource::ResourceViewInfo& info) {
       found_info = true;
       message << "{view_format=" << info.desc.format
