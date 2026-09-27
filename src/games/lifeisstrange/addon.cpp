@@ -756,6 +756,28 @@ void LoadDX11ProxySetting() {
       "LifeIsStrange_SceneExposure",
       scene_exposure_validation);
   scene_exposure_validation = std::clamp(scene_exposure_validation, 0.25f, 8.f);
+
+  enabled = 0;
+  reshade::get_config_value(
+      nullptr,
+      renodx::utils::settings::global_name.c_str(),
+      "LifeIsStrange_AB_Disable06A2Replacement",
+      enabled);
+  ab_disable_06a2_replacement = enabled != 0;
+
+  enabled = 0;
+  reshade::get_config_value(
+      nullptr,
+      renodx::utils::settings::global_name.c_str(),
+      "LifeIsStrange_AB_DisableIntermediateUpgrade",
+      enabled);
+  ab_disable_intermediate_upgrade = enabled != 0;
+  if (ab_disable_intermediate_upgrade && dx11_proxy_validation) {
+    dx11_proxy_validation = false;
+    reshade::log::message(
+        reshade::log::level::warning,
+        "LifeIsStrange: disabling DX11 proxy because AB_DisableIntermediateUpgrade=1.");
+  }
 }
 
 void EnsureIntermediateUpgradeInfos() {
@@ -841,10 +863,13 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::register_event<reshade::addon_event::destroy_command_list>(ClearIntermediateSrvTrace);
 
       if (!initialized) {
-        if (vanilla_shader_validation || readback_validation || ab_disable_06a2_replacement
+        if (vanilla_shader_validation || readback_validation
             || (isolate_06a2_shader && !force_fc2a_white_validation)) {
           // Keep this probe limited to the 06A2 replacement.
           custom_shaders.erase(0xFC2A0632u);
+        }
+        if (ab_disable_06a2_replacement) {
+          custom_shaders.erase(0x06A2A81Du);
         }
         if (!force_512_white_validation) {
           custom_shaders.erase(0x51229A9Bu);
@@ -975,6 +1000,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += std::to_string(scene_exposure_validation);
         build_log += ", bypass_06A2_lut=";
         build_log += bypass_06a2_lut_validation ? "1" : "0";
+        build_log += ", ab_disable_06A2_replacement=";
+        build_log += ab_disable_06a2_replacement ? "1" : "0";
+        build_log += ", ab_disable_intermediate_upgrade=";
+        build_log += ab_disable_intermediate_upgrade ? "1" : "0";
         build_log += ", swap_chain_output_preset=";
         build_log += dx11_proxy_validation ? "HDR10" : "SDR";
         reshade::log::message(reshade::log::level::info, build_log.c_str());
