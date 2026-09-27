@@ -539,7 +539,10 @@ bool TraceIntermediateDrawBindings(
     const bool allow_replacement) {
   static std::uint32_t trace_count_06a2 = 0u;
   static std::uint32_t trace_count_51229 = 0u;
-  auto& trace_count = shader_hash == 0x06A2A81Du ? trace_count_06a2 : trace_count_51229;
+  static std::uint32_t trace_count_fc2a = 0u;
+  auto& trace_count = shader_hash == 0x06A2A81Du
+                          ? trace_count_06a2
+                          : (shader_hash == 0x51229A9Bu ? trace_count_51229 : trace_count_fc2a);
   if (cmd_list == nullptr || trace_count >= 24u) return allow_replacement;
   ++trace_count;
 
@@ -581,7 +584,7 @@ bool TraceIntermediateDrawBindings(
     if (!found_info) message << "{view_info=missing}";
   }
 
-  if (shader_hash == 0x51229A9Bu) {
+  if (shader_hash == 0x51229A9Bu || shader_hash == 0xFC2A0632u) {
     TraceIntermediateSrvInputs(cmd_list, message);
   }
 
@@ -734,6 +737,15 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
                 .on_replace = [](reshade::api::command_list* cmd_list) {
                   // Return false so the vanilla 51229A9B shader remains active.
                   return TraceIntermediateDrawBindings(cmd_list, 0x51229A9Bu, false);
+                },
+            });
+        custom_shaders.emplace(
+            0xFC2A0632u,
+            renodx::mods::shader::CustomShader{
+                .crc32 = 0xFC2A0632u,
+                .on_replace = [](reshade::api::command_list* cmd_list) {
+                  // Keep the vanilla FC2A0632 shader while tracing the next pass.
+                  return TraceIntermediateDrawBindings(cmd_list, 0xFC2A0632u, false);
                 },
             });
 
