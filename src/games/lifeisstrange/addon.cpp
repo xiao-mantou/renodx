@@ -595,7 +595,7 @@ bool TraceIntermediateDrawBindings(
                 << ",type=" << desc.type
                 << ",format=" << desc.texture.format
                 << ",size=" << desc.texture.width << "x" << desc.texture.height
-                << ",depth=" << desc.texture.depth
+                << ",depth_or_layers=" << desc.texture.depth_or_layers
                 << ",levels=" << desc.texture.levels
                 << ",usage=" << desc.usage
                 << ",flags=0x" << std::hex << static_cast<uint32_t>(desc.flags) << std::dec
