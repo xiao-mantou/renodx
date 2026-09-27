@@ -514,7 +514,12 @@ void TraceIntermediateSrvInputs(reshade::api::command_list* cmd_list, std::strin
     message << "{view_format=" << renodx::utils::resource::GetResourceViewDesc(device, view).format
             << ",resource=0x" << std::hex << std::uppercase << resource.handle << std::dec;
     if (resource.handle != 0u) {
-      message << ",resource_format=" << device->get_resource_desc(resource).texture.format;
+      const auto desc = device->get_resource_desc(resource);
+      message << ",resource_type=" << desc.type
+              << ",resource_format=" << desc.texture.format
+              << ",size=" << desc.texture.width << "x" << desc.texture.height
+              << ",usage=" << desc.usage
+              << ",flags=0x" << std::hex << static_cast<uint32_t>(desc.flags) << std::dec;
     }
     renodx::utils::resource::GetResourceViewInfo(view, [&](const auto& info) {
       message << ",is_clone=" << (info.is_clone ? 1 : 0)
