@@ -200,6 +200,7 @@ float4 main(PS_IN i) : COLOR {
   // Preserve the original final multiply/add while removing only its output
   // saturation so HDR values can continue through the upgraded resource.
   float3 output_rgb = r1.xyz * r0.xyz + r0.w;
+  output_rgb *= LIFEISSTRANGE_SCENE_EXPOSURE;
   float white_test = step(0.5f, LIFEISSTRANGE_FORCE_06A2_WHITE);
   output_rgb = lerp(output_rgb, 4.f, white_test);
   return float4(output_rgb, r1.w);

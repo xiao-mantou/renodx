@@ -404,11 +404,12 @@ constexpr bool readback_resource_upgrade = false;
 constexpr bool intermediate_upgrade_validation = true;
 bool dx11_proxy_validation = true;
 constexpr bool isolate_06a2_shader = true;
-bool force_06a2_white_validation = true;
+bool force_06a2_white_validation = false;
 bool force_proxy_white_validation = false;
 bool force_fc2a_white_validation = false;
 bool bypass_06a2_lut_validation = false;
 bool force_512_white_validation = false;
+float scene_exposure_validation = 1.f;
 
 struct IntermediateSrvTraceState {
   std::array<reshade::api::resource_view, 6> views = {};
@@ -745,6 +746,14 @@ void LoadDX11ProxySetting() {
       "LifeIsStrange_Force512White",
       enabled);
   force_512_white_validation = enabled != 0;
+
+  scene_exposure_validation = 1.f;
+  reshade::get_config_value(
+      nullptr,
+      renodx::utils::settings::global_name.c_str(),
+      "LifeIsStrange_SceneExposure",
+      scene_exposure_validation);
+  scene_exposure_validation = std::clamp(scene_exposure_validation, 0.25f, 8.f);
 }
 
 void EnsureIntermediateUpgradeInfos() {
@@ -820,6 +829,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       shader_injection.lifeisstrange_force_fc2a_white = force_fc2a_white_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_bypass_06a2_lut = bypass_06a2_lut_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_force_512_white = force_512_white_validation ? 1.f : 0.f;
+      shader_injection.lifeisstrange_scene_exposure = scene_exposure_validation;
       shader_injection.swap_chain_output_preset = dx11_proxy_validation ? 1.f : 0.f;
       if (readback_validation) {
         reshade::register_event<reshade::addon_event::init_command_queue>(lifeisstrange::readback::OnInitCommandQueue);
@@ -958,6 +968,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += force_fc2a_white_validation ? "1" : "0";
         build_log += ", force_512_white=";
         build_log += force_512_white_validation ? "1" : "0";
+        build_log += ", scene_exposure=";
+        build_log += std::to_string(scene_exposure_validation);
         build_log += ", bypass_06A2_lut=";
         build_log += bypass_06a2_lut_validation ? "1" : "0";
         build_log += ", swap_chain_output_preset=";
