@@ -466,6 +466,27 @@ void TraceIntermediatePushDescriptors(
       renodx::utils::resource::GetResourceViewInfo(view, [&](const auto& info) {
         if (info.clone_enabled && info.clone.handle != 0u) clone = info.clone;
       });
+      if (clone.handle == 0u) {
+        const auto resource = renodx::utils::resource::GetResourceFromView(cmd_list->get_device(), view);
+        if (resource.handle != 0u) {
+          const auto desc = cmd_list->get_device()->get_resource_desc(resource);
+          if (desc.type == reshade::api::resource_type::texture_2d
+              && desc.texture.format == reshade::api::format::b8g8r8a8_unorm
+              && desc.texture.width == 1920u
+              && desc.texture.height == 1080u) {
+            for (auto& target : renodx::mods::swapchain::resource_upgrade_infos) {
+              if (target.name == "LifeIsStrange_06A2_Intermediate_B8G8R8A8") {
+                renodx::utils::resource::UpdateResourceInfo(resource, [&](auto* resource_info) {
+                  if (resource_info->clone_target == nullptr) resource_info->clone_target = &target;
+                });
+                clone = renodx::utils::resource::upgrade::GetResourceViewClone(
+                    view, {.require_enabled = false, .allow_create = true, .activate = true});
+                break;
+              }
+            }
+          }
+        }
+      }
       if (clone.handle != 0u) {
         applying_clone = true;
         if (update.type == reshade::api::descriptor_type::sampler_with_resource_view) {
