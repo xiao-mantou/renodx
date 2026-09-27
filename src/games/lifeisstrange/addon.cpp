@@ -25,6 +25,7 @@
 #include <array>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 namespace {
 
@@ -546,7 +547,32 @@ bool TraceIntermediateDrawBindings(
   if (cmd_list == nullptr || trace_count >= 24u) return allow_replacement;
   ++trace_count;
 
-  const auto& render_targets = renodx::utils::swapchain::GetRenderTargets(cmd_list);
+  auto render_targets = renodx::utils::swapchain::GetRenderTargets(cmd_list);
+  if (shader_hash == 0xFC2A0632u && !render_targets.empty()) {
+    std::vector<reshade::api::resource_view> cloned_render_targets = render_targets;
+    bool changed = false;
+    for (std::size_t index = 0; index < cloned_render_targets.size(); ++index) {
+      const auto clone = renodx::mods::swapchain::GetResourceViewClone(render_targets[index]);
+      if (clone.handle != 0u && clone.handle != render_targets[index].handle) {
+        cloned_render_targets[index] = clone;
+        changed = true;
+      }
+    }
+    if (changed) {
+      cmd_list->bind_render_targets_and_depth_stencil(
+          static_cast<uint32_t>(cloned_render_targets.size()),
+          cloned_render_targets.data(),
+          {0u});
+      render_targets = cloned_render_targets;
+      reshade::log::message(
+          reshade::log::level::info,
+          "LifeIsStrange FC2A0632 RTV diagnostic: bound available FP16 clone");
+    } else {
+      reshade::log::message(
+          reshade::log::level::info,
+          "LifeIsStrange FC2A0632 RTV diagnostic: no clone available");
+    }
+  }
   std::stringstream message;
   message << "LifeIsStrange binding diagnostic [shader=0x" << std::hex << std::uppercase << shader_hash << std::dec
           << ", sample=" << trace_count << "]";
