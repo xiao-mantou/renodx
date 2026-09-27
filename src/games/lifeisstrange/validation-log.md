@@ -16,9 +16,10 @@
 ## Main-menu DevKit snapshot (2026-09-27)
 
 - Captured with DevKit only; RenoDX/proxy was not active.
-- The full-screen chain in the captured frame was `0x06A2A81D` draw 230, then `0xFC2A0632` draw 235.
+- The full-screen chain in the captured frame was `0x06A2A81D` draw 230, then `0x51229A9B` draws 231/234, then `0xFC2A0632` draw 235.
 - `0x06A2A81D` samples the live `1920x1080 R16G16B16A16_FLOAT` scene resource and writes to a `1920x1080 B8G8R8A8_UNORM` resource.
 - The live 06A2 input analysis reached R=28.328, G=19.141, B=15.633, and luminance=20.841, with 31,240 pixels above 1.0.
-- `0xFC2A0632` then samples that `1920x1080 B8G8R8A8_UNORM` resource and writes to the `1920x1080 B8G8R8A8_UNORM` swapchain surface.
-- `0x51229A9B` had 12 draws in this frame. Its final listed draw 234 reads and writes a separate `1920x1080 B8G8R8A8_UNORM` resource; its other draws include `482x272 R16G16B16A16_UNORM` targets. These 512 draws are not the direct full-screen predecessor of 06A2 in this snapshot.
-- Therefore the tested main-menu full-screen order is `scene FP16 -> 06A2 -> B8 intermediate -> FC2A -> swap`.
+- `0x51229A9B` draw 231/234 samples resource `0x36D6FC40`, which is the 06A2 output, and writes resource `0x36D6F440`.
+- `0xFC2A0632` samples resource `0x36D6F440`, which is the 512 output, and writes to the `1920x1080 B8G8R8A8_UNORM` swapchain surface.
+- The other 512 draws in this frame target smaller intermediate resources and are separate passes.
+- Therefore the verified main-menu full-screen order is `scene FP16 -> 06A2 -> 512 -> FC2A -> swap`.
