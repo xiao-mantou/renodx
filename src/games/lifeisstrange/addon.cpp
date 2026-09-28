@@ -410,7 +410,6 @@ bool force_proxy_white_validation = false;
 bool force_fc2a_white_validation = false;
 bool bypass_06a2_lut_validation = false;
 bool force_512_white_validation = false;
-bool force_06a2_pre_lut_white_validation = false;
 float scene_exposure_validation = 1.f;
 bool ab_disable_06a2_replacement = false;
 bool ab_disable_intermediate_upgrade = false;
@@ -753,13 +752,6 @@ void LoadDX11ProxySetting() {
       enabled);
   force_512_white_validation = enabled != 0;
 
-  enabled = 0;
-  reshade::get_config_value(
-      nullptr,
-      renodx::utils::settings::global_name.c_str(),
-      "LifeIsStrange_Force06A2PreLUTWhite",
-      enabled);
-  force_06a2_pre_lut_white_validation = enabled != 0;
 
   scene_exposure_validation = 1.f;
   reshade::get_config_value(
@@ -874,7 +866,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       shader_injection.lifeisstrange_force_fc2a_white = force_fc2a_white_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_bypass_06a2_lut = bypass_06a2_lut_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_force_512_white = force_512_white_validation ? 1.f : 0.f;
-      shader_injection.lifeisstrange_force_06a2_pre_lut_white = force_06a2_pre_lut_white_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_scene_exposure = scene_exposure_validation;
       shader_injection.swap_chain_output_preset = dx11_proxy_validation ? 1.f : 0.f;
       if (readback_validation) {

@@ -151,7 +151,7 @@ float4 main(PS_IN i) : COLOR {
   float hdr_lut_scale = max(max(r0.x, r0.y), r0.w);
   hdr_lut_scale = max(hdr_lut_scale, 1.f);
   float3 hdr_lut_input = float3(r0.x, r0.w, r0.z);
-  hdr_lut_input = lerp(hdr_lut_input, 4.f, step(0.5f, LIFEISSTRANGE_FORCE_06A2_PRE_LUT_WHITE));
+  hdr_lut_input = lerp(hdr_lut_input, 4.f, step(0.5f, LIFEISSTRANGE_FORCE_06A2_WHITE));
   r0 = saturate(r0 / hdr_lut_scale);
   r1.xyw = r0.xwz * c26.xzy;
   r0.x = frac(r1.x);
