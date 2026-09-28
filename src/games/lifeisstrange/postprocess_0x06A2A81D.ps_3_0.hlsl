@@ -178,8 +178,6 @@ float4 main(PS_IN i) : COLOR {
   r3 = lerp(r2, r1, r0.y);
   // ps_3_0 lrp r1, r0.x, r6, r3 expands to lerp(r3, r6, r0.x).
   r1 = lerp(r3, r6, r0.x);
-  r1.xyz *= hdr_lut_scale;
-
   r0 = tex2D(DNEVignetTexture, i.texcoord2.zw);
   r0.x = saturate(dot(r0, DNEVignetMaskFactors));
   r0.yzw = DNEVignetColor.xyz - r4.x;
