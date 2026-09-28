@@ -1,3 +1,5 @@
+#include "./shared.h"
+
 float4 BloomTintAndScreenBlendThreshold : register(c0);
 float4 MinZ_MaxZRatio : register(c2);
 float4 ImageAdjustments1 : register(c7);
@@ -148,6 +150,7 @@ float4 main(PS_IN i) : COLOR {
   r0 *= r3;
   float hdr_lut_scale = max(max(r0.x, r0.y), r0.w);
   hdr_lut_scale = max(hdr_lut_scale, 1.f);
+  float3 hdr_lut_input = float3(r0.x, r0.w, r0.z);
   r0 = saturate(r0 / hdr_lut_scale);
   r1.xyw = r0.xwz * c26.xzy;
   r0.x = frac(r1.x);
@@ -178,6 +181,7 @@ float4 main(PS_IN i) : COLOR {
   r3 = lerp(r2, r1, r0.y);
   // ps_3_0 lrp r1, r0.x, r6, r3 expands to lerp(r3, r6, r0.x).
   r1 = lerp(r3, r6, r0.x);
+  r1.xyz = lerp(r1.xyz, hdr_lut_input, step(0.5f, LIFEISSTRANGE_BYPASS_06A2_LUT));
   r0 = tex2D(DNEVignetTexture, i.texcoord2.zw);
   r0.x = saturate(dot(r0, DNEVignetMaskFactors));
   r0.yzw = DNEVignetColor.xyz - r4.x;
