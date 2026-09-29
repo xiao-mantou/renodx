@@ -151,7 +151,7 @@ float4 main(PS_IN i) : COLOR {
   float3 hdr_lut_input = float3(r0.z, r0.w, r0.x);
   hdr_lut_input = lerp(hdr_lut_input, 4.f, step(0.5f, LIFEISSTRANGE_FORCE_06A2_WHITE));
   float hdr_lut_scale = 1.f;
-  if (RENODX_TONE_MAP_TYPE > 0.f) {
+  if (RENODX_SWAP_CHAIN_OUTPUT_PRESET > 0.f) {
     hdr_lut_scale = renodx::tonemap::neutwo::ComputeMaxChannelScale(float3(r0.z, r0.w, r0.x));
     // Scale both copies of blue before the original LUT-domain saturate.
     r0 *= hdr_lut_scale;
@@ -188,7 +188,7 @@ float4 main(PS_IN i) : COLOR {
   // ps_3_0 lrp r1, r0.x, r6, r3 expands to lerp(r3, r6, r0.x).
   r1 = lerp(r3, r6, r0.x);
 
-  if (RENODX_TONE_MAP_TYPE > 0.f) {
+  if (RENODX_SWAP_CHAIN_OUTPUT_PRESET > 0.f) {
     float3 lut_output_linear = renodx::color::srgb::DecodeSafe(r1.xyz);
     r1.xyz = renodx::color::srgb::EncodeSafe(lut_output_linear / hdr_lut_scale);
   }
@@ -204,8 +204,8 @@ float4 main(PS_IN i) : COLOR {
   r0.w *= ImageAdjustments1.w;
 
   float3 output_color = r1.xyz * r0.xyz + r0.w;
-  if (RENODX_TONE_MAP_TYPE == 0.f) {
-    // The original DX9 shader ends with mad_sat; FP16 RTV upgrades need it explicit.
+  if (RENODX_SWAP_CHAIN_OUTPUT_PRESET == 0.f) {
+    // Preserve the original DX9 mad_sat in SDR; the HDR proxy path keeps FP16 headroom.
     output_color = saturate(output_color);
   }
 
