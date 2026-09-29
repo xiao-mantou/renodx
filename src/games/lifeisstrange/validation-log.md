@@ -40,3 +40,63 @@
 - `LifeIsStrange_AB_DisableIntermediateUpgrade=1` removes the dedicated FP16 intermediate rules and automatically disables the proxy for a valid vanilla-path comparison.
 - `LifeIsStrange_IntermediateBindingDiagnostic=1` enables the 512/FC2A binding diagnostics and SRV clone rebinding. It defaults to `0` so normal runs do not rewrite descriptor bindings.
 - `LifeIsStrange_ForceProxyWhite`, `LifeIsStrange_Force06A2White`, `LifeIsStrange_ForceFC2AWhite`, and `LifeIsStrange_Force512White` default to `0`; they are probes only and should not be used for normal gameplay.
+
+## Main-menu sun capture (2026-09-28, DevKit only)
+
+- Snapshot: D3D9, 1920x1080 B8G8R8A8_UNORM swapchain; no RenoDX replacement or resource upgrade was active.
+- Draw 235 (`0x06A2A81D`) binds the 1920x1080 FP16 scene view `0x370D7060` at sampler s0. The original PS3 disassembly samples `SceneColorTexture` at s0. DevKit's `usedByActiveShader=false` metadata for this binding conflicts with the disassembly; do not use that flag alone to infer D3D9 sampler usage.
+- Live readback of that FP16 view measured max RGB R=26.609, G=17.984, B=14.703, max luminance=19.581, and 31,147 pixels with an RGB channel above 1.0. This is a live-resource read, not a frozen snapshot copy. EXR: `E:\SteamLibrary\steamapps\common\Life Is Strange\Binaries\Win32\renodx-dev\dump\20260928-mainmenu-sun-scene-fp16.exr`.
+- The original `0x06A2A81D` disassembly ends with `mad_sat oC0.xyz`; draw 235 writes to B8 resource `0x370D9A00`. This is the first confirmed HDR-to-SDR clamp in the captured native chain.
+- Draw 236 (`0x51229A9B`) samples `0x370D9A00` and writes B8 resource `0x370D9320`. Draws 237/238 then write overlays back to `0x370D9A00`; draw 239 runs `0x51229A9B` again, samples that updated resource, and rewrites `0x370D9320`. Draw 240 (`0xFC2A0632`) samples `0x370D9320` and writes the B8 swapchain.
+- Live readback after these draws showed `0x370D9A00` max luminance=0.998584 and `0x370D9320` max luminance=0.998584; neither contained RGB values above 1.0. These readbacks are current resource contents, not frozen per-draw copies.
+
+## Stage 1: force-white chain readback (2026-09-28, main menu)
+
+- RenoDX build `lifeisstrange-2c3d0e20d0cc17e61f1221080cd40b88bdd382e9`; DevKit and RenoDX loaded together, DX11 proxy off. Runtime settings from `ReShade.log`: `Force06A2White=1`, `Bypass06A2LUT=1`, `SceneExposure=1`, both A/B disables off.
+- D3D9 snapshot: 1920x1080, B8G8R8A8_UNORM swapchain, 252 draws. Draw 239 is `0x06A2A81D` (shader source `Add-on`), draw 240 is `0x51229A9B`, and draw 244 is `0xFC2A0632`.
+- Same-snapshot bindings prove the chain: scene FP16 SRV `0x36E9B7E0` -> 06A2 B8 resource `0x36E9BA40` / FP16 clone `0x34C8BAA0` -> 512 FP16 output clone `0x34C8BBE0` -> FC2A SRV `0x34C8BBE0` -> B8 swapchain.
+- Live readback of the scene FP16 input (not an exact frozen snapshot) measured channel maxima R=30.0625, G=20.265625, B=16.5625; 26,152 pixels had an RGB channel >1, 11,736 >2, and 2,739 >4.
+- With the force-white probe active, the 06A2 FP16 clone readback confirmed `usedClone=true`: every pixel had an RGB channel >1 and >2; maxima were R=4.07421875, G=4.07421875, B=4.078125. The 512 FP16 clone also read back with `usedClone=true`, all pixels >1 and >2, and matching RGB maxima/means. This rules out clipping in the 06A2-to-512 FP16 path for this probe; it does not establish the unforced scene output or final HDR presentation.
+- Ignore the scene input analyzer's `luminance.max=222.081075` for this capture: it contradicts the RGB maxima, while the checked analyzer formula is a weighted RGB sum. Channel statistics and threshold counts are the usable results.
+- `LifeIsStrange_SceneExposure` currently has no HLSL use: the addon reads/injects/logs it, and `shared.h` declares the cbuffer field, but no Life Is Strange shader references the macro. `SceneExposure=1` therefore has no rendering effect in this build.
+
+## Stage 1B: unforced 06A2 with LUT bypassed (2026-09-28, main menu)
+
+- RenoDX build `lifeisstrange-2c3d0e20d0cc17e61f1221080cd40b88bdd382e9`; runtime settings: `Force06A2White=0`, `Bypass06A2LUT=1`, proxy off, RenoDX readback callback disabled. 1920x1080 D3D9 snapshot: 255 draws.
+- Draw 242 (`0x06A2A81D`, shader source `Add-on`) reads scene FP16 `0x32EA3780` and writes the 06A2 FP16 clone `0x36D7B820`; draw 243 (`0x51229A9B`) consumes `0x36D7B820` and writes FP16 clone `0x36D7C040`; draw 247 (`0xFC2A0632`) consumes `0x36D7C040` and writes the B8 swapchain.
+- One-shot live readbacks (not exact frozen snapshot copies), all with confirmed `usedClone` where applicable: scene input maxima R=31.28125/G=21.109375/B=17.21875, with 26,435 pixels >1, 12,455 >2, and 3,382 >4. 06A2 output clone maxima R=1.16015625/G=1.1064453125/B=1.0947265625, with 4,285 pixels >1 and none >2. 512 output clone had the same RGB maxima, 4,231 pixels >1, and none >2.
+- The large range reduction is already present at the 06A2 output while LUT bypass is enabled; the 512 FP16 pass retains nearly the same range. The 06A2 shader's pre-LUT processing is now the next target to isolate. HDR10 presentation remains untested with proxy disabled.
+- EXRs: `20260928-mainmenu-stage1b-scene-input-fp16.exr`, `20260928-mainmenu-stage1b-06a2-clone-fp16.exr`, and `20260928-mainmenu-stage1b-512-clone-fp16.exr` under the game `renodx-dev/dump` folder.
+
+## 06A2 max-channel LUT bridge (2026-09-29)
+
+- The Stage 1B `1.16` peak came from the LUT-bypass value after `ImageAdjustments2`; it is not the scene-input peak. The captured pre-shaper FP16 scene reaches RGB maxima above `31`.
+- The tested `939a28d3` source did not match the previous note: it computed N2 after `ImageAdjustments2`, restored only the already-compressed LUT result, and never called `ToneMapPass`. `addon.cpp` also forced `ToneMapType=0`, so changing the UI/INI type could not affect rendering.
+- The corrected path captures the scene after bloom/compositing and before `ImageAdjustments2`, compresses that source for the native curve/LUT, then uses the native pre-LUT color as `neutral_sdr` and decoded LUT output as `graded_sdr` in three-argument `ToneMapPass`. Vanilla/0 retains the original SDR LUT path and final saturation.
+- Runtime HDR luminance and visual matching still require a new build and in-game test.
+
+## ImageAdjustments2 audit (2026-09-29)
+
+- `ReShade.log` confirms build `2b24f5f08dc01f5b02c33380fb754c80a8e05c07`, `ToneMapType=3` (RenoDRT), HDR10 output, and DX11 proxy enabled. LUT bypass, white probes, and RenoDX readback are disabled. The reported ~580-nit peak and overexposed appearance are user-observed, not a DevKit/readback measurement.
+- In `postprocess_0x06A2A81D.ps_3_0.hlsl`, `ImageAdjustments2` is c8. The shader computes `r1.xyz = r0.zwy * c8.y + c8.x`, takes reciprocals, multiplies them into the matching color registers, then immediately `saturate`s before packed `ColorGradingLUT` sampling. The per-channel curve is `f(C) = C / (c8.x + c8.y * C)`; `saturate` is the following hard `[0,1]` LUT-domain clip.
+- The retained DevKit files contain shader CSOs and scene/output EXRs, but no draw constant snapshot. Stage 1B's `1.16` peak is evidence that the 06A2 pre-LUT path strongly reduced the scene range: that build's LUT-bypass branch forwarded the value captured immediately after `ImageAdjustments2` and before LUT saturation. It was still a final resource readback with later vignette/grain, not an isolated same-pixel curve sample, so it cannot recover `c8.x/c8.y` or the exact curve knee/asymptote.
+- The current HDR branch captures scene color before `ImageAdjustments2` and feeds it to `ToneMapPass`; the native curve remains in the path used to build the LUT reference. Thus `ImageAdjustments2` is confirmed as the game's native SDR compression/clip point, but available evidence does not prove it alone causes the current 580-nit/overexposed result.
+- Domain risk to verify before shader edits: `neutral_sdr` is taken directly from the saturated pre-LUT value, while `graded_sdr` is explicitly sRGB-decoded after LUT sampling. The LUT/shaper transfer function is not yet proven, so these references may be in different domains; the LUT skill requires matching linear `neutral_sdr` and `graded_sdr` inputs to `ToneMapPass`.
+- At the time of this audit, DevKit MCP was unavailable and no live draw-constant capture had been made; see the follow-up snapshot below.
+
+## Live ImageAdjustments2 snapshot (2026-09-29 18:04 +08:00)
+
+- Captured one D3D9 main-menu frame with DevKit only: 1920x1080, B8G8R8A8_UNORM swapchain, 243 draws. No RenoDX addon, proxy, clone, or resource readback was used.
+- Draw 230 (`0x06A2A81D`) reads scene FP16 view/resource `0x348772A0` at s0 and LUT `0x34878F80` (256x64 B8G8R8A8_UNORM) at s4; it writes `0x34878C00`, a 1920x1080 B8G8R8A8_UNORM render target. The shader declares `ImageAdjustments2` at c8, but the snapshot reports `constantCount=0` and no constant buffers, so c8 values were not captured.
+- Draw 234 (`0x51229A9B`) samples `0x34878C00` and writes B8 resource `0x348798C0`. Draw 235 (`0xFC2A0632`) samples `0x348798C0` and writes the B8 swapchain. This same-frame binding evidence confirms `scene FP16 -> 06A2/B8 -> 512/B8 -> FC2A -> swap` for this menu frame.
+- `Trace With Snapshot` was off for this 18:04 capture, so it produced no push-constant trace. At that time the formatter also omitted `first`, preventing exact c-register attribution; a later trace was captured at 18:35 (see below).
+- This vanilla DevKit-only snapshot confirms the native B8/saturate bottleneck but does not measure the current RenoDX HDR branch or explain its reported ~580-nit output.
+
+## ImageAdjustments2 constant trace (2026-09-29 18:35 +08:00)
+
+- One main-menu DevKit trace captured the `0x06A2A81D` pixel shader draw (bound at 18:35:44.865; snapshot/draw #234). No resource chain or pixel readback was requested.
+- At 18:35:44.867, a pixel push-constant block adjacent to that draw contained raw bits `0x3f690d9b, 0x3f09abac, 0, 0`, or `0.91036385, 0.53777575, 0, 0`. These are plausible `ImageAdjustments2` c8 values, but the trace does not print the register start offset, so c8 attribution remains unconfirmed.
+- This capture's `trace.hpp::OnPushConstants` log omitted the `first` offset, so c8 attribution is unconfirmed. The source has since been minimally changed to print `first`; that change is not yet built or deployed. Confirm c8 only after running the rebuilt DevKit and capturing one target draw.
+- If these are c8, the shader maps each channel as `C / (0.91036385 + 0.53777575 * C)`, then applies `saturate` for the LUT domain. This leaves 0.18 near 0.179, maps 1.0 to about 0.691, and the following saturate clips inputs at approximately 1.970 or above to 1.0. The curve's pre-saturate asymptote is about 1.860.
+- This confirms the native 06A2 SDR path has strong highlight compression followed by a hard LUT-domain clip, but does not by itself explain the RenoDX HDR result: the HDR branch captures the pre-curve scene for `ToneMapPass` and uses the native curve result as the LUT/reference path. Validate the `neutral_sdr` and `graded_sdr` domains before changing shader logic.
+- `SnapshotTraceWithSnapshot=1` was used for this capture and has since been turned off (`=0`). Keep it off except for the single trace snapshot with the rebuilt DevKit, then turn it off again.

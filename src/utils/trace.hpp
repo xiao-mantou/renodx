@@ -679,6 +679,7 @@ static void OnPushConstants(
   s << "push_constants(" << PRINT_PTR(layout.handle);
   s << "[" << layout_param << "]";
   s << ", stage: " << std::hex << static_cast<uint32_t>(stages) << std::dec << " (" << stages << ")";
+  s << ", first: " << first;
   s << ", count: " << count;
   s << "{ 0x";
   for (uint32_t i = 0; i < count; i++) {
