@@ -35,6 +35,8 @@ static const float4 c23 = float4(0.300000012f, 0.589999974f, 0.109999999f, 0.062
 static const float4 c24 = float4(1.f, 2.f, 3.f, -1.f);
 static const float4 c25 = float4(0.25f, 0.0078125f, 0.001953125f, 0.064453125f);
 static const float4 c26 = float4(14.9998999f, 0.05859375f, 0.234375f, 0.f);
+// Temporary HDR experiment pivot; the Vanilla/SDR branch does not use it.
+static const float LIFEISSTRANGE_HDR_CURVE_PIVOT = 0.18f;
 
 struct PS_IN {
   float4 texcoord : TEXCOORD;
@@ -141,17 +143,12 @@ float4 main(PS_IN i) : COLOR {
   r3 *= c22.x;
   r0 = r3 * r1.x + r0;
 
-  // Capture the scene after bloom/compositing but before the game's native
-  // ImageAdjustments2 tone curve. The LUT bridge must compress this source,
-  // not the already-mapped value produced below.
+  // Keep the verified scene signal before ImageAdjustments2 for the HDR-only
+  // extended-curve/LUT bridge. The SDR branch below remains SM3-equivalent.
   float3 untonemapped_color = float3(r0.z, r0.w, r0.x);
-  bool use_hdr_lut_bridge = RENODX_TONE_MAP_TYPE > 0.f
-                            && RENODX_SWAP_CHAIN_OUTPUT_PRESET > 0.f;
+  bool use_hdr_lut_bridge = RENODX_SWAP_CHAIN_OUTPUT_PRESET > 0.f;
   float hdr_lut_scale = 1.f;
-  if (use_hdr_lut_bridge) {
-    hdr_lut_scale = renodx::tonemap::neutwo::ComputeMaxChannelScale(untonemapped_color);
-    r0 *= hdr_lut_scale;
-  }
+  float3 hdr_lut_neutral_linear = 0.f;
 
   r1.xyz = r0.zwy * ImageAdjustments2.y + ImageAdjustments2.x;
   r3.z = rcp(r1.x);
@@ -159,9 +156,37 @@ float4 main(PS_IN i) : COLOR {
   r3.xy = rcp(r1.z);
   r0 *= r3;
 
-  r0 = saturate(r0);
+  float3 neutral_sdr = 0.f;
+  if (use_hdr_lut_bridge) {
+    const float pivot = LIFEISSTRANGE_HDR_CURVE_PIVOT;
+    float3 curve_base_input = min(untonemapped_color, pivot.xxx);
+    float3 curve_base = curve_base_input
+                        / (ImageAdjustments2.x + ImageAdjustments2.y * curve_base_input);
+    float pivot_denominator = ImageAdjustments2.x + ImageAdjustments2.y * pivot;
+    float pivot_slope = ImageAdjustments2.x / (pivot_denominator * pivot_denominator);
+    float3 extended_curve = curve_base + pivot_slope * max(untonemapped_color - pivot.xxx, 0.f);
+
+    // Provisional domain assumption: treat the curve/LUT signal as sRGB-shaped.
+    // Compress its decoded value for LUT sampling, then reconstruct it once.
+    float3 extended_curve_linear = renodx::color::srgb::DecodeSafe(extended_curve);
+    hdr_lut_scale = renodx::tonemap::neutwo::ComputeMaxChannelScale(extended_curve_linear);
+    hdr_lut_neutral_linear = extended_curve_linear * hdr_lut_scale;
+    // This guard is only on the bounded LUT proxy; HDR is retained for reconstruction.
+    float3 lut_proxy = saturate(renodx::color::srgb::EncodeSafe(hdr_lut_neutral_linear));
+
+    // The original SM3 LUT packing uses RGB in r0.z/r0.w/r0.x; r0.y duplicates B.
+    r0.z = lut_proxy.r;
+    r0.w = lut_proxy.g;
+    r0.x = lut_proxy.b;
+    r0.y = lut_proxy.b;
+    neutral_sdr = hdr_lut_neutral_linear;
+  } else {
+    // Preserve the original SM3 mul_sat LUT-domain clamp in Vanilla/SDR.
+    r0 = saturate(r0);
+    neutral_sdr = renodx::color::srgb::DecodeSafe(float3(r0.z, r0.w, r0.x));
+  }
+
   // The SM3 packed-LUT registers hold R/G/B in z/w/x (x duplicates y).
-  float3 neutral_sdr = float3(r0.z, r0.w, r0.x);
   r1.xyw = r0.xwz * c26.xzy;
   r0.x = frac(r1.x);
   r0.x = -r0.x + r1.x;
@@ -196,12 +221,12 @@ float4 main(PS_IN i) : COLOR {
   if (use_hdr_lut_bridge) {
     float3 graded_sdr = renodx::color::srgb::DecodeSafe(r1.xyz);
     graded_sdr = lerp(graded_sdr, neutral_sdr, bypass_lut);
-    float3 hdr_output = renodx::draw::ToneMapPass(
-        untonemapped_color,
+    float3 reconstructed_hdr = renodx::math::DivideSafe(
         graded_sdr,
-        neutral_sdr);
-    // Later game effects operate on the original sRGB-shaped intermediate.
-    r1.xyz = renodx::color::srgb::EncodeSafe(hdr_output);
+        hdr_lut_scale.xxx,
+        graded_sdr);
+    // Keep this transport test neutral: no RenoDX scene ToneMapPass yet.
+    r1.xyz = renodx::color::srgb::EncodeSafe(reconstructed_hdr);
   } else if (bypass_lut > 0.f) {
     float3 graded_sdr = renodx::color::srgb::DecodeSafe(r1.xyz);
     r1.xyz = renodx::color::srgb::EncodeSafe(lerp(graded_sdr, neutral_sdr, bypass_lut));
