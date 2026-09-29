@@ -141,23 +141,27 @@ float4 main(PS_IN i) : COLOR {
   r3 *= c22.x;
   r0 = r3 * r1.x + r0;
 
+  // Capture the scene after bloom/compositing but before the game's native
+  // ImageAdjustments2 tone curve. The LUT bridge must compress this source,
+  // not the already-mapped value produced below.
+  float3 untonemapped_color = float3(r0.z, r0.w, r0.x);
+  bool use_hdr_lut_bridge = RENODX_TONE_MAP_TYPE > 0.f
+                            && RENODX_SWAP_CHAIN_OUTPUT_PRESET > 0.f;
+  float hdr_lut_scale = 1.f;
+  if (use_hdr_lut_bridge) {
+    hdr_lut_scale = renodx::tonemap::neutwo::ComputeMaxChannelScale(untonemapped_color);
+    r0 *= hdr_lut_scale;
+  }
+
   r1.xyz = r0.zwy * ImageAdjustments2.y + ImageAdjustments2.x;
   r3.z = rcp(r1.x);
   r3.w = rcp(r1.y);
   r3.xy = rcp(r1.z);
   r0 *= r3;
 
-  // The SM3 packed-LUT registers hold R/G/B in z/w/x (x duplicates y).
-  float3 hdr_lut_input = float3(r0.z, r0.w, r0.x);
-  hdr_lut_input = lerp(hdr_lut_input, 4.f, step(0.5f, LIFEISSTRANGE_FORCE_06A2_WHITE));
-  float hdr_lut_scale = 1.f;
-  if (RENODX_SWAP_CHAIN_OUTPUT_PRESET > 0.f) {
-    hdr_lut_scale = renodx::tonemap::neutwo::ComputeMaxChannelScale(float3(r0.z, r0.w, r0.x));
-    // Scale both copies of blue before the original LUT-domain saturate.
-    r0 *= hdr_lut_scale;
-  }
-
   r0 = saturate(r0);
+  // The SM3 packed-LUT registers hold R/G/B in z/w/x (x duplicates y).
+  float3 neutral_sdr = float3(r0.z, r0.w, r0.x);
   r1.xyw = r0.xwz * c26.xzy;
   r0.x = frac(r1.x);
   r0.x = -r0.x + r1.x;
@@ -188,11 +192,22 @@ float4 main(PS_IN i) : COLOR {
   // ps_3_0 lrp r1, r0.x, r6, r3 expands to lerp(r3, r6, r0.x).
   r1 = lerp(r3, r6, r0.x);
 
-  if (RENODX_SWAP_CHAIN_OUTPUT_PRESET > 0.f) {
-    float3 lut_output_linear = renodx::color::srgb::DecodeSafe(r1.xyz);
-    r1.xyz = renodx::color::srgb::EncodeSafe(lut_output_linear / hdr_lut_scale);
+  float bypass_lut = step(0.5f, LIFEISSTRANGE_BYPASS_06A2_LUT);
+  if (use_hdr_lut_bridge) {
+    float3 graded_sdr = renodx::color::srgb::DecodeSafe(r1.xyz);
+    graded_sdr = lerp(graded_sdr, neutral_sdr, bypass_lut);
+    float3 hdr_output = renodx::draw::ToneMapPass(
+        untonemapped_color,
+        graded_sdr,
+        neutral_sdr);
+    // Later game effects operate on the original sRGB-shaped intermediate.
+    r1.xyz = renodx::color::srgb::EncodeSafe(hdr_output);
+  } else if (bypass_lut > 0.f) {
+    float3 graded_sdr = renodx::color::srgb::DecodeSafe(r1.xyz);
+    r1.xyz = renodx::color::srgb::EncodeSafe(lerp(graded_sdr, neutral_sdr, bypass_lut));
   }
-  r1.xyz = lerp(r1.xyz, hdr_lut_input, step(0.5f, LIFEISSTRANGE_BYPASS_06A2_LUT));
+  float force_white_probe = bypass_lut * step(0.5f, LIFEISSTRANGE_FORCE_06A2_WHITE);
+  r1.xyz = lerp(r1.xyz, 4.f, force_white_probe);
   r0 = tex2D(DNEVignetTexture, i.texcoord2.zw);
   r0.x = saturate(dot(r0, DNEVignetMaskFactors));
   r0.yzw = DNEVignetColor.xyz - r4.x;
@@ -204,8 +219,8 @@ float4 main(PS_IN i) : COLOR {
   r0.w *= ImageAdjustments1.w;
 
   float3 output_color = r1.xyz * r0.xyz + r0.w;
-  if (RENODX_SWAP_CHAIN_OUTPUT_PRESET == 0.f) {
-    // Preserve the original DX9 mad_sat in SDR; the HDR proxy path keeps FP16 headroom.
+  if (!use_hdr_lut_bridge && force_white_probe == 0.f) {
+    // Preserve the original DX9 mad_sat in Vanilla/SDR output.
     output_color = saturate(output_color);
   }
 

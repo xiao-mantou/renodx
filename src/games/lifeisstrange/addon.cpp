@@ -56,7 +56,7 @@ renodx::utils::settings::Settings settings = {
         .key = "ToneMapType",
         .binding = &shader_injection.tone_map_type,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-        // Keep the replacement probe on the game's SDR path.
+        // Keep vanilla as the default; non-vanilla modes use the HDR LUT bridge.
         .default_value = 0.f,
         .can_reset = true,
         .label = "Tone Mapper",
@@ -964,7 +964,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += renodx::build_info::kBuildVersion;
         build_log += ", timestamp_utc=";
         build_log += renodx::build_info::kBuildTimestampUtc;
-        build_log += ", features=06A2_final_saturation_removed+FP16_intermediate";
+        build_log += ", features=06A2_precurve_N2_ToneMapPass_LUT+FP16_intermediate";
         build_log += ", force_06A2_white=";
         build_log += force_06a2_white_validation ? "1" : "0";
         build_log += ", force_proxy_white=";
@@ -1167,10 +1167,12 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
   if (fdw_reason == DLL_PROCESS_ATTACH) {
+    std::string tone_map_log = "LifeIsStrange active ToneMapType=";
+    tone_map_log += std::to_string(shader_injection.tone_map_type);
+    reshade::log::message(reshade::log::level::info, tone_map_log.c_str());
+  }
+  if (fdw_reason == DLL_PROCESS_ATTACH) {
     EnsureIntermediateUpgradeInfos();
-    // Make the first proxy validation deterministic even if an older SDR preset
-    // is still stored in ReShade.ini. These values affect only shader bindings.
-    renodx::utils::settings::UpdateSetting("ToneMapType", 0.f);
     renodx::utils::settings::UpdateSetting("IntermediateDecoding", 1.f);
     renodx::utils::settings::UpdateSetting("SwapChainDecoding", 1.f);
     renodx::utils::settings::UpdateSetting("SwapChainGammaCorrection", 0.f);
