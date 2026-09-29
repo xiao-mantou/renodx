@@ -141,18 +141,25 @@ float4 main(PS_IN i) : COLOR {
   r3 *= c22.x;
   r0 = r3 * r1.x + r0;
 
+  // Capture scene-linear RGB before the game's LUT shaper. Match the
+  // max-channel -> LUT -> reconstruct flow used by the RenoDX D3D9 references.
+  float3 untonemapped = float3(r0.z, r0.w, r0.x);
+  float hdr_lut_scale = 1.f;
+  if (RENODX_TONE_MAP_TYPE > 0.f) {
+    hdr_lut_scale = renodx::tonemap::neutwo::ComputeMaxChannelScale(untonemapped);
+    // Blue is duplicated in x/y by the SM3 packed-color swizzle.
+    r0 *= hdr_lut_scale;
+  }
+
   r1.xyz = r0.zwy * ImageAdjustments2.y + ImageAdjustments2.x;
   r3.z = rcp(r1.x);
   r3.w = rcp(r1.y);
   r3.xy = rcp(r1.z);
-  // Keep HDR scene values reversible through the SDR-domain LUT. The color
-  // channels used by the original SM3 LUT addressing are r0.x, r0.y and r0.w.
   r0 *= r3;
-  float hdr_lut_scale = max(max(r0.x, r0.y), r0.w);
-  hdr_lut_scale = max(hdr_lut_scale, 1.f);
-  float3 hdr_lut_input = float3(r0.x, r0.w, r0.z);
+  // The SM3 packed-LUT registers hold R/G/B in z/w/x (x duplicates y).
+  float3 hdr_lut_input = float3(r0.z, r0.w, r0.x);
   hdr_lut_input = lerp(hdr_lut_input, 4.f, step(0.5f, LIFEISSTRANGE_FORCE_06A2_WHITE));
-  r0 = saturate(r0 / hdr_lut_scale);
+  r0 = saturate(r0);
   r1.xyw = r0.xwz * c26.xzy;
   r0.x = frac(r1.x);
   r0.x = -r0.x + r1.x;
@@ -193,7 +200,16 @@ float4 main(PS_IN i) : COLOR {
   r0.w = r2.x * c24.y + c24.w;
   r0.w *= ImageAdjustments1.w;
 
-  // Preserve the original final multiply/add while removing only its output
-  // saturation so HDR values can continue through the upgraded resource.
-  return float4(r1.xyz * r0.xyz + r0.w, r1.w);
+  float3 output_color = r1.xyz * r0.xyz + r0.w;
+  if (RENODX_TONE_MAP_TYPE > 0.f) {
+    float3 neutral_sdr = untonemapped * hdr_lut_scale;
+    float3 graded_sdr = renodx::color::srgb::DecodeSafe(output_color);
+    output_color = renodx::draw::RenderIntermediatePass(
+        renodx::draw::ToneMapPass(untonemapped, graded_sdr, neutral_sdr));
+  } else {
+    // The original DX9 shader ends with mad_sat; FP16 RTV upgrades need it explicit.
+    output_color = saturate(output_color);
+  }
+
+  return float4(output_color, r1.w);
 }
