@@ -141,24 +141,22 @@ float4 main(PS_IN i) : COLOR {
   r3 *= c22.x;
   r0 = r3 * r1.x + r0;
 
-  // Capture scene-linear RGB before the game's LUT shaper. Match the
-  // max-channel -> LUT -> reconstruct flow used by the RenoDX D3D9 references.
-  float3 untonemapped = float3(r0.z, r0.w, r0.x);
-  float hdr_lut_scale = 1.f;
-  if (RENODX_TONE_MAP_TYPE > 0.f) {
-    hdr_lut_scale = renodx::tonemap::neutwo::ComputeMaxChannelScale(untonemapped);
-    // Blue is duplicated in x/y by the SM3 packed-color swizzle.
-    r0 *= hdr_lut_scale;
-  }
-
   r1.xyz = r0.zwy * ImageAdjustments2.y + ImageAdjustments2.x;
   r3.z = rcp(r1.x);
   r3.w = rcp(r1.y);
   r3.xy = rcp(r1.z);
   r0 *= r3;
+
   // The SM3 packed-LUT registers hold R/G/B in z/w/x (x duplicates y).
   float3 hdr_lut_input = float3(r0.z, r0.w, r0.x);
   hdr_lut_input = lerp(hdr_lut_input, 4.f, step(0.5f, LIFEISSTRANGE_FORCE_06A2_WHITE));
+  float hdr_lut_scale = 1.f;
+  if (RENODX_TONE_MAP_TYPE > 0.f) {
+    hdr_lut_scale = renodx::tonemap::neutwo::ComputeMaxChannelScale(float3(r0.z, r0.w, r0.x));
+    // Scale both copies of blue before the original LUT-domain saturate.
+    r0 *= hdr_lut_scale;
+  }
+
   r0 = saturate(r0);
   r1.xyw = r0.xwz * c26.xzy;
   r0.x = frac(r1.x);
@@ -189,6 +187,11 @@ float4 main(PS_IN i) : COLOR {
   r3 = lerp(r2, r1, r0.y);
   // ps_3_0 lrp r1, r0.x, r6, r3 expands to lerp(r3, r6, r0.x).
   r1 = lerp(r3, r6, r0.x);
+
+  if (RENODX_TONE_MAP_TYPE > 0.f) {
+    float3 lut_output_linear = renodx::color::srgb::DecodeSafe(r1.xyz);
+    r1.xyz = renodx::color::srgb::EncodeSafe(lut_output_linear / hdr_lut_scale);
+  }
   r1.xyz = lerp(r1.xyz, hdr_lut_input, step(0.5f, LIFEISSTRANGE_BYPASS_06A2_LUT));
   r0 = tex2D(DNEVignetTexture, i.texcoord2.zw);
   r0.x = saturate(dot(r0, DNEVignetMaskFactors));
@@ -201,12 +204,7 @@ float4 main(PS_IN i) : COLOR {
   r0.w *= ImageAdjustments1.w;
 
   float3 output_color = r1.xyz * r0.xyz + r0.w;
-  if (RENODX_TONE_MAP_TYPE > 0.f) {
-    float3 neutral_sdr = untonemapped * hdr_lut_scale;
-    float3 graded_sdr = renodx::color::srgb::DecodeSafe(output_color);
-    output_color = renodx::draw::RenderIntermediatePass(
-        renodx::draw::ToneMapPass(untonemapped, graded_sdr, neutral_sdr));
-  } else {
+  if (RENODX_TONE_MAP_TYPE == 0.f) {
     // The original DX9 shader ends with mad_sat; FP16 RTV upgrades need it explicit.
     output_color = saturate(output_color);
   }
