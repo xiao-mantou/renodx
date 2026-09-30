@@ -1230,7 +1230,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   }
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     EnsureIntermediateUpgradeInfos();
-    const float auto_decoding_selection = hdr_pipeline_enabled ? 1.f : 2.f;
+    const float auto_decoding_selection = dx11_proxy_validation ? 2.f : (hdr_pipeline_enabled ? 1.f : 2.f);
     const float intermediate_decoding_selection = intermediate_decoding_override == 0
                                                      ? auto_decoding_selection
                                                      : static_cast<float>(intermediate_decoding_override);
