@@ -107,5 +107,11 @@
 - HDR-only bridge: apply the temporary tangent extension at pivot `0.18` to the pre-curve scene signal; provisionally decode the curve output as sRGB-shaped, apply max-channel N2 scaling for the LUT proxy, preserve the original packed 2D LUT sampling, decode the LUT result, divide by that scale exactly once, then sRGB-encode the intermediate for following game passes. The LUT transfer assumption and pivot remain experimental.
 - This transport test deliberately does not call `ToneMapPass`; adding RenoDX scene tone mapping is a separate step after confirming unbounded transport. Do not combine manual N2 restoration with the three-argument `ToneMapPass(untonemapped, graded_sdr, neutral_sdr)` grade/reference path.
 - Vanilla/SDR keeps the baseline `mul_sat` LUT-domain behavior and final `mad_sat` output clamp. HDR uses `saturate` only on the bounded LUT proxy; the final scene output is not saturated.
-- Any HDR swapchain preset activates the unclipped bridge even when `ToneMapType=0`; FC2A still runs `RenderIntermediatePass` for HDR proxy encoding. Only SDR output takes the original final clamp.
+- Before the 2026-09-30 source correction, an HDR swapchain preset activated the unclipped 06A2 bridge, but `isolate_06a2_shader=true` removed FC2A from the normal replacement set. The intended FC2A `RenderIntermediatePass` therefore did not run while swapchain decoding was forced to `None`. This is a code-confirmed encoding mismatch candidate, not proof of the reported overexposure cause.
 - Clip audit: the `0x51229A9B` MSASM has no saturate; `0xFC2A0632` and `RenderIntermediatePass` have no `[0,1]` color clamp. HDR10 `SwapChainPass` PQ-encodes and applies configured peak scaling, not an SDR `[0,1]` hard clip. The intermediate FP16 upgrade/proxy path was independently confirmed by the earlier force-white tests; this shader change still needs build and runtime verification.
+
+## Proxy and intermediate controls (2026-09-30, source change; build/runtime pending)
+
+- `LifeIsStrange_EnableHDRPipeline` now independently controls the 06A2 LUT bridge and FC2A intermediate conversion; it defaults to `1`. `LifeIsStrange_EnableDX11Proxy` controls only the final proxy/swapchain output in normal mode.
+- The SM3 intermediate scale now derives from Game White / UI White instead of reading an unassigned injection slot. HDR intermediate decoding is `None`; pipeline-off SDR proxy decoding is sRGB.
+- This corrects the identified source-level mismatch, but the visual overexposure cause is not confirmed until the addon is built and tested.

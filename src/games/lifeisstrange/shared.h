@@ -79,6 +79,8 @@ struct ShaderInjectData {
   float lifeisstrange_force_512_white;
   // Keep the validation scalar in the existing final constant slot.
   float lifeisstrange_scene_exposure;
+  float lifeisstrange_hdr_pipeline;
+  float reserved;
 };
 
 #ifndef __cplusplus
@@ -106,7 +108,7 @@ float4 shader_injection[10] : register(c50);
 #define RENODX_TONE_MAP_HUE_PROCESSOR        shader_injection[4][2]
 #define RENODX_TONE_MAP_PER_CHANNEL          shader_injection[4][3]
 #define RENODX_GAMMA_CORRECTION              shader_injection[5][0]
-#define RENODX_INTERMEDIATE_SCALING          shader_injection[5][1]
+#define RENODX_INTERMEDIATE_SCALING          (RENODX_DIFFUSE_WHITE_NITS / RENODX_GRAPHICS_WHITE_NITS)
 #define RENODX_INTERMEDIATE_ENCODING         shader_injection[5][2]
 #define RENODX_INTERMEDIATE_COLOR_SPACE      shader_injection[5][3]
 #define RENODX_SWAP_CHAIN_DECODING           shader_injection[6][0]
@@ -123,6 +125,7 @@ float4 shader_injection[10] : register(c50);
 #define LIFEISSTRANGE_BYPASS_06A2_LUT         shader_injection[8][3]
 #define LIFEISSTRANGE_FORCE_512_WHITE         shader_injection[9][0]
 #define LIFEISSTRANGE_SCENE_EXPOSURE          shader_injection[9][1]
+#define LIFEISSTRANGE_HDR_PIPELINE            shader_injection[9][2]
 
 #else
 #if ((__SHADER_TARGET_MAJOR == 5 && __SHADER_TARGET_MINOR >= 1) || __SHADER_TARGET_MAJOR >= 6)
@@ -172,6 +175,7 @@ cbuffer shader_injection : register(b13) {
 #define LIFEISSTRANGE_BYPASS_06A2_LUT           shader_injection.lifeisstrange_bypass_06a2_lut
 #define LIFEISSTRANGE_FORCE_512_WHITE           shader_injection.lifeisstrange_force_512_white
 #define LIFEISSTRANGE_SCENE_EXPOSURE            shader_injection.lifeisstrange_scene_exposure
+#define LIFEISSTRANGE_HDR_PIPELINE              shader_injection.lifeisstrange_hdr_pipeline
 #endif
 
 #define RENODX_RENO_DRT_TONE_MAP_METHOD        renodx::tonemap::renodrt::config::tone_map_method::REINHARD

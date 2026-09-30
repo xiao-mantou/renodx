@@ -9,7 +9,7 @@ float4 main(float2 texcoord : TEXCOORD) : COLOR {
   float3 overlay = scene.rgb * -ColorScale + OverlayColor.rgb;
   float3 output_color = OverlayColor.w * overlay + scene.rgb * ColorScale;
 
-  if (RENODX_TONE_MAP_TYPE != 0.f || RENODX_SWAP_CHAIN_OUTPUT_PRESET > 0.f) {
+  if (LIFEISSTRANGE_HDR_PIPELINE > 0.f) {
     output_color = renodx::draw::RenderIntermediatePass(renodx::color::srgb::DecodeSafe(output_color));
   }
 

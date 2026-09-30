@@ -146,7 +146,7 @@ float4 main(PS_IN i) : COLOR {
   // Keep the verified scene signal before ImageAdjustments2 for the HDR-only
   // extended-curve/LUT bridge. The SDR branch below remains SM3-equivalent.
   float3 untonemapped_color = float3(r0.z, r0.w, r0.x);
-  bool use_hdr_lut_bridge = RENODX_SWAP_CHAIN_OUTPUT_PRESET > 0.f;
+  bool use_hdr_lut_bridge = LIFEISSTRANGE_HDR_PIPELINE > 0.f;
   float hdr_lut_scale = 1.f;
   float3 hdr_lut_neutral_linear = 0.f;
 

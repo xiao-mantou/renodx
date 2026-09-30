@@ -396,15 +396,14 @@ const auto UPGRADE_TYPE_OUTPUT_RATIO = 2.f;
 const auto UPGRADE_TYPE_ANY = 3.f;
 
 bool initialized = false;
-// Intermediate-only pass: keep the SM3 replacement and create-time FP16
-// render-target upgrades, while isolating the D3D11/HDR10 presentation proxy.
+// HDR intermediate processing and swapchain proxy use independent switches.
 constexpr bool vanilla_shader_validation = false;
 // Disabled until readback can be implemented without forcing D3D9 draw replay.
 constexpr bool readback_validation = false;
 constexpr bool readback_resource_upgrade = false;
 constexpr bool intermediate_upgrade_validation = true;
 bool dx11_proxy_validation = true;
-constexpr bool isolate_06a2_shader = true;
+bool hdr_pipeline_enabled = true;
 bool force_06a2_white_validation = false;
 bool force_proxy_white_validation = false;
 bool force_fc2a_white_validation = false;
@@ -712,6 +711,14 @@ void LoadDX11ProxySetting() {
       enabled);
   dx11_proxy_validation = enabled != 0;
 
+  enabled = 1;
+  reshade::get_config_value(
+      nullptr,
+      renodx::utils::settings::global_name.c_str(),
+      "LifeIsStrange_EnableHDRPipeline",
+      enabled);
+  hdr_pipeline_enabled = enabled != 0;
+
   enabled = 0;
   reshade::get_config_value(
       nullptr,
@@ -858,8 +865,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   switch (fdw_reason) {
     case DLL_PROCESS_ATTACH:
       if (!reshade::register_addon(h_module)) return FALSE;
-      // This is a startup-only switch. Device and swapchain proxy state cannot
-      // be changed safely after the D3D9 device has been initialized.
+      // These switches are startup-only because device and swapchain proxy
+      // state cannot be changed safely after D3D9 initialization.
       LoadDX11ProxySetting();
       shader_injection.lifeisstrange_force_06a2_white = force_06a2_white_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_force_proxy_white = force_proxy_white_validation ? 1.f : 0.f;
@@ -867,6 +874,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       shader_injection.lifeisstrange_bypass_06a2_lut = bypass_06a2_lut_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_force_512_white = force_512_white_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_scene_exposure = scene_exposure_validation;
+      shader_injection.lifeisstrange_hdr_pipeline = hdr_pipeline_enabled ? 1.f : 0.f;
       shader_injection.swap_chain_output_preset = dx11_proxy_validation ? 1.f : 0.f;
       if (readback_validation) {
         reshade::register_event<reshade::addon_event::init_command_queue>(lifeisstrange::readback::OnInitCommandQueue);
@@ -877,8 +885,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
       if (!initialized) {
         if (vanilla_shader_validation || readback_validation
-            || (isolate_06a2_shader && !force_fc2a_white_validation)) {
-          // Keep this probe limited to the 06A2 replacement.
+            || (!hdr_pipeline_enabled && !force_fc2a_white_validation)) {
           custom_shaders.erase(0xFC2A0632u);
         }
         if (ab_disable_06a2_replacement) {
@@ -964,7 +971,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += renodx::build_info::kBuildVersion;
         build_log += ", timestamp_utc=";
         build_log += renodx::build_info::kBuildTimestampUtc;
-        build_log += ", features=06A2_precurve_N2_ToneMapPass_LUT+FP16_intermediate";
+        build_log += ", features=";
+        build_log += hdr_pipeline_enabled
+                         ? "06A2_extended_curve_LUT_bridge+FC2A_intermediate_pass+FP16_intermediate"
+                         : "vanilla_shader_path+FP16_intermediate";
         build_log += ", force_06A2_white=";
         build_log += force_06a2_white_validation ? "1" : "0";
         build_log += ", force_proxy_white=";
@@ -983,6 +993,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += ab_disable_intermediate_upgrade ? "1" : "0";
         build_log += ", intermediate_binding_diagnostic=";
         build_log += intermediate_binding_diagnostic ? "1" : "0";
+        build_log += ", hdr_pipeline=";
+        build_log += hdr_pipeline_enabled ? "1" : "0";
         build_log += ", swap_chain_output_preset=";
         build_log += dx11_proxy_validation ? "HDR10" : "SDR";
         reshade::log::message(reshade::log::level::info, build_log.c_str());
@@ -1173,8 +1185,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   }
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     EnsureIntermediateUpgradeInfos();
-    renodx::utils::settings::UpdateSetting("IntermediateDecoding", 1.f);
-    renodx::utils::settings::UpdateSetting("SwapChainDecoding", 1.f);
+    const float decoding_selection = hdr_pipeline_enabled ? 1.f : 2.f;
+    renodx::utils::settings::UpdateSetting("IntermediateDecoding", decoding_selection);
+    renodx::utils::settings::UpdateSetting("SwapChainDecoding", decoding_selection);
     renodx::utils::settings::UpdateSetting("SwapChainGammaCorrection", 0.f);
     renodx::utils::settings::UpdateSetting("SwapChainClampColorSpace", 0.f);
     renodx::utils::settings::UpdateSetting("SwapChainEncoding", dx11_proxy_validation ? 4.f : 0.f);
