@@ -404,6 +404,10 @@ constexpr bool readback_resource_upgrade = false;
 constexpr bool intermediate_upgrade_validation = true;
 bool dx11_proxy_validation = true;
 bool hdr_pipeline_enabled = true;
+int fc2a_replacement_override = -1;
+bool fc2a_replacement_enabled = true;
+int intermediate_decoding_override = 0;
+int swap_chain_decoding_override = 0;
 bool force_06a2_white_validation = false;
 bool force_proxy_white_validation = false;
 bool force_fc2a_white_validation = false;
@@ -719,6 +723,30 @@ void LoadDX11ProxySetting() {
       enabled);
   hdr_pipeline_enabled = enabled != 0;
 
+  int configured_value = -1;
+  reshade::get_config_value(
+      nullptr,
+      renodx::utils::settings::global_name.c_str(),
+      "LifeIsStrange_EnableFC2AReplacement",
+      configured_value);
+  fc2a_replacement_override = std::clamp(configured_value, -1, 1);
+
+  configured_value = 0;
+  reshade::get_config_value(
+      nullptr,
+      renodx::utils::settings::global_name.c_str(),
+      "LifeIsStrange_IntermediateDecoding",
+      configured_value);
+  intermediate_decoding_override = std::clamp(configured_value, 0, 4);
+
+  configured_value = 0;
+  reshade::get_config_value(
+      nullptr,
+      renodx::utils::settings::global_name.c_str(),
+      "LifeIsStrange_SwapChainDecoding",
+      configured_value);
+  swap_chain_decoding_override = std::clamp(configured_value, 0, 4);
+
   enabled = 0;
   reshade::get_config_value(
       nullptr,
@@ -742,6 +770,11 @@ void LoadDX11ProxySetting() {
       "LifeIsStrange_ForceFC2AWhite",
       enabled);
   force_fc2a_white_validation = enabled != 0;
+
+  fc2a_replacement_enabled = !vanilla_shader_validation && !readback_validation
+                             && (fc2a_replacement_override < 0
+                                     ? (hdr_pipeline_enabled || force_fc2a_white_validation)
+                                     : (fc2a_replacement_override != 0 || force_fc2a_white_validation));
 
   enabled = 0;
   reshade::get_config_value(
@@ -884,8 +917,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::register_event<reshade::addon_event::destroy_command_list>(ClearIntermediateSrvTrace);
 
       if (!initialized) {
-        if (vanilla_shader_validation || readback_validation
-            || (!hdr_pipeline_enabled && !force_fc2a_white_validation)) {
+        if (!fc2a_replacement_enabled) {
           custom_shaders.erase(0xFC2A0632u);
         }
         if (ab_disable_06a2_replacement) {
@@ -972,9 +1004,14 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += ", timestamp_utc=";
         build_log += renodx::build_info::kBuildTimestampUtc;
         build_log += ", features=";
-        build_log += hdr_pipeline_enabled
-                         ? "06A2_extended_curve_LUT_bridge+FC2A_intermediate_pass+FP16_intermediate"
-                         : "vanilla_shader_path+FP16_intermediate";
+        build_log += hdr_pipeline_enabled ? "06A2_HDR_LUT_bridge" : "06A2_vanilla_shader";
+        build_log += fc2a_replacement_enabled ? "+FC2A_shader_replacement" : "+FC2A_vanilla_shader";
+        if (hdr_pipeline_enabled && fc2a_replacement_enabled) {
+          build_log += "+FC2A_intermediate_conversion";
+        }
+        if (intermediate_upgrade_validation && !ab_disable_intermediate_upgrade) {
+          build_log += "+FP16_intermediate_upgrade";
+        }
         build_log += ", force_06A2_white=";
         build_log += force_06a2_white_validation ? "1" : "0";
         build_log += ", force_proxy_white=";
@@ -995,6 +1032,14 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += intermediate_binding_diagnostic ? "1" : "0";
         build_log += ", hdr_pipeline=";
         build_log += hdr_pipeline_enabled ? "1" : "0";
+        build_log += ", fc2a_replacement_override=";
+        build_log += std::to_string(fc2a_replacement_override);
+        build_log += ", fc2a_replacement_enabled=";
+        build_log += fc2a_replacement_enabled ? "1" : "0";
+        build_log += ", intermediate_decoding_override=";
+        build_log += std::to_string(intermediate_decoding_override);
+        build_log += ", swap_chain_decoding_override=";
+        build_log += std::to_string(swap_chain_decoding_override);
         build_log += ", swap_chain_output_preset=";
         build_log += dx11_proxy_validation ? "HDR10" : "SDR";
         reshade::log::message(reshade::log::level::info, build_log.c_str());
@@ -1185,15 +1230,37 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   }
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     EnsureIntermediateUpgradeInfos();
-    const float decoding_selection = hdr_pipeline_enabled ? 1.f : 2.f;
-    renodx::utils::settings::UpdateSetting("IntermediateDecoding", decoding_selection);
-    renodx::utils::settings::UpdateSetting("SwapChainDecoding", decoding_selection);
+    const float auto_decoding_selection = hdr_pipeline_enabled ? 1.f : 2.f;
+    const float intermediate_decoding_selection = intermediate_decoding_override == 0
+                                                     ? auto_decoding_selection
+                                                     : static_cast<float>(intermediate_decoding_override);
+    const float swap_chain_decoding_selection = swap_chain_decoding_override == 0
+                                                    ? auto_decoding_selection
+                                                    : static_cast<float>(swap_chain_decoding_override);
+    renodx::utils::settings::UpdateSetting("IntermediateDecoding", intermediate_decoding_selection);
+    renodx::utils::settings::UpdateSetting("SwapChainDecoding", swap_chain_decoding_selection);
     renodx::utils::settings::UpdateSetting("SwapChainGammaCorrection", 0.f);
     renodx::utils::settings::UpdateSetting("SwapChainClampColorSpace", 0.f);
     renodx::utils::settings::UpdateSetting("SwapChainEncoding", dx11_proxy_validation ? 4.f : 0.f);
     renodx::mods::swapchain::SetUseHDR10(dx11_proxy_validation);
     renodx::mods::swapchain::use_resize_buffer = false;
     renodx::mods::swapchain::set_color_space = !dx11_proxy_validation;
+    std::string path_log = "LifeIsStrange diagnostic overrides: FC2A=";
+    if (fc2a_replacement_override < 0) {
+      path_log += "Auto";
+    } else {
+      path_log += std::to_string(fc2a_replacement_override);
+    }
+    path_log += ", IntermediateDecoding=";
+    path_log += std::to_string(intermediate_decoding_override);
+    path_log += " (effective=";
+    path_log += std::to_string(static_cast<int>(intermediate_decoding_selection));
+    path_log += "), SwapChainDecoding=";
+    path_log += std::to_string(swap_chain_decoding_override);
+    path_log += " (effective=";
+    path_log += std::to_string(static_cast<int>(swap_chain_decoding_selection));
+    path_log += ") [0=Auto, 1=None, 2=SRGB, 3=2.2, 4=2.4]";
+    reshade::log::message(reshade::log::level::info, path_log.c_str());
   }
   renodx::mods::swapchain::Use(fdw_reason, &shader_injection);
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);

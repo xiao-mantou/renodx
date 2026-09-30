@@ -112,6 +112,14 @@
 
 ## Proxy and intermediate controls (2026-09-30, source change; build/runtime pending)
 
-- `LifeIsStrange_EnableHDRPipeline` now independently controls the 06A2 LUT bridge and FC2A intermediate conversion; it defaults to `1`. `LifeIsStrange_EnableDX11Proxy` controls only the final proxy/swapchain output in normal mode.
+- `LifeIsStrange_EnableHDRPipeline` controls the 06A2 LUT bridge and, by default, the FC2A intermediate conversion; `LifeIsStrange_EnableFC2AReplacement` can override FC2A replacement. It defaults to `1`. `LifeIsStrange_EnableDX11Proxy` controls only the final proxy/swapchain output in normal mode.
 - The SM3 intermediate scale now derives from Game White / UI White instead of reading an unassigned injection slot. HDR intermediate decoding is `None`; pipeline-off SDR proxy decoding is sRGB.
 - This corrects the identified source-level mismatch, but the visual overexposure cause is not confirmed until the addon is built and tested.
+
+## UI image whitening isolation (2026-09-30, source change; build/runtime pending)
+
+- User test: UI images were washed out with `LifeIsStrange_EnableHDRPipeline=1` and returned to normal with it set to `0`. With `LifeIsStrange_AB_Disable06A2Replacement=1`, the intro/logo and save-select translucency improved, but UI images remained washed out; text was unaffected.
+- `EnableHDRPipeline=0` is not a single-variable test: it disables the 06A2 HDR bridge, removes the FC2A replacement by default, and changes both intermediate and swapchain decoding from `None` to sRGB. The UI-image cause is therefore not isolated yet.
+- Added startup-only diagnostic overrides: `LifeIsStrange_EnableFC2AReplacement=-1` (`-1=Auto`, `0=off`, `1=on`), `LifeIsStrange_IntermediateDecoding=0`, and `LifeIsStrange_SwapChainDecoding=0`. Decode override values are `0=Auto`, `1=None`, `2=SRGB`, `3=2.2`, `4=2.4`; Auto preserves the previous pipeline-dependent selection. Missing keys retain these defaults.
+- Startup logs now report each override and its effective decoding selection. Keep `EnableHDRPipeline=1` and the proxy state unchanged while testing one variable at a time: first `EnableFC2AReplacement=0`; then restore it to `-1` and test `IntermediateDecoding=2`; finally restore that to `0` and test `SwapChainDecoding=2`. Restart the game after each INI change.
+- These overrides are diagnostic only. Do not treat sRGB decode on an HDR10 path as a final fix without a visual and color-domain check.
