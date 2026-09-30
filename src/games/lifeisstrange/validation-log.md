@@ -128,3 +128,10 @@
 - Second matched test: `EnableHDRPipeline=1`, `AB_Disable06A2Replacement=0`, `EnableFC2AReplacement=1`, `IntermediateDecoding=2`, `SwapChainDecoding=2`, proxy HDR10, all force-white probes off. The latest `ReShade.log1` confirms build `lifeisstrange-be97881ceabb573d58739382f328dfe5173b529f` and these settings; the user reports the same normal UI and very slight leakage, with HDR highlight brightness retained.
 - Both successful cases feed sRGB-shaped values to an sRGB-decoding proxy, with FC2A replacement respectively off and on. This narrows the visual problem to the default linear/`None` handoff or an interaction specific to it; it does not prove FC2A shader math is defective. The matched sRGB pair is promoted to the DX11-proxy Auto default based on visual and highlight validation.
 - Keep `LifeIsStrange_AB_Disable06A2Replacement=0` during these comparisons. Setting it to `1` removes the 06A2 replacement and changes the upstream scene/LUT path; treat it as a separate A/B. Explicit decoding overrides remain available for comparison or rollback.
+
+## HDR curve pivot control (2026-10-01)
+
+- Added a runtime `HDRCurvePivot` slider in Advanced > Color Grading, active only while the HDR pipeline is enabled. Range is `0.18` to `8.00`; default remains the previous `0.18`. Changes are logged as `LifeIsStrange HDR curve pivot=...`.
+- The slider only changes the tangent-extension pivot in the 06A2 HDR LUT bridge. Vanilla/SDR math, LUT bypass behavior, output nits, and ToneMapPass are unchanged.
+- `8.00` is an A/B reference derived from the single captured c8 pair `(a=0.21411191, b=0.97323596)`, where `a/(1-b)` is approximately `8.00`, the input at which the native curve reaches the LUT's 1.0 clamp. Recheck c8 in the tested scene before treating it as exact.
+- Runtime visual validation is pending. Compare `0.18` and `8.00` in the same scene with `Bypass06A2LUT=1` and all other settings fixed; then re-enable the LUT to distinguish curve mismatch from LUT-domain/encoding mismatch.

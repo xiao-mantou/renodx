@@ -287,6 +287,24 @@ renodx::utils::settings::Settings settings = {
         .parse = [](float value) { return value * 0.01f; },
     },
     new renodx::utils::settings::Setting{
+        .key = "HDRCurvePivot",
+        .binding = &shader_injection.lifeisstrange_hdr_curve_pivot,
+        .default_value = 0.18f,
+        .label = "HDR Curve Pivot",
+        .section = "Color Grading",
+        .tooltip = "Controls the 06A2 HDR tangent-extension pivot. 0.18 is the current test; "
+                   "about 8 matches the captured native LUT-clamp input. This changes the HDR curve, not output nits.",
+        .min = 0.18f,
+        .max = 8.f,
+        .format = "%.2f",
+        .on_change_value = [](float, float current) {
+          const std::string message = "LifeIsStrange HDR curve pivot=" + std::to_string(current);
+          reshade::log::message(reshade::log::level::info, message.c_str());
+        },
+        .is_enabled = []() { return shader_injection.lifeisstrange_hdr_pipeline > 0.f; },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
         .key = "SwapChainCustomColorSpace",
         .binding = &shader_injection.swap_chain_custom_color_space,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
@@ -1227,6 +1245,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     std::string tone_map_log = "LifeIsStrange active ToneMapType=";
     tone_map_log += std::to_string(shader_injection.tone_map_type);
     reshade::log::message(reshade::log::level::info, tone_map_log.c_str());
+    std::string curve_pivot_log = "LifeIsStrange HDR curve pivot=";
+    curve_pivot_log += std::to_string(shader_injection.lifeisstrange_hdr_curve_pivot);
+    reshade::log::message(reshade::log::level::info, curve_pivot_log.c_str());
   }
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     EnsureIntermediateUpgradeInfos();

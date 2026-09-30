@@ -35,9 +35,6 @@ static const float4 c23 = float4(0.300000012f, 0.589999974f, 0.109999999f, 0.062
 static const float4 c24 = float4(1.f, 2.f, 3.f, -1.f);
 static const float4 c25 = float4(0.25f, 0.0078125f, 0.001953125f, 0.064453125f);
 static const float4 c26 = float4(14.9998999f, 0.05859375f, 0.234375f, 0.f);
-// Temporary HDR experiment pivot; the Vanilla/SDR branch does not use it.
-static const float LIFEISSTRANGE_HDR_CURVE_PIVOT = 0.18f;
-
 struct PS_IN {
   float4 texcoord : TEXCOORD;
   float4 texcoord1 : TEXCOORD1;
