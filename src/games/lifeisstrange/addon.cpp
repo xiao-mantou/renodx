@@ -292,13 +292,32 @@ renodx::utils::settings::Settings settings = {
         .default_value = 0.18f,
         .label = "HDR Curve Pivot",
         .section = "Color Grading",
-        .tooltip = "Controls the 06A2 HDR tangent-extension pivot. 0.18 is the current test; "
-                   "about 8 matches the captured native LUT-clamp input. This changes the HDR curve, not output nits.",
+        .tooltip = "Controls the 06A2 HDR tangent-extension pivot in the scene input domain. "
+                   "This changes the HDR curve, not output nits.",
         .min = 0.18f,
-        .max = 8.f,
+        .max = 2.f,
         .format = "%.2f",
         .on_change_value = [](float, float current) {
           const std::string message = "LifeIsStrange HDR curve pivot=" + std::to_string(current);
+          reshade::log::message(reshade::log::level::info, message.c_str());
+        },
+        .is_enabled = []() { return shader_injection.lifeisstrange_hdr_pipeline > 0.f; },
+        .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "HDRCurveMethod",
+        .binding = &shader_injection.lifeisstrange_hdr_curve_method,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "HDR Curve Method",
+        .section = "Color Grading",
+        .tooltip = "Temporary A/B for highlight hue. Per-channel keeps the current tangent extension; "
+                   "Max-channel shared scale derives one extension gain from the brightest input channel "
+                   "and applies it to RGB together.",
+        .labels = {"Per-channel tangent", "Max-channel shared scale"},
+        .on_change_value = [](float, float current) {
+          const std::string method = current >= 0.5f ? "max-channel shared scale" : "per-channel tangent";
+          const std::string message = "LifeIsStrange HDR curve method=" + method;
           reshade::log::message(reshade::log::level::info, message.c_str());
         },
         .is_enabled = []() { return shader_injection.lifeisstrange_hdr_pipeline > 0.f; },
@@ -431,7 +450,6 @@ bool force_proxy_white_validation = false;
 bool force_fc2a_white_validation = false;
 bool bypass_06a2_lut_validation = false;
 bool force_512_white_validation = false;
-float scene_exposure_validation = 1.f;
 bool ab_disable_06a2_replacement = false;
 bool ab_disable_intermediate_upgrade = false;
 bool intermediate_binding_diagnostic = false;
@@ -811,14 +829,6 @@ void LoadDX11ProxySetting() {
   force_512_white_validation = enabled != 0;
 
 
-  scene_exposure_validation = 1.f;
-  reshade::get_config_value(
-      nullptr,
-      renodx::utils::settings::global_name.c_str(),
-      "LifeIsStrange_SceneExposure",
-      scene_exposure_validation);
-  scene_exposure_validation = std::clamp(scene_exposure_validation, 0.25f, 8.f);
-
   enabled = 0;
   reshade::get_config_value(
       nullptr,
@@ -924,7 +934,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       shader_injection.lifeisstrange_force_fc2a_white = force_fc2a_white_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_bypass_06a2_lut = bypass_06a2_lut_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_force_512_white = force_512_white_validation ? 1.f : 0.f;
-      shader_injection.lifeisstrange_scene_exposure = scene_exposure_validation;
+      shader_injection.lifeisstrange_hdr_curve_method = 0.f;
       shader_injection.lifeisstrange_hdr_pipeline = hdr_pipeline_enabled ? 1.f : 0.f;
       shader_injection.swap_chain_output_preset = dx11_proxy_validation ? 1.f : 0.f;
       if (readback_validation) {
@@ -1038,8 +1048,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += force_fc2a_white_validation ? "1" : "0";
         build_log += ", force_512_white=";
         build_log += force_512_white_validation ? "1" : "0";
-        build_log += ", scene_exposure=";
-        build_log += std::to_string(scene_exposure_validation);
         build_log += ", bypass_06A2_lut=";
         build_log += bypass_06a2_lut_validation ? "1" : "0";
         build_log += ", ab_disable_06A2_replacement=";
@@ -1248,6 +1256,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     std::string curve_pivot_log = "LifeIsStrange HDR curve pivot=";
     curve_pivot_log += std::to_string(shader_injection.lifeisstrange_hdr_curve_pivot);
     reshade::log::message(reshade::log::level::info, curve_pivot_log.c_str());
+    const std::string curve_method = shader_injection.lifeisstrange_hdr_curve_method >= 0.5f
+                                        ? "max-channel shared scale"
+                                        : "per-channel tangent";
+    const std::string curve_method_log = "LifeIsStrange HDR curve method=" + curve_method;
+    reshade::log::message(reshade::log::level::info, curve_method_log.c_str());
   }
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     EnsureIntermediateUpgradeInfos();

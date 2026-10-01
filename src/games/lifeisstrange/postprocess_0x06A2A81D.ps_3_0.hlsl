@@ -162,6 +162,22 @@ float4 main(PS_IN i) : COLOR {
     float pivot_denominator = ImageAdjustments2.x + ImageAdjustments2.y * pivot;
     float pivot_slope = ImageAdjustments2.x / (pivot_denominator * pivot_denominator);
     float3 extended_curve = curve_base + pivot_slope * max(untonemapped_color - pivot.xxx, 0.f);
+    if (LIFEISSTRANGE_HDR_CURVE_METHOD > 0.5f) {
+      // A/B: use the brightest channel to derive one shared extension gain.
+      float max_channel_input = max(
+          untonemapped_color.r,
+          max(untonemapped_color.g, untonemapped_color.b));
+      if (max_channel_input > pivot) {
+        float max_channel_extended = pivot / pivot_denominator
+                                     + pivot_slope * (max_channel_input - pivot);
+        float max_channel_vanilla = max_channel_input
+                                    / (ImageAdjustments2.x + ImageAdjustments2.y * max_channel_input);
+        float shared_scale = max_channel_extended / max(max_channel_vanilla, 1e-6f);
+        float3 vanilla_curve = untonemapped_color
+                               / (ImageAdjustments2.x + ImageAdjustments2.y * untonemapped_color);
+        extended_curve = vanilla_curve * shared_scale;
+      }
+    }
 
     // Provisional domain assumption: treat the curve/LUT signal as sRGB-shaped.
     // Compress its decoded value for LUT sampling, then reconstruct it once.

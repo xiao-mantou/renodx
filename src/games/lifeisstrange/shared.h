@@ -77,8 +77,8 @@ struct ShaderInjectData {
   float lifeisstrange_force_fc2a_white;
   float lifeisstrange_bypass_06a2_lut;
   float lifeisstrange_force_512_white;
-  // Keep the validation scalar in the existing final constant slot.
-  float lifeisstrange_scene_exposure;
+  // Reuse the unused SceneExposure slot to stay within the SM3 injection buffer.
+  float lifeisstrange_hdr_curve_method;
   float lifeisstrange_hdr_pipeline;
   float lifeisstrange_hdr_curve_pivot;
 };
@@ -124,7 +124,7 @@ float4 shader_injection[10] : register(c50);
 #define LIFEISSTRANGE_FORCE_FC2A_WHITE        shader_injection[8][2]
 #define LIFEISSTRANGE_BYPASS_06A2_LUT         shader_injection[8][3]
 #define LIFEISSTRANGE_FORCE_512_WHITE         shader_injection[9][0]
-#define LIFEISSTRANGE_SCENE_EXPOSURE          shader_injection[9][1]
+#define LIFEISSTRANGE_HDR_CURVE_METHOD        shader_injection[9][1]
 #define LIFEISSTRANGE_HDR_PIPELINE            shader_injection[9][2]
 #define LIFEISSTRANGE_HDR_CURVE_PIVOT         shader_injection[9][3]
 
@@ -175,7 +175,7 @@ cbuffer shader_injection : register(b13) {
 #define LIFEISSTRANGE_FORCE_FC2A_WHITE          shader_injection.lifeisstrange_force_fc2a_white
 #define LIFEISSTRANGE_BYPASS_06A2_LUT           shader_injection.lifeisstrange_bypass_06a2_lut
 #define LIFEISSTRANGE_FORCE_512_WHITE           shader_injection.lifeisstrange_force_512_white
-#define LIFEISSTRANGE_SCENE_EXPOSURE            shader_injection.lifeisstrange_scene_exposure
+#define LIFEISSTRANGE_HDR_CURVE_METHOD          shader_injection.lifeisstrange_hdr_curve_method
 #define LIFEISSTRANGE_HDR_PIPELINE              shader_injection.lifeisstrange_hdr_pipeline
 #define LIFEISSTRANGE_HDR_CURVE_PIVOT           shader_injection.lifeisstrange_hdr_curve_pivot
 #endif

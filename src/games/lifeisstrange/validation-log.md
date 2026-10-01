@@ -58,7 +58,7 @@
 - Live readback of the scene FP16 input (not an exact frozen snapshot) measured channel maxima R=30.0625, G=20.265625, B=16.5625; 26,152 pixels had an RGB channel >1, 11,736 >2, and 2,739 >4.
 - With the force-white probe active, the 06A2 FP16 clone readback confirmed `usedClone=true`: every pixel had an RGB channel >1 and >2; maxima were R=4.07421875, G=4.07421875, B=4.078125. The 512 FP16 clone also read back with `usedClone=true`, all pixels >1 and >2, and matching RGB maxima/means. This rules out clipping in the 06A2-to-512 FP16 path for this probe; it does not establish the unforced scene output or final HDR presentation.
 - Ignore the scene input analyzer's `luminance.max=222.081075` for this capture: it contradicts the RGB maxima, while the checked analyzer formula is a weighted RGB sum. Channel statistics and threshold counts are the usable results.
-- `LifeIsStrange_SceneExposure` currently has no HLSL use: the addon reads/injects/logs it, and `shared.h` declares the cbuffer field, but no Life Is Strange shader references the macro. `SceneExposure=1` therefore has no rendering effect in this build.
+- In that build, `LifeIsStrange_SceneExposure` had no HLSL consumer, so `SceneExposure=1` had no rendering effect.
 
 ## Stage 1B: unforced 06A2 with LUT bypassed (2026-09-28, main menu)
 
@@ -129,9 +129,9 @@
 - Both successful cases feed sRGB-shaped values to an sRGB-decoding proxy, with FC2A replacement respectively off and on. This narrows the visual problem to the default linear/`None` handoff or an interaction specific to it; it does not prove FC2A shader math is defective. The matched sRGB pair is promoted to the DX11-proxy Auto default based on visual and highlight validation.
 - Keep `LifeIsStrange_AB_Disable06A2Replacement=0` during these comparisons. Setting it to `1` removes the 06A2 replacement and changes the upstream scene/LUT path; treat it as a separate A/B. Explicit decoding overrides remain available for comparison or rollback.
 
-## HDR curve pivot control (2026-10-01)
+## HDR curve pivot and shared-scale A/B (2026-10-01)
 
-- Added a runtime `HDRCurvePivot` slider in Advanced > Color Grading, active only while the HDR pipeline is enabled. Range is `0.18` to `8.00`; default remains the previous `0.18`. Changes are logged as `LifeIsStrange HDR curve pivot=...`.
-- The slider only changes the tangent-extension pivot in the 06A2 HDR LUT bridge. Vanilla/SDR math, LUT bypass behavior, output nits, and ToneMapPass are unchanged.
-- `8.00` is an A/B reference derived from the single captured c8 pair `(a=0.21411191, b=0.97323596)`, where `a/(1-b)` is approximately `8.00`, the input at which the native curve reaches the LUT's 1.0 clamp. Recheck c8 in the tested scene before treating it as exact.
-- Runtime visual validation is pending. Compare `0.18` and `8.00` in the same scene with `Bypass06A2LUT=1` and all other settings fixed; then re-enable the LUT to distinguish curve mismatch from LUT-domain/encoding mismatch.
+- `HDRCurvePivot` is now limited to `0.18–2.00`; the user reports `0.7` looks acceptable. It affects only the 06A2 HDR tangent-extension pivot; vanilla/SDR, LUT compression/reconstruction, output nits, and ToneMapPass are unchanged.
+- Added `HDRCurveMethod` for an in-game A/B: `0` preserves the existing per-channel tangent extension; `1` calculates the brightest input channel's tangent-vs-vanilla curve ratio and applies that single gain to the original curve RGB. This tests whether independent channel branches cause the tint; it is not yet the selected final algorithm.
+- The candidate method changes only the pre-LUT curve result. Existing sRGB-shaped LUT handling and max-channel N2 compression/reconstruction remain unchanged. Compare methods with pivot `0.7` and all other settings fixed.
+- The method reuses c59.y, previously named `SceneExposure`; that value had no HLSL consumer. The obsolete `LifeIsStrange_SceneExposure` diagnostic key is no longer read.
