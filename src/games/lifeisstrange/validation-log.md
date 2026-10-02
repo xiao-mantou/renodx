@@ -36,7 +36,7 @@
 ## Diagnostic configuration
 
 - `LifeIsStrange_EnableDX11Proxy=1` enables the D3D11 HDR10 presentation proxy.
-- `LifeIsStrange_AB_Disable06A2Replacement=1` removes only the 06A2 shader replacement.
+- The former startup-only `LifeIsStrange_AB_Disable06A2Replacement` key has been replaced by the always-visible segmented `LifeIsStrange_06A2ShaderSource` selector in the RenoDX UI. `0=RenoDX replacement` (default), `1=Native game shader`; it changes only the 06A2 replacement decision.
 - `LifeIsStrange_AB_DisableIntermediateUpgrade=1` removes the dedicated FP16 intermediate rules and automatically disables the proxy for a valid vanilla-path comparison.
 - `LifeIsStrange_IntermediateBindingDiagnostic=1` enables the 512/FC2A binding diagnostics and SRV clone rebinding. It defaults to `0` so normal runs do not rewrite descriptor bindings.
 - `LifeIsStrange_ForceProxyWhite`, `LifeIsStrange_Force06A2White`, `LifeIsStrange_ForceFC2AWhite`, and `LifeIsStrange_Force512White` default to `0`; they are probes only and should not be used for normal gameplay.
@@ -127,7 +127,7 @@
 - Valid matched test: `EnableHDRPipeline=1`, `AB_Disable06A2Replacement=0`, `EnableFC2AReplacement=0`, `IntermediateDecoding=0`, `SwapChainDecoding=2`, proxy HDR10, all force-white probes off. The latest `ReShade.log1` confirms build `lifeisstrange-be97881ceabb573d58739382f328dfe5173b529f`, these exact settings, and the user reports normal UI images with only very slight leakage.
 - Second matched test: `EnableHDRPipeline=1`, `AB_Disable06A2Replacement=0`, `EnableFC2AReplacement=1`, `IntermediateDecoding=2`, `SwapChainDecoding=2`, proxy HDR10, all force-white probes off. The latest `ReShade.log1` confirms build `lifeisstrange-be97881ceabb573d58739382f328dfe5173b529f` and these settings; the user reports the same normal UI and very slight leakage, with HDR highlight brightness retained.
 - Both successful cases feed sRGB-shaped values to an sRGB-decoding proxy, with FC2A replacement respectively off and on. This narrows the visual problem to the default linear/`None` handoff or an interaction specific to it; it does not prove FC2A shader math is defective. The matched sRGB pair is promoted to the DX11-proxy Auto default based on visual and highlight validation.
-- Keep `LifeIsStrange_AB_Disable06A2Replacement=0` during these comparisons. Setting it to `1` removes the 06A2 replacement and changes the upstream scene/LUT path; treat it as a separate A/B. Explicit decoding overrides remain available for comparison or rollback.
+- Earlier comparisons used the startup-only `LifeIsStrange_AB_Disable06A2Replacement` key; it is obsolete. The runtime selector now permits same-session comparison while keeping intermediate upgrades, later passes, and proxy settings unchanged. The Native option still runs the game's original 06A2 shader, including its native LUT clamp.
 
 ## HDR curve pivot and shared-scale A/B (2026-10-01)
 
@@ -135,3 +135,9 @@
 - Added `HDRCurveMethod` for an in-game A/B: `0` preserves the existing per-channel tangent extension; `1` calculates the brightest input channel's tangent-vs-vanilla curve ratio and applies that single gain to the original curve RGB. This tests whether independent channel branches cause the tint; it is not yet the selected final algorithm.
 - The candidate method changes only the pre-LUT curve result. Existing sRGB-shaped LUT handling and max-channel N2 compression/reconstruction remain unchanged. Compare methods with pivot `0.7` and all other settings fixed.
 - The method reuses c59.y, previously named `SceneExposure`; that value had no HLSL consumer. The obsolete `LifeIsStrange_SceneExposure` diagnostic key is no longer read.
+
+## Runtime 06A2 shader A/B (2026-10-02)
+
+- Added the always-visible segmented RenoDX UI control `06A2 Shader Source`: click `RenoDX replacement` or `Native game shader`. It is evaluated by the 06A2 draw callback, so switching does not require restarting the game; RenoDX creates the replacement pipeline through its existing path when selected.
+- This isolates the shader replacement choice only. FP16 resource upgrades, 512/FC2A processing, HDR settings, and the DX11 proxy remain as configured; Native mode is not a full vanilla-rendering comparison.
+- Startup and setting-change logs report the active 06A2 source. Runtime switching still requires an in-game visual check for D3D9 pipeline state restoration.
