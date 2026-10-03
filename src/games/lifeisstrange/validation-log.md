@@ -141,3 +141,32 @@
 - Added the always-visible segmented RenoDX UI control `06A2 Shader Source`: click `RenoDX replacement` or `Native game shader`. It is evaluated by the 06A2 draw callback, so switching does not require restarting the game; RenoDX creates the replacement pipeline through its existing path when selected.
 - This isolates the shader replacement choice only. FP16 resource upgrades, 512/FC2A processing, HDR settings, and the DX11 proxy remain as configured; Native mode is not a full vanilla-rendering comparison.
 - Startup and setting-change logs report the active 06A2 source. Runtime switching still requires an in-game visual check for D3D9 pipeline state restoration.
+
+## Alternate gameplay angle: 0x6B7D5C22 clip (2026-10-03)
+
+- DevKit capture with DX11 proxy off: D3D9, 1920x1080 B8 swapchain, 813 draws, DevKit build `lifeisstrange-devkit-873b59af8a2b70358036045501caef424f690217`. This snapshot contains no `0x06A2A81D`; gameplay draw #785 uses pixel shader `0x6B7D5C22` instead.
+- Draw #724/657's `0x51229A9B` pass reads FP16 `0x36D8E280` and writes FP16 `0x36D8E160`. Live readback of both views was effectively identical: max RGB `(6.6445, 5.5898, 5.125)`, max luminance `5.7805`, and 3,894 pixels with an RGB channel above 1.0. This 512 FP16 pass preserves the measured highlight in this capture.
+- Draw #785 (`0x6B7D5C22`) samples that FP16 `0x36D8E160` at s0 and writes resource `0x36D8C100`, whose active FP16 clone is `0x372F5520`. The clone's current contents, consumed by draw #786 (`0x51229A9B`), max at RGB `(0.9824, 0.9800, 0.9756)`; no RGB value is above 1.0. Thus the HDR-range loss is before the later 512 pass, at or within #785.
+- Original PS3 disassembly for `0x6B7D5C22` was available; `cmd_Decompiler.exe` failed. Instructions 96–100 apply `ImageAdjustments2` c8's per-channel rational curve, then `mul_sat r0` clamps before s5 `ColorGradingLUT` sampling. Instruction 131 ends with `mad_sat oC0.xyz`, another output clamp. This is a confirmed destructive SDR/LUT path, not evidence that a later overlay is the first clip.
+- The shipped editable `postprocess_0x06A2A81D.ps_3_0.hlsl` targets the separate `0x06A2A81D` hash; there is no `0x6B7D5C22` replacement in the current LiS source. The prior 06A2 replacement therefore does not cover this captured gameplay variant.
+- All resource statistics above are DevKit live-resource readbacks (`snapshotExact=false`), not frozen per-draw copies. The matching draw bindings and shader math localize the likely clip, but an exact temporal before/after measurement at #785 was not captured.
+
+## 0x6B7D5C22 native-equivalent baseline (2026-10-03)
+
+- Dumped the original `ps_3_0` bytecode with DevKit to `Life Is Strange/Binaries/Win32/renodx-dev/dump/0x6B7D5C22.ps_3_0.cso` (4,416 bytes; SHA-256 `93F61B3B1DA1AD7625292D9C764DBDCDFB2625C4288AF17993DEE7A46FCF79D3`). `cmd_Decompiler.exe` still fails; downloaded `HlslDecompiler.exe` produced `.asm` and `.fx`, both retained beside the CSO in `renodx-dev/dump`.
+- Manual audit found the generated `.fx` lost the `dp3` weight vector: it emitted `dot(r0.zwy, 0.3)` instead of `dot(r0.zwy, c29.xyz)` (`0.3, 0.59, 0.11`). The editable baseline restores that vector, explicitly binds the original constants/samplers, and retains the source `mul_sat` before LUT and final `mad_sat`.
+- Added `.baseline/0x6B7D5C22.ps_3_0.hlsl` as a native-only baseline. DevKit compiled and activated it from an isolated live directory; `devkit_get_shader` reports `source=File`, hash `0x6B7D5C22`, profile `ps_3_0`. The user visually confirmed the replacement matches the original closely; this is not a pixelwise comparison. No HDR bridge or curve change is included in this fallback file.
+
+## 0x6B7D5C22 HDR LUT bridge candidate (2026-10-03)
+
+- Added `postprocess_0x6B7D5C22.ps_3_0.hlsl` separately from the native-equivalent fallback. It gates the HDR branch on `LIFEISSTRANGE_HDR_PIPELINE`; HDR-off retains the original curve, LUT-domain `mul_sat`, final `mad_sat`, and half-precision output.
+- The HDR branch captures the post-composite/bloom/light-shaft signal before `ImageAdjustments2`, uses the existing per-channel tangent pivot and max-channel LUT compression controls, preserves the packed 2D LUT addressing, reconstructs the scale once after LUT sampling, and keeps post-LUT vignette/grain. Only the two RGB clamps are bypassed in HDR; mask, UV, bloom, and light-shaft saturates remain.
+- sRGB decode/encode for the LUT bridge is provisional, copied from the existing 06A2 transport path. The 6B draw's runtime c8 values and LUT transfer domain have not been captured independently; verify before treating this as final.
+- The shader map uses `__ALL_CUSTOM_SHADERS`, so the hash-named HLSL is picked up by the Life Is Strange addon build without a hand-written map entry. Compile and runtime checks for this candidate are pending.
+
+## 0x6B7D5C22 addon integration (2026-10-03)
+
+- The verified native-equivalent baseline is retained at `.baseline/0x6B7D5C22.ps_3_0.hlsl`; the leading-dot folder is intentionally excluded by the repository shader build. This avoids two HLSL files generating the same `0x6B7D5C22.cso` embed.
+- The active `postprocess_0x6B7D5C22.ps_3_0.hlsl` captures the same `r0.zwy` RGB swizzle used by the native `ImageAdjustments2` curve before extending it.
+- Added an independent `6B7D5C22 Shader Source` segmented setting for runtime native/replacement A/B. `HDRCurvePivot`, `HDRCurveMethod` (per-channel vs max-channel shared RGB scale), and `HDRPipeline` remain shared with 06A2; resource upgrades and proxy behavior are unchanged.
+- Build/runtime validation remains pending. The capture established the 6B draw's immediate FP16 input/output neighborhood, but did not prove that the same frame continues through FC2A to swap.

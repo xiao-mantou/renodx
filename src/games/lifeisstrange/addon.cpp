@@ -41,6 +41,7 @@ ShaderInjectData shader_injection;
 
 float current_settings_mode = 0;
 float native_06a2_shader = 0.f;
+float native_6b7d5c22_shader = 0.f;
 
 renodx::utils::settings::Settings settings = {
     new renodx::utils::settings::Setting{
@@ -293,7 +294,8 @@ renodx::utils::settings::Settings settings = {
         .default_value = 0.18f,
         .label = "HDR Curve Pivot",
         .section = "Color Grading",
-        .tooltip = "Controls the 06A2 HDR tangent-extension pivot in the scene input domain. "
+        .tooltip = "Controls the ImageAdjustments2 HDR tangent-extension pivot in the scene input domain "
+                   "for 06A2 and 6B7D5C22. "
                    "This changes the HDR curve, not output nits.",
         .min = 0.18f,
         .max = 2.f,
@@ -314,7 +316,7 @@ renodx::utils::settings::Settings settings = {
         .section = "Color Grading",
         .tooltip = "Temporary A/B for highlight hue. Per-channel keeps the current tangent extension; "
                    "Max-channel shared scale derives one extension gain from the brightest input channel "
-                   "and applies it to RGB together.",
+                   "and applies it to RGB together. Shared by the 06A2 and 6B7D5C22 replacements.",
         .labels = {"Per-channel tangent", "Max-channel shared scale"},
         .on_change_value = [](float, float current) {
           const std::string method = current >= 0.5f ? "max-channel shared scale" : "per-channel tangent";
@@ -339,6 +341,25 @@ renodx::utils::settings::Settings settings = {
           const std::string source = current >= 0.5f ? "native game shader" : "RenoDX replacement";
           const std::string message = "LifeIsStrange 06A2 shader source changed: " + source
                                       + " (other HDR paths unchanged)";
+          reshade::log::message(reshade::log::level::info, message.c_str());
+        },
+        .is_global = true,
+    },
+    new renodx::utils::settings::Setting{
+        .key = "LifeIsStrange_6B7D5C22ShaderSource",
+        .binding = &native_6b7d5c22_shader,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "6B7D5C22 Shader Source",
+        .section = "Shader Replacement",
+        .tooltip = "Selects the 6B7D5C22 pixel shader only. Native keeps the game's original shader; "
+                   "HDR curve pivot and curve method are shared with 06A2.",
+        .labels = {"RenoDX replacement", "Native game shader"},
+        .style = renodx::utils::settings::SettingStyle::SEGMENTED,
+        .on_change_value = [](float, float current) {
+          const std::string source = current >= 0.5f ? "native game shader" : "RenoDX replacement";
+          const std::string message = "LifeIsStrange 6B7D5C22 shader source changed: " + source
+                                      + " (06A2 source and other HDR paths unchanged)";
           reshade::log::message(reshade::log::level::info, message.c_str());
         },
         .is_global = true,
@@ -991,6 +1012,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             return TraceIntermediateDrawBindings(cmd_list, 0x06A2A81Du, native_06a2_shader < 0.5f);
           };
         }
+        if (auto shader = custom_shaders.find(0x6B7D5C22u); shader != custom_shaders.end()) {
+          shader->second.on_replace = [](reshade::api::command_list*) {
+            return native_6b7d5c22_shader < 0.5f;
+          };
+        }
         if (intermediate_binding_diagnostic && !ab_disable_intermediate_upgrade) {
           custom_shaders.emplace(
               0x51229A9Bu,
@@ -1041,6 +1067,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += renodx::build_info::kBuildTimestampUtc;
         build_log += ", features=";
         build_log += hdr_pipeline_enabled ? "06A2_HDR_LUT_bridge" : "06A2_vanilla_shader";
+        build_log += hdr_pipeline_enabled ? "+6B7D5C22_HDR_LUT_bridge_candidate" : "+6B7D5C22_vanilla_shader";
         build_log += fc2a_replacement_enabled ? "+FC2A_shader_replacement" : "+FC2A_vanilla_shader";
         if (hdr_pipeline_enabled && fc2a_replacement_enabled) {
           build_log += "+FC2A_intermediate_conversion";
@@ -1270,6 +1297,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     const std::string shader_source_log = "LifeIsStrange 06A2 shader source="
                                           + std::string(native_06a2_shader >= 0.5f ? "native game shader" : "RenoDX replacement");
     reshade::log::message(reshade::log::level::info, shader_source_log.c_str());
+    const std::string shader_source_6b_log = "LifeIsStrange 6B7D5C22 shader source="
+                                             + std::string(native_6b7d5c22_shader >= 0.5f ? "native game shader" : "RenoDX replacement");
+    reshade::log::message(reshade::log::level::info, shader_source_6b_log.c_str());
   }
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     EnsureIntermediateUpgradeInfos();
