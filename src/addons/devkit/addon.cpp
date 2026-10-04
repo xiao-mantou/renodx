@@ -23,6 +23,7 @@
 #include <deque>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <format>
 #include <initializer_list>
 #include <memory>
@@ -42,6 +43,7 @@
 #include <include/reshade.hpp>
 
 #include "../../utils/bitwise.hpp"
+#include "../../utils/build_info.hpp"
 #include "../../utils/constants.hpp"
 #include "../../utils/data.hpp"
 #include "../../utils/date.hpp"
@@ -115,6 +117,8 @@ inline constexpr std::wstring_view DEVKIT_MCP_PIPE_PREFIX = L"renodx-devkit-mcp"
 
 std::atomic<reshade::api::device*> snapshot_device = nullptr;
 std::atomic<reshade::api::device*> snapshot_queued_device = nullptr;
+std::atomic<reshade::api::device*> snapshot_auto_export_device = nullptr;
+std::atomic_bool snapshot_capture_hotkey_down = false;
 std::atomic<uint32_t> snapshot_submission_counter = 0u;
 auto devkit_mcp_session = devkit_mcp_server_session::Create(DEVKIT_MCP_PIPE_PREFIX);
 std::atomic<uint32_t> devkit_primary_device_api = 0u;
@@ -138,9 +142,12 @@ uint32_t skip_draw_count = 0;
          || api == reshade::api::device_api::vulkan;
 }
 
-void QueueSnapshotCapture(reshade::api::device* device) {
+void QueueSnapshotCapture(reshade::api::device* device, bool auto_export = false) {
+  if (auto_export) {
+    snapshot_auto_export_device = device;
+  }
   snapshot_queued_device = device;
-  if (snapshot_trace_with_snapshot.load()) {
+  if (!auto_export && snapshot_trace_with_snapshot.load()) {
     renodx::utils::trace::trace_scheduled_device = device;
   }
 }
@@ -2771,6 +2778,156 @@ std::vector<DeviceData*> device_data_list;
   return draw_summary;
 }
 
+struct SnapshotCaptureFile {
+  std::filesystem::path relative_path;
+  std::vector<uint8_t> data;
+};
+
+struct SnapshotCaptureExport {
+  std::string capture_id;
+  json manifest;
+  std::vector<SnapshotCaptureFile> files;
+};
+
+[[nodiscard]] SnapshotCaptureExport BuildSnapshotCaptureExport(DeviceData* device_data) {
+  SYSTEMTIME local_time = {};
+  GetLocalTime(&local_time);
+  const auto capture_id = std::format(
+      "{:04}{:02}{:02}-{:02}{:02}{:02}-{:03}",
+      local_time.wYear,
+      local_time.wMonth,
+      local_time.wDay,
+      local_time.wHour,
+      local_time.wMinute,
+      local_time.wSecond,
+      local_time.wMilliseconds);
+
+  json draws = json::array();
+  std::set<uint32_t> shader_hashes;
+  for (size_t i = 0; i < device_data->draw_details_list.size(); ++i) {
+    const auto& draw = device_data->draw_details_list[i];
+    draws.push_back(BuildDrawSummary(i, draw, true));
+    for (const auto& pipeline_bind : draw.pipeline_binds) {
+      shader_hashes.insert(pipeline_bind.shader_hashes.begin(), pipeline_bind.shader_hashes.end());
+    }
+  }
+
+  SnapshotCaptureExport capture = {
+      .capture_id = capture_id,
+      .manifest = json::object(),
+      .files = {},
+  };
+  json shaders = json::array();
+  shaders.get_ref<json::array_t&>().reserve(shader_hashes.size());
+  capture.files.reserve(shader_hashes.size() * 2u);
+
+  for (const auto shader_hash : shader_hashes) {
+    const auto shader_iterator = device_data->shader_details.find(shader_hash);
+    if (shader_iterator == device_data->shader_details.end()) {
+      shaders.push_back({{"hash", FormatShaderHash(shader_hash)}, {"tracked", false}});
+      continue;
+    }
+
+    auto& shader_details = shader_iterator->second;
+    json shader = BuildTrackedShaderSummary(shader_hash, shader_details, true);
+    const auto shader_name = FormatShaderHash(shader_hash);
+
+    if (!shader_details.shader_data.empty()) {
+      const auto relative_path = std::filesystem::path("shaders") / std::format("{}.original.cso", shader_name);
+      shader["originalBytecodeFile"] = relative_path.generic_string();
+      capture.files.push_back({
+          .relative_path = relative_path,
+          .data = shader_details.shader_data,
+      });
+    } else {
+      shader["originalBytecodeError"] = "Shader bytecode was not captured during the snapshot.";
+    }
+
+    if (!shader_details.addon_shader.empty()) {
+      const auto relative_path = std::filesystem::path("shaders") / std::format("{}.addon.cso", shader_name);
+      shader["addonBytecodeFile"] = relative_path.generic_string();
+      capture.files.push_back({
+          .relative_path = relative_path,
+          .data = std::vector<uint8_t>(shader_details.addon_shader.begin(), shader_details.addon_shader.end()),
+      });
+    }
+
+    if (shader_details.disk_shader.has_value() && shader_details.disk_shader->IsCompilationOK()) {
+      const auto relative_path = std::filesystem::path("shaders") / std::format("{}.file.cso", shader_name);
+      shader["fileBytecodeFile"] = relative_path.generic_string();
+      capture.files.push_back({
+          .relative_path = relative_path,
+          .data = shader_details.disk_shader->GetCompilationData(),
+      });
+    }
+
+    shaders.push_back(std::move(shader));
+  }
+
+  capture.manifest = {
+      {"schemaVersion", 1},
+      {"captureId", capture_id},
+      {"buildVersion", std::string(renodx::build_info::kBuildVersion)},
+      {"api", StreamToString(device_data->device->get_api())},
+      {"deviceHandle", FormatPointer(device_data->device)},
+      {"isD3D9Ex", device_data->is_d3d9_ex},
+      {"captureContents", "draw/resource metadata and referenced shader bytecode; no pixel readback"},
+      {"drawCount", draws.size()},
+      {"shaderCount", shaders.size()},
+      {"draws", std::move(draws)},
+      {"shaders", std::move(shaders)},
+  };
+  return capture;
+}
+
+[[nodiscard]] std::filesystem::path WriteSnapshotCaptureExport(const SnapshotCaptureExport& capture) {
+  const auto capture_root = renodx::utils::path::GetOutputSubdirectory("captures");
+  std::filesystem::create_directories(capture_root);
+
+  std::filesystem::path capture_directory;
+  for (uint32_t suffix = 0u;; ++suffix) {
+    const auto directory_name = suffix == 0u
+                                    ? capture.capture_id
+                                    : std::format("{}-{:02}", capture.capture_id, suffix);
+    auto candidate = capture_root / directory_name;
+    std::error_code error;
+    if (std::filesystem::create_directory(candidate, error)) {
+      capture_directory = std::move(candidate);
+      break;
+    }
+    if (error) {
+      throw std::filesystem::filesystem_error("Failed to create snapshot capture directory", candidate, error);
+    }
+  }
+
+  for (const auto& file : capture.files) {
+    const auto output_path = capture_directory / file.relative_path;
+    std::filesystem::create_directories(output_path.parent_path());
+    std::ofstream output(output_path, std::ios::binary);
+    if (!output) {
+      throw std::runtime_error(std::format("Failed to open snapshot file '{}'", output_path.string()));
+    }
+    output.write(
+        reinterpret_cast<const char*>(file.data.data()),
+        static_cast<std::streamsize>(file.data.size()));
+    if (!output) {
+      throw std::runtime_error(std::format("Failed to write snapshot file '{}'", output_path.string()));
+    }
+  }
+
+  const auto manifest_path = capture_directory / "snapshot.json";
+  std::ofstream output(manifest_path, std::ios::binary);
+  if (!output) {
+    throw std::runtime_error(std::format("Failed to open snapshot manifest '{}'", manifest_path.string()));
+  }
+  const auto manifest_text = capture.manifest.dump(2);
+  output.write(manifest_text.data(), static_cast<std::streamsize>(manifest_text.size()));
+  if (!output) {
+    throw std::runtime_error(std::format("Failed to write snapshot manifest '{}'", manifest_path.string()));
+  }
+  return capture_directory;
+}
+
 [[nodiscard]] auto BuildResolveDeviceIndexCallback() {
   return [](const json& arguments) -> uint32_t {
     std::shared_lock list_lock(device_data_list_mutex);
@@ -4281,6 +4438,9 @@ void OnDestroyDevice(reshade::api::device* device) {
   }
   if (snapshot_queued_device == device) {
     snapshot_queued_device = nullptr;
+  }
+  if (snapshot_auto_export_device == device) {
+    snapshot_auto_export_device = nullptr;
   }
   auto* device_data = renodx::utils::data::Get<DeviceData>(device);
   if (device_data == nullptr) return;
@@ -9267,6 +9427,35 @@ void OnPresent(
     renodx::utils::shader::dump::DumpAllPending();
   }
 
+  const auto foreground_window = GetForegroundWindow();
+  DWORD foreground_process_id = 0u;
+  if (foreground_window != nullptr) {
+    GetWindowThreadProcessId(foreground_window, &foreground_process_id);
+  }
+  bool is_foreground_swapchain = false;
+  if (foreground_process_id == GetCurrentProcessId()) {
+    std::shared_lock device_lock(data->mutex);
+    const auto swapchain_window = data->swapchain_windows.find(swapchain);
+    is_foreground_swapchain = swapchain_window != data->swapchain_windows.end()
+                              && swapchain_window->second == foreground_window;
+  }
+  if (is_foreground_swapchain) {
+    const bool hotkey_down = (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
+    const bool hotkey_was_down = snapshot_capture_hotkey_down.exchange(hotkey_down, std::memory_order_relaxed);
+    if (hotkey_down && !hotkey_was_down) {
+      if (snapshot_device == nullptr && snapshot_queued_device == nullptr) {
+        QueueSnapshotCapture(device, true);
+        reshade::log::message(
+            reshade::log::level::info,
+            "DevKit F8 capture queued: one frame of draw/resource metadata; pixel readback is disabled.");
+      } else {
+        reshade::log::message(
+            reshade::log::level::warning,
+            "DevKit F8 capture ignored because another snapshot is queued or active.");
+      }
+    }
+  }
+
   reshade::api::device* active_snapshot_device = snapshot_device;
   if (active_snapshot_device == nullptr) {
     if (snapshot_queued_device == device) {
@@ -9287,6 +9476,12 @@ void OnPresent(
     snapshot_device = nullptr;
     auto* device_data = get_data();
     std::unique_lock lock(device_data->mutex);
+    reshade::api::device* export_device = device;
+    const bool auto_export_snapshot = snapshot_auto_export_device.compare_exchange_strong(
+        export_device,
+        nullptr,
+        std::memory_order_acq_rel,
+        std::memory_order_acquire);
     std::ranges::sort(device_data->draw_details_list, [](const DrawDetails& a, const DrawDetails& b) {
       const bool a_unknown_submission = a.submission_order == 0u;
       const bool b_unknown_submission = b.submission_order == 0u;
@@ -9327,9 +9522,33 @@ void OnPresent(
         update_resource_usage(resource_view_details.resource, &SnapshotResourceUsage::seen_rtv);
       }
     }
+    std::optional<SnapshotCaptureExport> snapshot_export;
+    if (auto_export_snapshot) {
+      try {
+        snapshot_export = BuildSnapshotCaptureExport(device_data);
+      } catch (const std::exception& exception) {
+        reshade::log::message(
+            reshade::log::level::error,
+            std::format("DevKit snapshot export preparation failed: {}", exception.what()).c_str());
+      }
+    }
     device_data->snapshot_rows.clear();
     device_data->snapshot_row_layout_key = 0u;
     device_data->snapshot_rows_valid = false;
+    lock.unlock();
+
+    if (snapshot_export.has_value()) {
+      try {
+        const auto capture_directory = WriteSnapshotCaptureExport(snapshot_export.value());
+        reshade::log::message(
+            reshade::log::level::info,
+            std::format("DevKit F8 capture saved: {}", capture_directory.string()).c_str());
+      } catch (const std::exception& exception) {
+        reshade::log::message(
+            reshade::log::level::error,
+            std::format("DevKit snapshot export failed: {}", exception.what()).c_str());
+      }
+    }
   }
 }
 

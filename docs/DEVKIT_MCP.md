@@ -105,6 +105,10 @@ This usually answers the important question first:
 - is HDR already gone before the final blit
 - or is the final blit still carrying recoverable scene data
 
+### One-frame hotkey capture
+
+With the DevKit addon loaded, press `F8` while the game window is focused to queue the next rendered frame for draw/resource metadata capture. The completed capture is saved under `renodx-dev/captures/<timestamp>/snapshot.json`, with the referenced original and replacement shader bytecode in `shaders/`. Each press creates a new directory. This capture does not read back render-target pixels; use the resource-analysis tools separately when pixel values are required. An F8 press is ignored while another snapshot is queued or active.
+
 Do not start from the first bright shader you find. Start from the latest pass that still has scene HDR potential.
 
 ## 5. Choosing the right device
