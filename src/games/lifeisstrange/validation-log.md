@@ -170,3 +170,17 @@
 - The active `postprocess_0x6B7D5C22.ps_3_0.hlsl` captures the same `r0.zwy` RGB swizzle used by the native `ImageAdjustments2` curve before extending it.
 - Added an independent `6B7D5C22 Shader Source` segmented setting for runtime native/replacement A/B. `HDRCurvePivot`, `HDRCurveMethod` (per-channel vs max-channel shared RGB scale), and `HDRPipeline` remain shared with 06A2; resource upgrades and proxy behavior are unchanged.
 - Build/runtime validation remains pending. The capture established the 6B draw's immediate FP16 input/output neighborhood, but did not prove that the same frame continues through FC2A to swap.
+
+## 0x006B1C38 native-equivalent candidate (2026-10-04)
+
+- DevKit dump `0x006B1C38.ps_3_0.cso` is 3,872 bytes (SHA-256 `296D3A26441909CA1C4D96D0724BF42664615D8F3F2DE7411CCE41E0B3463AAA`). HlslDecompiler `.asm` is the semantic reference; its `.fx` is not yet a safe replacement.
+- Manual audit found two lost `dp3` vectors in `.fx`: luminance weights `c24.yzw=(0.3,0.59,0.11)` became scalar `0.3`, and depth-state weights `c25.yzw=(1,2,3)` became scalar `3`. The candidate restores both vectors and explicitly binds the omitted `c0` constant and `s0` scene sampler.
+- Like 06A2, this PS3 shader applies the `ImageAdjustments2` rational channel curve, saturates before four packed-2D `ColorGradingLUT` samples, then applies vignette/grain and a final RGB saturate. It is a post-process variant with `DNEHexDofTexture1` at s4 and the LUT at s5; its runtime c9 values and LUT transfer domain are not captured.
+- No retained draw snapshot identifies `0x006B1C38` as animation-only. The 2026-10-03 gameplay capture used the distinct hash `0x6B7D5C22`; shader dump presence alone does not establish draw usage.
+- Added an isolated segmented Native/RenoDX shader-source selector. The live native-equivalent candidate compiled and activated through DevKit; the user confirmed its picture looks normal. The HDR bridge and addon build were pending at that point.
+
+## 0x006B1C38 shared HDR curve/LUT bridge (2026-10-04)
+
+- Added the HDR branch to the verified live-equivalent HLSL. It uses the shared `HDRCurvePivot`, `HDRCurveMethod`, and `EnableHDRPipeline` controls already used by 06A2/6B7D5C22; no new curve setting or changes to those shaders.
+- HDR branches around the native rational curve plus LUT-input `mul_sat`, substitutes the pivot-tangent curve and a bounded max-channel-compressed LUT proxy, then reconstructs once after sampling. It removes only the final color `mad_sat`; spatial/depth/mask saturates and LUT-proxy bounds remain.
+- SDR/HDR-pipeline-off retains the native curve, LUT input clamp, and final output clamp. Runtime LUT transfer-domain validation and addon build are pending.
