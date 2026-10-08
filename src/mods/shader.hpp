@@ -1950,9 +1950,9 @@ inline constexpr auto OnCommandAction = []<typename T, typename Context>(
       custom_shader_info = &custom_shader_it->second;
     }
 
-    if (disable_custom_replacements_d3d12
-        && context.cmd_list->get_device()->get_api() == reshade::api::device_api::d3d12
-        && shader_hash != d3d12_custom_replacement_allow_hash) {
+    // Apply the same per-device replacement gate used by pipeline creation.
+    // Game-specific DX12 paths may allow more than the legacy single hash.
+    if (!utils::shader::IsReplacementAllowed(context.cmd_list->get_device(), shader_hash)) {
       return response;
     }
 
