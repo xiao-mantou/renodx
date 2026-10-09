@@ -216,7 +216,10 @@ bool AllowD3D12Replacement(reshade::api::device* device, uint32_t shader_hash) {
          || shader_hash == 0x6C349427
          // Third isolated UI pair from the prior DX11 coverage split.
          || shader_hash == 0xEFC06591
-         || shader_hash == 0xE46618DA;
+         || shader_hash == 0xE46618DA
+         // Isolate EDC independently because its historical pair includes
+         // the progress-bar candidate that is intentionally still gated.
+         || shader_hash == 0xEDC2563A;
 }
 
 }  // namespace
@@ -324,7 +327,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
                  || shader_hash == 0xC6ADA2E9
                  || shader_hash == 0x6C349427
                  || shader_hash == 0xEFC06591
-                 || shader_hash == 0xE46618DA;
+                 || shader_hash == 0xE46618DA
+                 || shader_hash == 0xEDC2563A;
         };
       }
     }
