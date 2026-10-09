@@ -210,7 +210,10 @@ bool AllowD3D12Replacement(reshade::api::device* device, uint32_t shader_hash) {
   return shader_hash == renodx::mods::shader::d3d12_custom_replacement_allow_hash
          || shader_hash == 0x268BAB6D
          // First isolated DX12 UI candidate; keep the remaining UI stages gated.
-         || shader_hash == 0x93053DEF;
+         || shader_hash == 0x93053DEF
+         // Second isolated UI pair from the prior DX11 coverage split.
+         || shader_hash == 0xC6ADA2E9
+         || shader_hash == 0x6C349427;
 }
 
 }  // namespace
@@ -314,7 +317,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       if (auto shader = custom_shaders.find(shader_hash); shader != custom_shaders.end()) {
         shader->second.on_replace = [shader_hash](reshade::api::command_list* cmd_list) {
           return cmd_list->get_device()->get_api() != reshade::api::device_api::d3d12
-                 || shader_hash == 0x93053DEF;
+                 || shader_hash == 0x93053DEF
+                 || shader_hash == 0xC6ADA2E9
+                 || shader_hash == 0x6C349427;
         };
       }
     }
