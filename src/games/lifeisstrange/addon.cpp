@@ -43,6 +43,7 @@ float current_settings_mode = 0;
 float native_06a2_shader = 0.f;
 float native_6b7d5c22_shader = 0.f;
 float native_006b1c38_shader = 0.f;
+float native_4fa5ad22_shader = 0.f;
 float native_0a3988c0_shader = 0.f;
 float native_8fc18c2f_shader = 0.f;
 float native_9563bc16_shader = 0.f;
@@ -384,6 +385,25 @@ renodx::utils::settings::Settings settings = {
         .on_change_value = [](float, float current) {
           const std::string source = current >= 0.5f ? "native game shader" : "RenoDX replacement";
           const std::string message = "LifeIsStrange 006B1C38 shader source changed: " + source
+                                      + " (all other shader and resource paths unchanged)";
+          reshade::log::message(reshade::log::level::info, message.c_str());
+        },
+        .is_global = true,
+    },
+    new renodx::utils::settings::Setting{
+        .key = "LifeIsStrange_4FA5AD22ShaderSource",
+        .binding = &native_4fa5ad22_shader,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "4FA5AD22 Shader Source",
+        .section = "Shader Replacement",
+        .tooltip = "Selects only pixel shader 0x4FA5AD22. The RenoDX HLSL is a native-semantic baseline: "
+                   "ImageAdjustments2, LUT-domain clamp, and final clamp are retained; shared HDR curve settings do not affect it.",
+        .labels = {"RenoDX replacement", "Native game shader"},
+        .style = renodx::utils::settings::SettingStyle::SEGMENTED,
+        .on_change_value = [](float, float current) {
+          const std::string source = current >= 0.5f ? "native game shader" : "RenoDX semantic baseline";
+          const std::string message = "LifeIsStrange 4FA5AD22 shader source changed: " + source
                                       + " (all other shader and resource paths unchanged)";
           reshade::log::message(reshade::log::level::info, message.c_str());
         },
@@ -1137,6 +1157,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             return native_006b1c38_shader < 0.5f;
           };
         }
+        if (auto shader = custom_shaders.find(0x4FA5AD22u); shader != custom_shaders.end()) {
+          shader->second.on_replace = [](reshade::api::command_list*) {
+            return native_4fa5ad22_shader < 0.5f;
+          };
+        }
         if (auto shader = custom_shaders.find(0x0A3988C0u); shader != custom_shaders.end()) {
           shader->second.on_replace = [](reshade::api::command_list*) {
             return native_0a3988c0_shader < 0.5f;
@@ -1217,6 +1242,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += hdr_pipeline_enabled
                          ? "+0A3988C0+8FC18C2F+9563BC16+D478BD88+E52684C3_HDR_LUT_bridge"
                          : "+0A3988C0+8FC18C2F+9563BC16+D478BD88+E52684C3_native_semantic_baselines";
+        build_log += ", 4FA5AD22_shader_source=";
+        build_log += native_4fa5ad22_shader >= 0.5f ? "native" : "RenoDX_semantic_baseline";
         build_log += ", new_shader_source=";
         build_log += std::to_string(static_cast<int>(native_0a3988c0_shader));
         build_log += "/";
@@ -1463,6 +1490,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     const std::string shader_source_6b1c38_log = "LifeIsStrange 006B1C38 shader source="
                                                  + std::string(native_006b1c38_shader >= 0.5f ? "native game shader" : "RenoDX replacement");
     reshade::log::message(reshade::log::level::info, shader_source_6b1c38_log.c_str());
+    const std::string shader_source_4fa5_log = "LifeIsStrange 4FA5AD22 shader source="
+                                               + std::string(native_4fa5ad22_shader >= 0.5f ? "native game shader" : "RenoDX semantic baseline");
+    reshade::log::message(reshade::log::level::info, shader_source_4fa5_log.c_str());
     const std::string shader_source_0a_log = "LifeIsStrange 0A3988C0 shader source="
                                            + std::string(native_0a3988c0_shader >= 0.5f ? "native game shader" : "RenoDX replacement");
     reshade::log::message(reshade::log::level::info, shader_source_0a_log.c_str());
