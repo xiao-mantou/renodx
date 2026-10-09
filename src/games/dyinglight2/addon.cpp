@@ -223,7 +223,11 @@ bool AllowD3D12Replacement(reshade::api::device* device, uint32_t shader_hash) {
          // First half of the original popup/UI compositor group.
          || shader_hash == 0x54F3F767
          || shader_hash == 0xF34DDC49
-         || shader_hash == 0x43B22618;
+         || shader_hash == 0x43B22618
+         // Second half of the original popup/UI compositor group.
+         || shader_hash == 0x2280559E
+         || shader_hash == 0x61DBDE91
+         || shader_hash == 0x7D1BA5D4;
 }
 
 }  // namespace
@@ -335,7 +339,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
                  || shader_hash == 0xEDC2563A
                  || shader_hash == 0x54F3F767
                  || shader_hash == 0xF34DDC49
-                 || shader_hash == 0x43B22618;
+                 || shader_hash == 0x43B22618
+                 || shader_hash == 0x2280559E
+                 || shader_hash == 0x61DBDE91
+                 || shader_hash == 0x7D1BA5D4;
         };
       }
     }
