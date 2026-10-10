@@ -6,6 +6,10 @@
 #define ImTextureID ImU64
 #define DEBUG_LEVEL_0
 
+#include <atomic>
+#include <cstdint>
+#include <sstream>
+
 #include <embed/shaders.h>
 
 #include <deps/imgui/imgui.h>
@@ -21,6 +25,8 @@ namespace {
 renodx::mods::shader::CustomShaders custom_shaders = {__ALL_CUSTOM_SHADERS};
 
 ShaderInjectData shader_injection;
+
+void ArmDl2Dx11ColorPathAudit();
 
 renodx::utils::settings::Settings settings = {
     new renodx::utils::settings::Setting{
@@ -166,6 +172,13 @@ renodx::utils::settings::Settings settings = {
         .max = 100.f,
         .parse = [](float value) { return value * 0.01f; },
     },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture DX11 Color Path",
+        .section = "Diagnostics",
+        .tooltip = "Arms a short DX11 resource-binding capture for the DL2 color path. It stops automatically after 256 target draws.",
+        .on_change = []() { ArmDl2Dx11ColorPathAudit(); },
+    },
 };
 
 void OnPresetOff() {
@@ -214,6 +227,245 @@ void ConfigureDl2Dx11ResourceUpgrades(reshade::api::device* device) {
   reshade::log::message(
       reshade::log::level::info,
       "[RenoDX] DL2 DX11 resource upgrades: enabled size-independent typeless scene target matching.");
+}
+
+struct Dl2Dx11AuditBinding {
+  uint64_t view = 0;
+  uint64_t resource = 0;
+  uint32_t view_format = DXGI_FORMAT_UNKNOWN;
+  uint32_t resource_format = DXGI_FORMAT_UNKNOWN;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t depth_or_layers = 0;
+  uint32_t bind_flags = 0;
+  uint32_t misc_flags = 0;
+  uint32_t first_level = 0;
+  uint32_t level_count = 0;
+  uint32_t first_slice = 0;
+  uint32_t slice_count = 0;
+  uint32_t samples = 1;
+  bool tracked = false;
+  bool is_clone = false;
+  bool upgraded = false;
+  uint64_t original_resource = 0;
+  uint64_t clone_resource = 0;
+  uint64_t clone_view = 0;
+};
+
+static std::atomic<bool> dl2_dx11_audit_armed = false;
+static std::atomic<uint32_t> dl2_dx11_audit_count = 0;
+static constexpr uint32_t DL2_DX11_AUDIT_LIMIT = 256;
+
+void PopulateDl2Dx11TrackedViewData(Dl2Dx11AuditBinding* binding) {
+  if (binding == nullptr || binding->view == 0u) return;
+
+  const reshade::api::resource_view view = {binding->view};
+  renodx::utils::resource::GetResourceViewInfo(view, [binding](const renodx::utils::resource::ResourceViewInfo& info) {
+    binding->tracked = !info.destroyed;
+    binding->is_clone = info.is_clone;
+    binding->upgraded = info.upgraded;
+    binding->original_resource = info.original_resource.handle;
+    binding->clone_resource = info.clone_resource.handle;
+    binding->clone_view = info.clone.handle;
+  });
+}
+
+void PopulateDl2Dx11TextureData(Dl2Dx11AuditBinding* binding, ID3D11View* native_view) {
+  if (binding == nullptr || native_view == nullptr) return;
+
+  ID3D11Resource* native_resource = nullptr;
+  native_view->GetResource(&native_resource);
+  if (native_resource == nullptr) return;
+  binding->resource = reinterpret_cast<uint64_t>(native_resource);
+
+  D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+  native_resource->GetType(&dimension);
+  if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
+    ID3D11Texture2D* texture = nullptr;
+    if (SUCCEEDED(native_resource->QueryInterface(IID_PPV_ARGS(&texture)))) {
+      D3D11_TEXTURE2D_DESC desc = {};
+      texture->GetDesc(&desc);
+      binding->resource_format = desc.Format;
+      binding->width = desc.Width;
+      binding->height = desc.Height;
+      binding->depth_or_layers = desc.ArraySize;
+      binding->bind_flags = desc.BindFlags;
+      binding->misc_flags = desc.MiscFlags;
+      binding->level_count = desc.MipLevels;
+      binding->samples = desc.SampleDesc.Count;
+      texture->Release();
+    }
+  } else if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE3D) {
+    ID3D11Texture3D* texture = nullptr;
+    if (SUCCEEDED(native_resource->QueryInterface(IID_PPV_ARGS(&texture)))) {
+      D3D11_TEXTURE3D_DESC desc = {};
+      texture->GetDesc(&desc);
+      binding->resource_format = desc.Format;
+      binding->width = desc.Width;
+      binding->height = desc.Height;
+      binding->depth_or_layers = desc.Depth;
+      binding->bind_flags = desc.BindFlags;
+      binding->misc_flags = desc.MiscFlags;
+      binding->level_count = desc.MipLevels;
+      texture->Release();
+    }
+  }
+
+  native_resource->Release();
+}
+
+Dl2Dx11AuditBinding DescribeDl2Dx11Srv(ID3D11ShaderResourceView* srv) {
+  Dl2Dx11AuditBinding binding = {};
+  if (srv == nullptr) return binding;
+  binding.view = reinterpret_cast<uint64_t>(srv);
+
+  D3D11_SHADER_RESOURCE_VIEW_DESC desc = {};
+  srv->GetDesc(&desc);
+  binding.view_format = desc.Format;
+  switch (desc.ViewDimension) {
+    case D3D11_SRV_DIMENSION_TEXTURE2D:
+      binding.first_level = desc.Texture2D.MostDetailedMip;
+      binding.level_count = desc.Texture2D.MipLevels;
+      break;
+    case D3D11_SRV_DIMENSION_TEXTURE2DARRAY:
+      binding.first_level = desc.Texture2DArray.MostDetailedMip;
+      binding.level_count = desc.Texture2DArray.MipLevels;
+      binding.first_slice = desc.Texture2DArray.FirstArraySlice;
+      binding.slice_count = desc.Texture2DArray.ArraySize;
+      break;
+    case D3D11_SRV_DIMENSION_TEXTURE3D:
+      binding.first_level = desc.Texture3D.MostDetailedMip;
+      binding.level_count = desc.Texture3D.MipLevels;
+      break;
+    default:
+      break;
+  }
+  PopulateDl2Dx11TextureData(&binding, srv);
+  PopulateDl2Dx11TrackedViewData(&binding);
+  return binding;
+}
+
+Dl2Dx11AuditBinding DescribeDl2Dx11Rtv(ID3D11RenderTargetView* rtv) {
+  Dl2Dx11AuditBinding binding = {};
+  if (rtv == nullptr) return binding;
+  binding.view = reinterpret_cast<uint64_t>(rtv);
+
+  D3D11_RENDER_TARGET_VIEW_DESC desc = {};
+  rtv->GetDesc(&desc);
+  binding.view_format = desc.Format;
+  switch (desc.ViewDimension) {
+    case D3D11_RTV_DIMENSION_TEXTURE2D:
+      binding.first_level = desc.Texture2D.MipSlice;
+      binding.level_count = 1;
+      break;
+    case D3D11_RTV_DIMENSION_TEXTURE2DARRAY:
+      binding.first_level = desc.Texture2DArray.MipSlice;
+      binding.level_count = 1;
+      binding.first_slice = desc.Texture2DArray.FirstArraySlice;
+      binding.slice_count = desc.Texture2DArray.ArraySize;
+      break;
+    case D3D11_RTV_DIMENSION_TEXTURE3D:
+      binding.first_level = desc.Texture3D.MipSlice;
+      binding.level_count = 1;
+      binding.first_slice = desc.Texture3D.FirstWSlice;
+      binding.slice_count = desc.Texture3D.WSize;
+      break;
+    default:
+      break;
+  }
+  PopulateDl2Dx11TextureData(&binding, rtv);
+  PopulateDl2Dx11TrackedViewData(&binding);
+  return binding;
+}
+
+void LogDl2Dx11AuditBinding(std::stringstream* stream, const char* label, const Dl2Dx11AuditBinding& binding) {
+  if (stream == nullptr || label == nullptr) return;
+  *stream << " " << label << "(view=" << PRINT_PTR(binding.view)
+          << ",res=" << PRINT_PTR(binding.resource)
+          << ",view_fmt=0x" << std::hex << binding.view_format
+          << ",res_fmt=0x" << binding.resource_format << std::dec
+          << ",size=" << binding.width << "x" << binding.height
+          << ",depth_layers=" << binding.depth_or_layers
+          << ",mips=" << binding.first_level << "/" << binding.level_count
+          << ",slice=" << binding.first_slice << "/" << binding.slice_count
+          << ",samples=" << binding.samples
+          << ",bind=0x" << std::hex << binding.bind_flags
+          << ",misc=0x" << binding.misc_flags << std::dec
+          << ",tracked=" << (binding.tracked ? 1 : 0)
+          << ",clone=" << (binding.is_clone ? 1 : 0)
+          << ",upgraded=" << (binding.upgraded ? 1 : 0)
+          << ",orig_res=" << PRINT_PTR(binding.original_resource)
+          << ",clone_res=" << PRINT_PTR(binding.clone_resource)
+          << ",clone_view=" << PRINT_PTR(binding.clone_view) << ")";
+}
+
+void AuditDl2Dx11ColorPath(uint32_t shader_hash, reshade::api::command_list* cmd_list) {
+  if (cmd_list == nullptr || cmd_list->get_device() == nullptr
+      || cmd_list->get_device()->get_api() != reshade::api::device_api::d3d11) {
+    return;
+  }
+
+  if (!dl2_dx11_audit_armed.load(std::memory_order_acquire)) return;
+
+  const uint32_t sequence = dl2_dx11_audit_count.fetch_add(1, std::memory_order_relaxed);
+  if (sequence >= DL2_DX11_AUDIT_LIMIT) {
+    dl2_dx11_audit_armed.store(false, std::memory_order_release);
+    return;
+  }
+
+  auto* context = reinterpret_cast<ID3D11DeviceContext*>(cmd_list->get_native());
+  if (context == nullptr) return;
+
+  ID3D11ShaderResourceView* srvs[2] = {};
+  ID3D11RenderTargetView* rtv = nullptr;
+  context->PSGetShaderResources(0, 2, srvs);
+  context->OMGetRenderTargets(1, &rtv, nullptr);
+
+  const auto t0 = DescribeDl2Dx11Srv(srvs[0]);
+  const auto t1 = DescribeDl2Dx11Srv(srvs[1]);
+  const auto output = DescribeDl2Dx11Rtv(rtv);
+
+  std::stringstream stream;
+  stream << "[RenoDX] DL2 DX11 color path audit #" << (sequence + 1)
+         << " shader=" << PRINT_CRC32(shader_hash)
+         << " cmd=" << PRINT_PTR(cmd_list->get_native());
+  LogDl2Dx11AuditBinding(&stream, "t0", t0);
+  LogDl2Dx11AuditBinding(&stream, "t1", t1);
+  LogDl2Dx11AuditBinding(&stream, "rtv0", output);
+  reshade::log::message(reshade::log::level::info, stream.str().c_str());
+
+  if (sequence + 1u >= DL2_DX11_AUDIT_LIMIT) {
+    dl2_dx11_audit_armed.store(false, std::memory_order_release);
+    reshade::log::message(
+        reshade::log::level::info,
+        "[RenoDX] DL2 DX11 color path audit disarmed after reaching its 256-draw budget.");
+  }
+
+  if (srvs[0] != nullptr) srvs[0]->Release();
+  if (srvs[1] != nullptr) srvs[1]->Release();
+  if (rtv != nullptr) rtv->Release();
+}
+
+void InstallDl2Dx11ColorPathAudit() {
+  constexpr uint32_t audit_shader_hashes[] = {0x3E36DA5B, 0x268BAB6D, 0xAD085E81, 0xBFFC45AC};
+  for (const auto shader_hash : audit_shader_hashes) {
+    if (auto shader = custom_shaders.find(shader_hash); shader != custom_shaders.end()) {
+      const auto prior_on_draw = shader->second.on_draw;
+      shader->second.on_draw = [shader_hash, prior_on_draw](reshade::api::command_list* cmd_list) {
+        if (prior_on_draw != nullptr && !prior_on_draw(cmd_list)) return false;
+        AuditDl2Dx11ColorPath(shader_hash, cmd_list);
+        return true;
+      };
+    }
+  }
+}
+
+void ArmDl2Dx11ColorPathAudit() {
+  dl2_dx11_audit_count.store(0, std::memory_order_release);
+  dl2_dx11_audit_armed.store(true, std::memory_order_release);
+  reshade::log::message(
+      reshade::log::level::info,
+      "[RenoDX] DL2 DX11 color path audit armed by user (0x3E36DA5B, 0x268BAB6D, 0xAD085E81, 0xBFFC45AC; budget=256 draws).");
 }
 
 bool AllowD3D12Replacement(reshade::api::device* device, uint32_t shader_hash) {
@@ -327,6 +579,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
   if (fdw_reason == DLL_PROCESS_DETACH) {
+    dl2_dx11_audit_armed.store(false, std::memory_order_release);
     reshade::unregister_event<reshade::addon_event::init_device>(ConfigureDl2Dx11ResourceUpgrades);
   }
     renodx::mods::swapchain::v2::Use(fdw_reason, &shader_injection);
@@ -373,6 +626,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         };
       }
     }
+  }
+  if (fdw_reason == DLL_PROCESS_ATTACH) {
+    // Keep the DX11 resource-chain audit scoped to the three proven color-path
+    // shaders. The callback is copied into the shader runtime below.
+    InstallDl2Dx11ColorPathAudit();
   }
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
 
