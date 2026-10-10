@@ -228,8 +228,8 @@ bool AllowD3D12Replacement(reshade::api::device* device, uint32_t shader_hash) {
          || shader_hash == 0x2280559E
          || shader_hash == 0x61DBDE91
          || shader_hash == 0x7D1BA5D4
-         // Isolate the remaining coverage-mask UI shader.
-         || shader_hash == 0x1BF90CDB;
+         // Isolate the remaining radial-progress UI shader.
+         || shader_hash == 0x2BECAD9C;
 }
 
 }  // namespace
@@ -345,7 +345,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
                  || shader_hash == 0x2280559E
                  || shader_hash == 0x61DBDE91
                  || shader_hash == 0x7D1BA5D4
-                 || shader_hash == 0x1BF90CDB;
+                 || shader_hash == 0x2BECAD9C;
         };
       }
     }
