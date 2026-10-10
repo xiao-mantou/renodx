@@ -196,8 +196,24 @@ void OnInitDevice(reshade::api::device* device) {
 
   if (device->get_api() == reshade::api::device_api::d3d12) {
     renodx::mods::shader::expected_constant_buffer_space = 50;
-        renodx::mods::swapchain::v2::expected_constant_buffer_space = 50;
+    renodx::mods::swapchain::v2::expected_constant_buffer_space = 50;
   }
+}
+
+void ConfigureDl2Dx11ResourceUpgrades(reshade::api::device* device) {
+  if (device == nullptr || device->get_api() != reshade::api::device_api::d3d11) return;
+
+  // DLSS Off and non-native quality modes render the 0x3E scene target at an
+  // internal resolution that does not match the swapchain. Keep DX12's exact
+  // TGH matching, but let this DX11 scene target receive its size-preserving
+  // FP16 clone so the 0x3E -> 0x268 chain does not fall back to an 8-bit view.
+  auto dx11_resource_upgrade_infos = renodx::mods::swapchain::v2::resource_upgrade_infos;
+  if (dx11_resource_upgrade_infos.empty()) return;
+  dx11_resource_upgrade_infos[0].ignore_size = true;
+  renodx::utils::resource::upgrade::SetUpgradeInfos(device, dx11_resource_upgrade_infos);
+  reshade::log::message(
+      reshade::log::level::info,
+      "[RenoDX] DL2 DX11 resource upgrades: enabled size-independent typeless scene target matching.");
 }
 
 bool AllowD3D12Replacement(reshade::api::device* device, uint32_t shader_hash) {
@@ -310,7 +326,15 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   }
 
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
+  if (fdw_reason == DLL_PROCESS_DETACH) {
+    reshade::unregister_event<reshade::addon_event::init_device>(ConfigureDl2Dx11ResourceUpgrades);
+  }
     renodx::mods::swapchain::v2::Use(fdw_reason, &shader_injection);
+  if (fdw_reason == DLL_PROCESS_ATTACH) {
+    // Register after swapchain_v2 so its per-device upgrade list is overridden
+    // only for the DX11 scene target and only after the baseline is installed.
+    reshade::register_event<reshade::addon_event::init_device>(ConfigureDl2Dx11ResourceUpgrades);
+  }
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     // TGH UI replacements are validated on DX11 only; isolate all of them on DX12.
     constexpr uint32_t dl2_ui_shader_hashes[] = {
