@@ -447,7 +447,7 @@ void AuditDl2Dx11ColorPath(uint32_t shader_hash, reshade::api::command_list* cmd
 }
 
 void InstallDl2Dx11ColorPathAudit() {
-  constexpr uint32_t audit_shader_hashes[] = {0x3E36DA5B, 0x268BAB6D, 0xAD085E81, 0xBFFC45AC};
+  constexpr uint32_t audit_shader_hashes[] = {0x3E36DA5B, 0x268BAB6D, 0xAD085E81};
   for (const auto shader_hash : audit_shader_hashes) {
     if (auto shader = custom_shaders.find(shader_hash); shader != custom_shaders.end()) {
       const auto prior_on_draw = shader->second.on_draw;
@@ -465,7 +465,7 @@ void ArmDl2Dx11ColorPathAudit() {
   dl2_dx11_audit_armed.store(true, std::memory_order_release);
   reshade::log::message(
       reshade::log::level::info,
-      "[RenoDX] DL2 DX11 color path audit armed by user (0x3E36DA5B, 0x268BAB6D, 0xAD085E81, 0xBFFC45AC; budget=256 draws).");
+      "[RenoDX] DL2 DX11 color path audit armed by user (0x3E36DA5B, 0x268BAB6D, 0xAD085E81; budget=256 draws).");
 }
 
 bool AllowD3D12Replacement(reshade::api::device* device, uint32_t shader_hash) {
