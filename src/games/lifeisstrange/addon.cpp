@@ -302,7 +302,7 @@ renodx::utils::settings::Settings settings = {
         .label = "HDR Curve Pivot",
         .section = "Color Grading",
         .tooltip = "Controls the ImageAdjustments2 HDR tangent-extension pivot in the scene input domain "
-                   "for 06A2, 6B7D5C22, 006B1C38, 0A3988C0, 8FC18C2F, 9563BC16, D478BD88, and E52684C3. "
+                   "for 06A2, 6B7D5C22, 006B1C38, 4FA5AD22, 0A3988C0, 8FC18C2F, 9563BC16, D478BD88, and E52684C3. "
                    "This changes the HDR curve, not output nits.",
         .min = 0.18f,
         .max = 2.f,
@@ -397,12 +397,16 @@ renodx::utils::settings::Settings settings = {
         .default_value = 0.f,
         .label = "4FA5AD22 Shader Source",
         .section = "Shader Replacement",
-        .tooltip = "Selects only pixel shader 0x4FA5AD22. The RenoDX HLSL is a native-semantic baseline: "
-                   "ImageAdjustments2, LUT-domain clamp, and final clamp are retained; shared HDR curve settings do not affect it.",
+        .tooltip = "Selects only pixel shader 0x4FA5AD22. The HDR pipeline setting applies the shared "
+                   "ImageAdjustments2 curve/LUT bridge; Native keeps the original curve and clamps.",
         .labels = {"RenoDX replacement", "Native game shader"},
         .style = renodx::utils::settings::SettingStyle::SEGMENTED,
         .on_change_value = [](float, float current) {
-          const std::string source = current >= 0.5f ? "native game shader" : "RenoDX semantic baseline";
+          const std::string source = current >= 0.5f
+                                         ? "native game shader"
+                                         : (shader_injection.lifeisstrange_hdr_pipeline > 0.f
+                                                ? "RenoDX HDR LUT bridge"
+                                                : "RenoDX semantic baseline");
           const std::string message = "LifeIsStrange 4FA5AD22 shader source changed: " + source
                                       + " (all other shader and resource paths unchanged)";
           reshade::log::message(reshade::log::level::info, message.c_str());
@@ -1243,7 +1247,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
                          ? "+0A3988C0+8FC18C2F+9563BC16+D478BD88+E52684C3_HDR_LUT_bridge"
                          : "+0A3988C0+8FC18C2F+9563BC16+D478BD88+E52684C3_native_semantic_baselines";
         build_log += ", 4FA5AD22_shader_source=";
-        build_log += native_4fa5ad22_shader >= 0.5f ? "native" : "RenoDX_semantic_baseline";
+        build_log += native_4fa5ad22_shader >= 0.5f
+                         ? "native"
+                         : (hdr_pipeline_enabled ? "RenoDX_HDR_LUT_bridge" : "RenoDX_semantic_baseline");
         build_log += ", new_shader_source=";
         build_log += std::to_string(static_cast<int>(native_0a3988c0_shader));
         build_log += "/";
@@ -1491,7 +1497,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
                                                  + std::string(native_006b1c38_shader >= 0.5f ? "native game shader" : "RenoDX replacement");
     reshade::log::message(reshade::log::level::info, shader_source_6b1c38_log.c_str());
     const std::string shader_source_4fa5_log = "LifeIsStrange 4FA5AD22 shader source="
-                                               + std::string(native_4fa5ad22_shader >= 0.5f ? "native game shader" : "RenoDX semantic baseline");
+                                               + std::string(native_4fa5ad22_shader >= 0.5f
+                                                                 ? "native game shader"
+                                                                 : (hdr_pipeline_enabled ? "RenoDX HDR LUT bridge" : "RenoDX semantic baseline"));
     reshade::log::message(reshade::log::level::info, shader_source_4fa5_log.c_str());
     const std::string shader_source_0a_log = "LifeIsStrange 0A3988C0 shader source="
                                            + std::string(native_0a3988c0_shader >= 0.5f ? "native game shader" : "RenoDX replacement");

@@ -1,4 +1,5 @@
 #include "./shared.h"
+#include "./hdr_lut_bridge.hlsli"
 
 float4 BloomTintAndScreenBlendThreshold : register(c0);
 float4 MinZ_MaxZRatio : register(c2);
@@ -100,11 +101,27 @@ half4 main(PS_IN i) : COLOR {
   r2 = half4(r2 * c6.wwww);
   r0 = half4(r2 * r1.y + r0);
 
-  r1.yzw = half3(r0.zwy * ImageAdjustments2.yyy + ImageAdjustments2.xxx);
-  r2.z = 1.f / r1.y;
-  r2.w = 1.f / r1.z;
-  r2.xy = 1.f / r1.ww;
-  r0 = half4(saturate(r0 * r2));
+  float3 scene_color = float3(r0.z, r0.w, r0.y);
+  bool use_hdr_lut_bridge = LIFEISSTRANGE_HDR_PIPELINE > 0.f;
+  float hdr_lut_scale = 1.f;
+  if (use_hdr_lut_bridge) {
+    float3 extended_curve = LifeIsStrangeExtendImageAdjustments2(
+        scene_color,
+        ImageAdjustments2.xy,
+        LIFEISSTRANGE_HDR_CURVE_PIVOT,
+        LIFEISSTRANGE_HDR_CURVE_METHOD);
+    float3 lut_proxy = LifeIsStrangeCompressForColorGradingLut(extended_curve, hdr_lut_scale);
+
+    // This shader's packed 2D LUT address consumes B, B, R, G from r0.xyzw.
+    r0 = half4(lut_proxy.b, lut_proxy.b, lut_proxy.r, lut_proxy.g);
+  } else {
+    // Keep the manually corrected native-semantic LUT input path unchanged.
+    r1.yzw = half3(r0.zwy * ImageAdjustments2.yyy + ImageAdjustments2.xxx);
+    r2.z = 1.f / r1.y;
+    r2.w = 1.f / r1.z;
+    r2.xy = 1.f / r1.ww;
+    r0 = half4(saturate(r0 * r2));
+  }
 
   r2.xyw = r0.xwz * c19.xzy;
   r0.x = frac(r2.x);
@@ -143,6 +160,10 @@ half4 main(PS_IN i) : COLOR {
   r3 = half4(lerp(r2, r1, r0.y));
   r1 = half4(lerp(r3, r6, r0.x));
 
+  if (use_hdr_lut_bridge) {
+    r1.xyz = LifeIsStrangeRestoreAfterColorGradingLut(r1.xyz, hdr_lut_scale);
+  }
+
   r0 = tex2D(DNEVignetTexture, i.texcoord2.zw);
   r0.x = saturate(dot(r0, DNEVignetMaskFactors));
   r0.yzw = -r4.xxx + DNEVignetColor.xyz;
@@ -153,8 +174,12 @@ half4 main(PS_IN i) : COLOR {
   r0.w = r2.x * c4.z + c4.w;
   r0.w = r0.w * ImageAdjustments1.w;
 
-  // Preserve the original final mad_sat and LUT alpha output.
-  o.xyz = half3(saturate(r1.xyz * r0.xyz + r0.www));
+  // Keep the native final mad_sat in SDR; HDR bypasses only this color clamp.
+  float3 output_color = r1.xyz * r0.xyz + r0.www;
+  if (!use_hdr_lut_bridge) {
+    output_color = saturate(output_color);
+  }
+  o.xyz = half3(output_color);
   o.w = half(r1.w);
   return o;
 }
