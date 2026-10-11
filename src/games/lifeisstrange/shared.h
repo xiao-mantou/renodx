@@ -76,7 +76,8 @@ struct ShaderInjectData {
   float lifeisstrange_force_proxy_white;
   float lifeisstrange_force_fc2a_white;
   float lifeisstrange_bypass_06a2_lut;
-  float lifeisstrange_force_512_white;
+  // c9.x: bit 0 forces 512 white; bit 1 selects the raw 4FA5 scene probe.
+  float lifeisstrange_probe_flags;
   // Reuse the unused SceneExposure slot to stay within the SM3 injection buffer.
   float lifeisstrange_hdr_curve_method;
   float lifeisstrange_hdr_pipeline;
@@ -124,6 +125,7 @@ float4 shader_injection[10] : register(c50);
 #define LIFEISSTRANGE_FORCE_FC2A_WHITE        shader_injection[8][2]
 #define LIFEISSTRANGE_BYPASS_06A2_LUT         shader_injection[8][3]
 #define LIFEISSTRANGE_FORCE_512_WHITE         shader_injection[9][0]
+#define LIFEISSTRANGE_RAW_4FA5_SCENE_PROBE    shader_injection[9][0]
 #define LIFEISSTRANGE_HDR_CURVE_METHOD        shader_injection[9][1]
 #define LIFEISSTRANGE_HDR_PIPELINE            shader_injection[9][2]
 #define LIFEISSTRANGE_HDR_CURVE_PIVOT         shader_injection[9][3]
@@ -174,7 +176,8 @@ cbuffer shader_injection : register(b13) {
 #define LIFEISSTRANGE_FORCE_PROXY_WHITE         shader_injection.lifeisstrange_force_proxy_white
 #define LIFEISSTRANGE_FORCE_FC2A_WHITE          shader_injection.lifeisstrange_force_fc2a_white
 #define LIFEISSTRANGE_BYPASS_06A2_LUT           shader_injection.lifeisstrange_bypass_06a2_lut
-#define LIFEISSTRANGE_FORCE_512_WHITE           shader_injection.lifeisstrange_force_512_white
+#define LIFEISSTRANGE_FORCE_512_WHITE           shader_injection.lifeisstrange_probe_flags
+#define LIFEISSTRANGE_RAW_4FA5_SCENE_PROBE      shader_injection.lifeisstrange_probe_flags
 #define LIFEISSTRANGE_HDR_CURVE_METHOD          shader_injection.lifeisstrange_hdr_curve_method
 #define LIFEISSTRANGE_HDR_PIPELINE              shader_injection.lifeisstrange_hdr_pipeline
 #define LIFEISSTRANGE_HDR_CURVE_PIVOT           shader_injection.lifeisstrange_hdr_curve_pivot

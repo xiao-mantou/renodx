@@ -101,6 +101,26 @@
 - The 18:35 trace omitted `first`; its previously guessed values are unassigned and must not be treated as c8. This trace supersedes that uncertainty but does not explain the current RenoDX HDR luminance by itself.
 - `SnapshotTraceWithSnapshot` was enabled for this single capture; turn it back off (`=0`).
 
+## ImageAdjustments2 constant repeatability check (2026-10-09)
+
+- The initial evidence contained one valid c8 sample: `first=32, count=4`, pixel-stage push constants for draw #235 (`0x06A2A81D`), raw `0x3e5b4027, 0x3f7925fe, 0x3e82c9f9, 0x3f800000`; therefore `a=c8.x=0.21411191` and `b=c8.y=0.97323596` were confirmed for that captured frame. Three additional same-scene captures are now recorded below. The earlier 18:35 trace has no `first` and is not a comparable sample.
+- Same-scene repeatability is now confirmed across the original plus three new snapshots: all four raw c8 DWORDs match bit-for-bit. Cross-scene stability remains unverified. For any further sample, confirm the pipeline is pixel shader `0x06A2A81D`, match the nearby `push_constants` event to the draw, and record `first`, `count`, all four raw DWORDs, and decoded c8 values.
+- Minimum runtime setup: ReShade host plus the DevKit addon only. Disable the Life Is Strange RenoDX addon and DX11 proxy. No resource clone, pixel readback, or `Trace Constant Buffers` capture is needed; the target values are emitted by the one-frame push-constant trace.
+- Enable `Trace With Snapshot` (`SnapshotTraceWithSnapshot=1`) and queue via the DevKit panel's `Snapshot` menu or MCP `devkit_queue_snapshot`. These normal snapshot paths schedule a verbose whole-frame API trace containing `push_constants` events. F8 uses the auto-export path and explicitly skips trace scheduling, so F8 alone is insufficient for this test.
+- Turn `Trace With Snapshot` back to `0` after each capture. The trace runs for one frame and can add log volume and frame overhead; capture one frame at a time and pause between samples. `Trace Constant Buffers` remains off.
+- Results table:
+
+| Sample | Scene / draw | `first/count` | Raw c8 DWORDs | `a` / `b` | Status |
+| --- | --- | --- | --- | --- | --- |
+| Existing | Main menu, draw #235 | `32/4` | `3e5b4027, 3f7925fe, 3e82c9f9, 3f800000` | `0.21411191 / 0.97323596` | Confirmed single frame |
+| Repeat 1 | Current user-selected scene, 2026-10-09 19:26:27.752 | `32/4`, pixel stage, layout `0x0d34adb8[5]` | `3e5b4027, 3f7925fe, 3e82c9f9, 3f800000` | `0.21411191 / 0.97323596` | Bit-identical to existing sample |
+| Repeat 2 | Same running scene, 2026-10-09 19:28:08.603 | `32/4`, pixel stage, layout `0x0d34adb8[5]` | `3e5b4027, 3f7925fe, 3e82c9f9, 3f800000` | `0.21411191 / 0.97323596` | Bit-identical |
+| Repeat 3 | Same running scene, 2026-10-09 19:30:21.159 | `32/4`, pixel stage, layout `0x0d34adb8[5]` | `3e5b4027, 3f7925fe, 3e82c9f9, 3f800000` | `0.21411191 / 0.97323596` | Bit-identical |
+| Other scene | Pending | Pending | Pending | Pending | Optional |
+- Each repeat matched a `bind_pipeline` event for pixel shader `0x06A2A81D`; the immediately following push-constant event was `first=32/count=4`, so attribution to c8 is direct. The entire c8 vector, not just `a/b`, remained bit-identical across these three captures.
+- This establishes stability across three captures over about four minutes in the same running scene only. It does not establish that the game never changes c8 across levels, cutscenes, exposure/settings changes, or other rendering variants.
+- Trace was queued for exactly these three repeat captures. `SnapshotTraceWithSnapshot` is still enabled in the live game configuration; turn it off in the DevKit overlay now to avoid tracing later unrelated snapshots.
+
 ## HDR bridge baseline and clip audit (2026-09-30)
 
 - The clean semantic baseline is commit `b3b91149` (`fix(lifeisstrange): align 06a2 sm3 semantics`), checked against the retained original `0x06A2A81D.ps_3_0.msasm`. The nine SM3 swizzle, write-mask, interpolation, and constant corrections stay intact; the current HDR experiment is an injection on top of that baseline, not a replacement with raw decompiler output.
@@ -192,3 +212,27 @@
 - Each active `postprocess_0xHASH.ps_3_0.hlsl` keeps an HDR-off/native-equivalent branch and adds the same HDR LUT bridge used by the previously validated candidates: ImageAdjustments2 tangent extension, max-channel LUT transport compression, one reconstruction after LUT sampling, and removal of only the final HDR color clamp. Intermediate spatial/mask saturates remain unchanged.
 - The five hashes are registered through `__ALL_CUSTOM_SHADERS` and each has an independent Native/RenoDX source selector. `HDRCurvePivot`, `HDRCurveMethod`, and `EnableHDRPipeline` are shared; no replacement was added for `0x51229A9B`.
 - Local `fxc` validation with `ps_3_0`, `/Gec`, `/D __SHADER_TARGET_MAJOR=3`, and `/D __SHADER_TARGET_MINOR=0` compiled all five shaders successfully. Dumped bindings retain `shader_injection c50`, `SceneColorTexture s0`, and the original per-shader LUT sampler (`s5`, `s7`, `s6`, `s6`, `s6`). This is shader/compiler evidence only; the x86 addon build and runtime A/B remain pending.
+
+## 0x4FA5AD22 semantic baseline (2026-10-09)
+
+- F8 captures place `0x4FA5AD22` among the same late post-process family as `0x06A2A81D`/`0x006B1C38`, but it is a distinct pass, not a hash alias: it samples `LowResPostProcessBuffer` at s5 for a depth composite before `ImageAdjustments2`, uses `ColorGradingLUT` at s4, then applies vignette/grain and final RGB saturation. Its own draw-level c8 constants have not been independently captured.
+- Added `0x4FA5AD22.ps_3_0.hlsl` as a native-semantic replacement only. It preserves the rational `ImageAdjustments2` operation, the saturating LUT-domain write, the packed LUT sampling path, and final `mad_sat`; it does not use `HDRCurvePivot`, `HDRCurveMethod`, or the HDR LUT bridge.
+- Corrected two scalarized HlslDecompiler expressions against the retained ASM: luminance `dp3` uses `c16.yzw=(0.3,0.59,0.11)`, and the depth-state `dp3` uses `-c17.xzw=(3,1,2)`. Register bindings are explicit for dynamic c0/c2/c7-c14 and samplers s0-s5.
+- Added an independent `LifeIsStrange_4FA5AD22ShaderSource` selector. `RenoDX replacement` selects the semantic HLSL baseline; `Native game shader` leaves the original bytecode active. Resource upgrades, other shader selectors, shared HDR controls, and the DX11 proxy are unchanged.
+- System D3DCompiler compiled the replacement as `ps_3_0` in backward-compatibility mode (`/Gec` equivalent): 2,772-byte bytecode; one unrelated `aces.hlsl` loop-variable shadow warning. This is shader compilation and ASM audit only. The x86 addon build and in-game Native/RenoDX A/B remain unverified.
+
+## 0x4FA5AD22 HDR LUT bridge test (2026-10-10)
+
+- Added the shared `ImageAdjustments2` tangent extension and bounded LUT transport only when `LifeIsStrange_EnableHDRPipeline=1`; the original-semantic SDR branch, packed LUT sampling, depth composite, vignette, grain, alpha, and source selector remain intact. HDR reconstructs the LUT result once and bypasses only the final RGB saturate.
+- The HDR input swizzle is `r0.zwy` (RGB); LUT transport is explicitly repacked as `B,B,R,G`, matching this shader's packed-address math. No resource-upgrade, proxy, readback, or other shader behavior changed.
+- F8 captures establish that this hash is used in the tested scene family, but do not establish that its draw input exceeds 1 or that its output/intermediates are fully upgraded to the final proxy. Treat the first runtime result as a targeted shader A/B, not proof of the complete HDR chain.
+- System D3DCompiler compiled the updated shader as `ps_3_0` in backward-compatibility mode: 4,576-byte bytecode, with only the existing `aces.hlsl` loop-variable shadow warning. Full addon/action build and runtime A/B remain pending. Startup/source-change logs now distinguish `RenoDX HDR LUT bridge` from the HDR-off semantic baseline.
+- Runtime test: keep `LifeIsStrange_4FA5AD22ShaderSource=0`, `LifeIsStrange_EnableHDRPipeline=1`, `HDRCurvePivot=0.70`, and `HDRCurveMethod=0` (per-channel tangent); compare the same toilet-item prompt border/angle against Native (`ShaderSource=1`) with all other settings unchanged. Confirm the startup log says `4FA5AD22_shader_source=RenoDX_HDR_LUT_bridge`.
+
+## 0x5DA670EE variant and incremental shader extraction (2026-10-11)
+
+- The latest three F8 captures (`20261011-003130-856`, `20261011-003133-223`, `20261011-003135-239`) all contain the same post-process variant. `0x36B78BE0` is a 1920x1080 `R16G16B16A16_FLOAT` resource sampled by `0x5DA670EE`; because it is non-sRGB FP16 and is consumed as `SceneColorTexture`, it is the proven linear scene-color working signal for this pass.
+- `0x5DA670EE` writes a 1920x1080 `B8G8R8A8_UNORM` target, samples `ColorGradingLUT` at s5, uses ImageAdjustments2 from c10 on RGB `r0.zwy`, packs the LUT address as `B,B,R,G`, and has a LUT-domain `mul_sat` plus final `mad_sat`. It is a distinct ImageAdjustments2/LUT post-process variant, not an alias of 06A2.
+- Added `postprocess_0x5DA670EE.ps_3_0.hlsl` from the retained `.asm`/HlslDecompiler output. HDR-off preserves the native curve, LUT clamp, vignette/grain, alpha, and final clamp. HDR-on uses the shared tangent/LUT bridge and removes only the LUT-domain and final RGB clamps; no spatial/depth/mask saturates were changed.
+- Added `LifeIsStrange_5DA670EEShaderSource` for isolated Native/RenoDX A/B. The shared `HDRCurvePivot`, `HDRCurveMethod`, and `LifeIsStrange_EnableHDRPipeline` controls are reused; resource upgrades, readback, and proxy logic are unchanged.
+- DevKit captures can extract every shader encountered by the current runtime path as `.original.cso`; repeated F8 batches are deduplicated by hash. They cannot guarantee every shader in the game in one run because D3D9 creates many shaders lazily by scene/material. The reliable workflow is multi-scene F8 capture, hash merge, pixel-shader filtering, then FP16/LUT/full-frame ranking before decompilation.

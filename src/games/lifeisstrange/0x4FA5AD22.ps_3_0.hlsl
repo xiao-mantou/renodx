@@ -102,6 +102,12 @@ half4 main(PS_IN i) : COLOR {
   r0 = half4(r2 * r1.y + r0);
 
   float3 scene_color = float3(r0.z, r0.w, r0.y);
+  if (LIFEISSTRANGE_RAW_4FA5_SCENE_PROBE > 1.5f) {
+    o.xyz = half3(scene_color);
+    o.w = 1.f;
+    return o;
+  }
+
   bool use_hdr_lut_bridge = LIFEISSTRANGE_HDR_PIPELINE > 0.f;
   float hdr_lut_scale = 1.f;
   if (use_hdr_lut_bridge) {

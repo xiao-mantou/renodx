@@ -43,12 +43,13 @@ float current_settings_mode = 0;
 float native_06a2_shader = 0.f;
 float native_6b7d5c22_shader = 0.f;
 float native_006b1c38_shader = 0.f;
-float native_4fa5ad22_shader = 0.f;
+float fourfa5_output_mode = 0.f;
 float native_0a3988c0_shader = 0.f;
 float native_8fc18c2f_shader = 0.f;
 float native_9563bc16_shader = 0.f;
 float native_d478bd88_shader = 0.f;
 float native_e52684c3_shader = 0.f;
+float native_5da670ee_shader = 0.f;
 
 renodx::utils::settings::Settings settings = {
     new renodx::utils::settings::Setting{
@@ -302,7 +303,7 @@ renodx::utils::settings::Settings settings = {
         .label = "HDR Curve Pivot",
         .section = "Color Grading",
         .tooltip = "Controls the ImageAdjustments2 HDR tangent-extension pivot in the scene input domain "
-                   "for 06A2, 6B7D5C22, 006B1C38, 4FA5AD22, 0A3988C0, 8FC18C2F, 9563BC16, D478BD88, and E52684C3. "
+                   "for 06A2, 6B7D5C22, 006B1C38, 4FA5AD22, 0A3988C0, 8FC18C2F, 9563BC16, D478BD88, E52684C3, and 5DA670EE. "
                    "This changes the HDR curve, not output nits.",
         .min = 0.18f,
         .max = 2.f,
@@ -392,23 +393,27 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .key = "LifeIsStrange_4FA5AD22ShaderSource",
-        .binding = &native_4fa5ad22_shader,
+        .binding = &fourfa5_output_mode,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
         .default_value = 0.f,
-        .label = "4FA5AD22 Shader Source",
+        .label = "4FA5AD22 Output Mode",
         .section = "Shader Replacement",
-        .tooltip = "Selects only pixel shader 0x4FA5AD22. The HDR pipeline setting applies the shared "
-                   "ImageAdjustments2 curve/LUT bridge; Native keeps the original curve and clamps.",
-        .labels = {"RenoDX replacement", "Native game shader"},
+        .tooltip = "Selects only pixel shader 0x4FA5AD22. Native uses the original compiled game shader. "
+                   "Raw Scene writes post-composite scene RGB immediately before ImageAdjustments2 directly to this draw's RTV, "
+                   "bypassing the curve, LUT, vignette, and grain. It is diagnostic, not the native result; values above 1 "
+                   "require an FP16 RTV/clone. LifeIsStrange_4FA5BindingDiagnostic=1 logs this RTV without rebinding later passes.",
+        .labels = {"RenoDX", "Native", "Raw Scene"},
         .style = renodx::utils::settings::SettingStyle::SEGMENTED,
         .on_change_value = [](float, float current) {
-          const std::string source = current >= 0.5f
-                                         ? "native game shader"
-                                         : (shader_injection.lifeisstrange_hdr_pipeline > 0.f
-                                                ? "RenoDX HDR LUT bridge"
-                                                : "RenoDX semantic baseline");
-          const std::string message = "LifeIsStrange 4FA5AD22 shader source changed: " + source
-                                      + " (all other shader and resource paths unchanged)";
+          const bool raw_scene_probe = current >= 1.5f;
+          // c9.x packs Force512White in bit 0 and the 4FA5 raw probe in bit 1.
+          shader_injection.lifeisstrange_probe_flags = (force_512_white_validation ? 1.f : 0.f)
+                                                       + (raw_scene_probe ? 2.f : 0.f);
+          const std::string mode = raw_scene_probe
+                                       ? "raw pre-ImageAdjustments2 scene probe"
+                                       : (current >= 0.5f ? "original game bytecode" : "RenoDX replacement");
+          const std::string message = "LifeIsStrange 4FA5AD22 output mode changed: " + mode
+                                      + " (other shader selections and resource rules unchanged)";
           reshade::log::message(reshade::log::level::info, message.c_str());
         },
         .is_global = true,
@@ -499,6 +504,24 @@ renodx::utils::settings::Settings settings = {
         .on_change_value = [](float, float current) {
           const std::string source = current >= 0.5f ? "native game shader" : "RenoDX replacement";
           const std::string message = "LifeIsStrange E52684C3 shader source changed: " + source;
+          reshade::log::message(reshade::log::level::info, message.c_str());
+        },
+        .is_global = true,
+    },
+    new renodx::utils::settings::Setting{
+        .key = "LifeIsStrange_5DA670EEShaderSource",
+        .binding = &native_5da670ee_shader,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "5DA670EE Shader Source",
+        .section = "Shader Replacement",
+        .tooltip = "Selects only pixel shader 0x5DA670EE. Native keeps the original ImageAdjustments2/LUT shader; "
+                   "RenoDX uses the ASM-audited HDR LUT bridge.",
+        .labels = {"RenoDX replacement", "Native game shader"},
+        .style = renodx::utils::settings::SettingStyle::SEGMENTED,
+        .on_change_value = [](float, float current) {
+          const std::string source = current >= 0.5f ? "native game shader" : "RenoDX replacement";
+          const std::string message = "LifeIsStrange 5DA670EE shader source changed: " + source;
           reshade::log::message(reshade::log::level::info, message.c_str());
         },
         .is_global = true,
@@ -632,6 +655,7 @@ bool bypass_06a2_lut_validation = false;
 bool force_512_white_validation = false;
 bool ab_disable_intermediate_upgrade = false;
 bool intermediate_binding_diagnostic = false;
+bool fourfa5_binding_diagnostic = false;
 
 struct IntermediateSrvTraceState {
   std::array<reshade::api::resource_view, 6> views = {};
@@ -791,12 +815,16 @@ bool TraceIntermediateDrawBindings(
     const std::uint32_t shader_hash,
     const bool allow_replacement) {
   static std::uint32_t trace_count_06a2 = 0u;
+  static std::uint32_t trace_count_4fa5 = 0u;
   static std::uint32_t trace_count_51229 = 0u;
   static std::uint32_t trace_count_fc2a = 0u;
   auto& trace_count = shader_hash == 0x06A2A81Du
                           ? trace_count_06a2
-                          : (shader_hash == 0x51229A9Bu ? trace_count_51229 : trace_count_fc2a);
-  if (cmd_list == nullptr || trace_count >= 24u) return allow_replacement;
+                          : (shader_hash == 0x4FA5AD22u
+                                 ? trace_count_4fa5
+                                 : (shader_hash == 0x51229A9Bu ? trace_count_51229 : trace_count_fc2a));
+  const auto trace_limit = shader_hash == 0x4FA5AD22u ? 8u : 24u;
+  if (cmd_list == nullptr || trace_count >= trace_limit) return allow_replacement;
   ++trace_count;
 
   auto render_targets = renodx::utils::swapchain::GetRenderTargets(cmd_list);
@@ -1023,6 +1051,14 @@ void LoadDX11ProxySetting() {
       "LifeIsStrange_IntermediateBindingDiagnostic",
       enabled);
   intermediate_binding_diagnostic = enabled != 0;
+
+  enabled = 0;
+  reshade::get_config_value(
+      nullptr,
+      renodx::utils::settings::global_name.c_str(),
+      "LifeIsStrange_4FA5BindingDiagnostic",
+      enabled);
+  fourfa5_binding_diagnostic = enabled != 0;
   if (ab_disable_intermediate_upgrade && dx11_proxy_validation) {
     dx11_proxy_validation = false;
     reshade::log::message(
@@ -1104,7 +1140,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       shader_injection.lifeisstrange_force_proxy_white = force_proxy_white_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_force_fc2a_white = force_fc2a_white_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_bypass_06a2_lut = bypass_06a2_lut_validation ? 1.f : 0.f;
-      shader_injection.lifeisstrange_force_512_white = force_512_white_validation ? 1.f : 0.f;
+      shader_injection.lifeisstrange_probe_flags = force_512_white_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_hdr_curve_method = 0.f;
       shader_injection.lifeisstrange_hdr_pipeline = hdr_pipeline_enabled ? 1.f : 0.f;
       shader_injection.swap_chain_output_preset = dx11_proxy_validation ? 1.f : 0.f;
@@ -1163,7 +1199,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         }
         if (auto shader = custom_shaders.find(0x4FA5AD22u); shader != custom_shaders.end()) {
           shader->second.on_replace = [](reshade::api::command_list*) {
-            return native_4fa5ad22_shader < 0.5f;
+            return fourfa5_output_mode < 0.5f || fourfa5_output_mode >= 1.5f;
           };
         }
         if (auto shader = custom_shaders.find(0x0A3988C0u); shader != custom_shaders.end()) {
@@ -1190,6 +1226,22 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           shader->second.on_replace = [](reshade::api::command_list*) {
             return native_e52684c3_shader < 0.5f;
           };
+        }
+        if (auto shader = custom_shaders.find(0x5DA670EEu); shader != custom_shaders.end()) {
+          shader->second.on_replace = [](reshade::api::command_list*) {
+            return native_5da670ee_shader < 0.5f;
+          };
+        }
+        if ((intermediate_binding_diagnostic || fourfa5_binding_diagnostic)
+            && !ab_disable_intermediate_upgrade) {
+          if (auto shader = custom_shaders.find(0x4FA5AD22u); shader != custom_shaders.end()) {
+            shader->second.on_replace = [](reshade::api::command_list* cmd_list) {
+              return TraceIntermediateDrawBindings(
+                  cmd_list,
+                  0x4FA5AD22u,
+                  fourfa5_output_mode < 0.5f || fourfa5_output_mode >= 1.5f);
+            };
+          }
         }
         if (intermediate_binding_diagnostic && !ab_disable_intermediate_upgrade) {
           custom_shaders.emplace(
@@ -1239,17 +1291,25 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += renodx::build_info::kBuildVersion;
         build_log += ", timestamp_utc=";
         build_log += renodx::build_info::kBuildTimestampUtc;
+        int configured_4fa5_source = 0;
+        reshade::get_config_value(
+            nullptr,
+            renodx::utils::settings::global_name.c_str(),
+            "LifeIsStrange_4FA5AD22ShaderSource",
+            configured_4fa5_source);
         build_log += ", features=";
         build_log += hdr_pipeline_enabled ? "06A2_HDR_LUT_bridge" : "06A2_vanilla_shader";
         build_log += hdr_pipeline_enabled ? "+6B7D5C22_HDR_LUT_bridge_candidate" : "+6B7D5C22_vanilla_shader";
         build_log += hdr_pipeline_enabled ? "+006B1C38_HDR_LUT_bridge_candidate" : "+006B1C38_native_curve_and_clamps";
         build_log += hdr_pipeline_enabled
-                         ? "+0A3988C0+8FC18C2F+9563BC16+D478BD88+E52684C3_HDR_LUT_bridge"
-                         : "+0A3988C0+8FC18C2F+9563BC16+D478BD88+E52684C3_native_semantic_baselines";
-        build_log += ", 4FA5AD22_shader_source=";
-        build_log += native_4fa5ad22_shader >= 0.5f
-                         ? "native"
-                         : (hdr_pipeline_enabled ? "RenoDX_HDR_LUT_bridge" : "RenoDX_semantic_baseline");
+                         ? "+0A3988C0+8FC18C2F+9563BC16+D478BD88+E52684C3+5DA670EE_HDR_LUT_bridge"
+                         : "+0A3988C0+8FC18C2F+9563BC16+D478BD88+E52684C3+5DA670EE_native_semantic_baselines";
+        build_log += ", 4FA5AD22_output_mode=";
+        build_log += configured_4fa5_source >= 2
+                         ? "raw_pre_ImageAdjustments2_scene_probe"
+                         : (configured_4fa5_source == 1
+                                ? "original_game_bytecode"
+                                : (hdr_pipeline_enabled ? "RenoDX_HDR_LUT_bridge" : "RenoDX_semantic_baseline"));
         build_log += ", new_shader_source=";
         build_log += std::to_string(static_cast<int>(native_0a3988c0_shader));
         build_log += "/";
@@ -1260,6 +1320,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += std::to_string(static_cast<int>(native_d478bd88_shader));
         build_log += "/";
         build_log += std::to_string(static_cast<int>(native_e52684c3_shader));
+        build_log += "/";
+        build_log += std::to_string(static_cast<int>(native_5da670ee_shader));
         build_log += " [0=RenoDX,1=native]";
         build_log += fc2a_replacement_enabled ? "+FC2A_shader_replacement" : "+FC2A_vanilla_shader";
         if (hdr_pipeline_enabled && fc2a_replacement_enabled) {
@@ -1476,6 +1538,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
   if (fdw_reason == DLL_PROCESS_ATTACH) {
+    const bool raw_4fa5_scene_probe = fourfa5_output_mode >= 1.5f;
+    // Reapply the packed c9.x flags after the settings loader reads the persisted mode.
+    shader_injection.lifeisstrange_probe_flags = (force_512_white_validation ? 1.f : 0.f)
+                                                 + (raw_4fa5_scene_probe ? 2.f : 0.f);
     std::string tone_map_log = "LifeIsStrange active ToneMapType=";
     tone_map_log += std::to_string(shader_injection.tone_map_type);
     reshade::log::message(reshade::log::level::info, tone_map_log.c_str());
@@ -1496,10 +1562,12 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     const std::string shader_source_6b1c38_log = "LifeIsStrange 006B1C38 shader source="
                                                  + std::string(native_006b1c38_shader >= 0.5f ? "native game shader" : "RenoDX replacement");
     reshade::log::message(reshade::log::level::info, shader_source_6b1c38_log.c_str());
-    const std::string shader_source_4fa5_log = "LifeIsStrange 4FA5AD22 shader source="
-                                               + std::string(native_4fa5ad22_shader >= 0.5f
-                                                                 ? "native game shader"
-                                                                 : (hdr_pipeline_enabled ? "RenoDX HDR LUT bridge" : "RenoDX semantic baseline"));
+    const std::string shader_source_4fa5_log = "LifeIsStrange 4FA5AD22 output mode="
+                                               + std::string(raw_4fa5_scene_probe
+                                                                 ? "raw pre-ImageAdjustments2 scene probe"
+                                                                 : (fourfa5_output_mode >= 0.5f
+                                                                        ? "original game bytecode (no replacement pipeline)"
+                                                                        : (hdr_pipeline_enabled ? "RenoDX HDR LUT bridge" : "RenoDX semantic baseline")));
     reshade::log::message(reshade::log::level::info, shader_source_4fa5_log.c_str());
     const std::string shader_source_0a_log = "LifeIsStrange 0A3988C0 shader source="
                                            + std::string(native_0a3988c0_shader >= 0.5f ? "native game shader" : "RenoDX replacement");
@@ -1516,6 +1584,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     const std::string shader_source_e526_log = "LifeIsStrange E52684C3 shader source="
                                               + std::string(native_e52684c3_shader >= 0.5f ? "native game shader" : "RenoDX replacement");
     reshade::log::message(reshade::log::level::info, shader_source_e526_log.c_str());
+    const std::string shader_source_5da_log = "LifeIsStrange 5DA670EE shader source="
+                                            + std::string(native_5da670ee_shader >= 0.5f ? "native game shader" : "RenoDX replacement");
+    reshade::log::message(reshade::log::level::info, shader_source_5da_log.c_str());
   }
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     EnsureIntermediateUpgradeInfos();
