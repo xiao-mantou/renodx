@@ -50,6 +50,7 @@ float native_9563bc16_shader = 0.f;
 float native_d478bd88_shader = 0.f;
 float native_e52684c3_shader = 0.f;
 float native_5da670ee_shader = 0.f;
+bool force_512_white_validation = false;
 
 renodx::utils::settings::Settings settings = {
     new renodx::utils::settings::Setting{
@@ -652,7 +653,6 @@ bool force_06a2_white_validation = false;
 bool force_proxy_white_validation = false;
 bool force_fc2a_white_validation = false;
 bool bypass_06a2_lut_validation = false;
-bool force_512_white_validation = false;
 bool ab_disable_intermediate_upgrade = false;
 bool intermediate_binding_diagnostic = false;
 bool fourfa5_binding_diagnostic = false;
