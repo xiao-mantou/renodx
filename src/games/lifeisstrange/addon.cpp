@@ -24,6 +24,7 @@
 #include <string>
 #include <array>
 #include <algorithm>
+#include <cstdint>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -50,6 +51,18 @@ float native_9563bc16_shader = 0.f;
 float native_d478bd88_shader = 0.f;
 float native_e52684c3_shader = 0.f;
 float native_5da670ee_shader = 0.f;
+float four_lut_candidate_shader_source = 0.f;
+constexpr std::array<std::uint32_t, 54> four_lut_candidate_shader_hashes = {
+    0x03FD11DFu, 0x0636EE63u, 0x0AA3918Cu, 0x0EF95188u, 0x106E8A8Cu, 0x17AB8B48u,
+    0x18033B35u, 0x1D78A86Bu, 0x1E0648CDu, 0x210C50B3u, 0x277359D4u, 0x28460D7Du,
+    0x2AB72AC0u, 0x2BCD5358u, 0x359192D9u, 0x35961F64u, 0x35C98D00u, 0x453E322Bu,
+    0x48916BCDu, 0x4F6417FAu, 0x50B959B9u, 0x5F69A999u, 0x6262CB54u, 0x66A1AC08u,
+    0x6C9CDFA8u, 0x6D3FB0A7u, 0x6D624F04u, 0x7552EB15u, 0x7879CAF6u, 0x78F3D7B7u,
+    0x7A7F26C9u, 0x84104327u, 0x8F3098F8u, 0x94B136D3u, 0x968AAC27u, 0x9D2FD7C1u,
+    0x9F641542u, 0xA0B15A38u, 0xAC17AB8Au, 0xACCE5A8Cu, 0xC2AC0706u, 0xC3691089u,
+    0xC45677CBu, 0xC620B547u, 0xC7B54B41u, 0xD2BA65D8u, 0xD2CA5B4Au, 0xD4931728u,
+    0xD899BE56u, 0xDE0D9169u, 0xE4BB5EEAu, 0xE670C45Fu, 0xF5D9036Eu, 0xFE940F46u,
+};
 bool force_512_white_validation = false;
 
 renodx::utils::settings::Settings settings = {
@@ -523,6 +536,26 @@ renodx::utils::settings::Settings settings = {
         .on_change_value = [](float, float current) {
           const std::string source = current >= 0.5f ? "native game shader" : "RenoDX replacement";
           const std::string message = "LifeIsStrange 5DA670EE shader source changed: " + source;
+          reshade::log::message(reshade::log::level::info, message.c_str());
+        },
+        .is_global = true,
+    },
+    new renodx::utils::settings::Setting{
+        .key = "LifeIsStrange_FourLutCandidateSource",
+        .binding = &four_lut_candidate_shader_source,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Experimental 4-LUT Candidate Source",
+        .section = "Shader Replacement",
+        .tooltip = "Selects the 54 newly added shaders statically matching four ColorGradingLUT samples, "
+                   "ImageAdjustments2, and SceneColorTexture. These candidates are not individually confirmed "
+                   "in the active render chain. Native mode disables replacement for this group only.",
+        .labels = {"RenoDX replacement", "Native game shader"},
+        .style = renodx::utils::settings::SettingStyle::SEGMENTED,
+        .on_change_value = [](float, float current) {
+          const std::string source = current >= 0.5f ? "native game shader" : "RenoDX replacement";
+          const std::string message = "LifeIsStrange experimental 4-LUT candidate source changed: " + source
+                                      + " (54 shaders; existing manually corrected shaders unchanged)";
           reshade::log::message(reshade::log::level::info, message.c_str());
         },
         .is_global = true,
@@ -1232,6 +1265,15 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             return native_5da670ee_shader < 0.5f;
           };
         }
+        std::size_t registered_four_lut_candidate_shaders = 0;
+        for (const auto shader_hash : four_lut_candidate_shader_hashes) {
+          if (auto shader = custom_shaders.find(shader_hash); shader != custom_shaders.end()) {
+            ++registered_four_lut_candidate_shaders;
+            shader->second.on_replace = [](reshade::api::command_list*) {
+              return four_lut_candidate_shader_source < 0.5f;
+            };
+          }
+        }
         if ((intermediate_binding_diagnostic || fourfa5_binding_diagnostic)
             && !ab_disable_intermediate_upgrade) {
           if (auto shader = custom_shaders.find(0x4FA5AD22u); shader != custom_shaders.end()) {
@@ -1323,6 +1365,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += "/";
         build_log += std::to_string(static_cast<int>(native_5da670ee_shader));
         build_log += " [0=RenoDX,1=native]";
+        build_log += ", four_lut_candidates=";
+        build_log += std::to_string(registered_four_lut_candidate_shaders);
+        build_log += "/";
+        build_log += std::to_string(four_lut_candidate_shader_hashes.size());
+        build_log += four_lut_candidate_shader_source >= 0.5f ? ", source=native" : ", source=RenoDX-experimental";
         build_log += fc2a_replacement_enabled ? "+FC2A_shader_replacement" : "+FC2A_vanilla_shader";
         if (hdr_pipeline_enabled && fc2a_replacement_enabled) {
           build_log += "+FC2A_intermediate_conversion";
