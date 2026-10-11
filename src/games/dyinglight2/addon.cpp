@@ -27,6 +27,8 @@ renodx::mods::shader::CustomShaders custom_shaders = {__ALL_CUSTOM_SHADERS};
 ShaderInjectData shader_injection;
 
 void ArmDl2Dx11ColorPathAudit();
+void ArmDl2Dx11AdPathAudit();
+void ArmDl2Dx11BffcPathAudit();
 
 renodx::utils::settings::Settings settings = {
     new renodx::utils::settings::Setting{
@@ -179,6 +181,20 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "Arms a short DX11 resource-binding capture for the DL2 color path. It stops automatically after 256 target draws.",
         .on_change = []() { ArmDl2Dx11ColorPathAudit(); },
     },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture DX11 AD Path",
+        .section = "Diagnostics",
+        .tooltip = "Captures only the final 0xAD085E81 DX11 color-path draw. It stops automatically after 64 target draws.",
+        .on_change = []() { ArmDl2Dx11AdPathAudit(); },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Capture DX11 BFFC Path",
+        .section = "Diagnostics",
+        .tooltip = "Captures only the 0xBFFC45AC DX11 path for black-block investigation. It stops automatically after 64 target draws.",
+        .on_change = []() { ArmDl2Dx11BffcPathAudit(); },
+    },
 };
 
 void OnPresetOff() {
@@ -252,9 +268,47 @@ struct Dl2Dx11AuditBinding {
   uint64_t clone_view = 0;
 };
 
-static std::atomic<bool> dl2_dx11_audit_armed = false;
+enum class Dl2Dx11AuditMode : uint32_t {
+  NONE = 0,
+  COLOR_PATH = 1,
+  AD_PATH = 2,
+  BFFC_PATH = 3,
+};
+
+static std::atomic<Dl2Dx11AuditMode> dl2_dx11_audit_mode = Dl2Dx11AuditMode::NONE;
 static std::atomic<uint32_t> dl2_dx11_audit_count = 0;
-static constexpr uint32_t DL2_DX11_AUDIT_LIMIT = 256;
+static constexpr uint32_t DL2_DX11_COLOR_PATH_AUDIT_LIMIT = 256;
+static constexpr uint32_t DL2_DX11_TARGETED_AUDIT_LIMIT = 64;
+
+const char* Dl2Dx11AuditModeName(Dl2Dx11AuditMode mode) {
+  switch (mode) {
+    case Dl2Dx11AuditMode::COLOR_PATH:
+      return "color-path";
+    case Dl2Dx11AuditMode::AD_PATH:
+      return "ad-path";
+    case Dl2Dx11AuditMode::BFFC_PATH:
+      return "bffc-path";
+    default:
+      return "none";
+  }
+}
+
+bool IsDl2Dx11AuditTarget(Dl2Dx11AuditMode mode, uint32_t shader_hash) {
+  switch (mode) {
+    case Dl2Dx11AuditMode::COLOR_PATH:
+      return shader_hash == 0x3E36DA5B || shader_hash == 0x268BAB6D || shader_hash == 0xAD085E81;
+    case Dl2Dx11AuditMode::AD_PATH:
+      return shader_hash == 0xAD085E81;
+    case Dl2Dx11AuditMode::BFFC_PATH:
+      return shader_hash == 0xBFFC45AC;
+    default:
+      return false;
+  }
+}
+
+uint32_t Dl2Dx11AuditLimit(Dl2Dx11AuditMode mode) {
+  return mode == Dl2Dx11AuditMode::COLOR_PATH ? DL2_DX11_COLOR_PATH_AUDIT_LIMIT : DL2_DX11_TARGETED_AUDIT_LIMIT;
+}
 
 void PopulateDl2Dx11TrackedViewData(Dl2Dx11AuditBinding* binding) {
   if (binding == nullptr || binding->view == 0u) return;
@@ -405,11 +459,13 @@ void AuditDl2Dx11ColorPath(uint32_t shader_hash, reshade::api::command_list* cmd
     return;
   }
 
-  if (!dl2_dx11_audit_armed.load(std::memory_order_acquire)) return;
+  const auto mode = dl2_dx11_audit_mode.load(std::memory_order_acquire);
+  if (!IsDl2Dx11AuditTarget(mode, shader_hash)) return;
 
   const uint32_t sequence = dl2_dx11_audit_count.fetch_add(1, std::memory_order_relaxed);
-  if (sequence >= DL2_DX11_AUDIT_LIMIT) {
-    dl2_dx11_audit_armed.store(false, std::memory_order_release);
+  const uint32_t limit = Dl2Dx11AuditLimit(mode);
+  if (sequence >= limit) {
+    dl2_dx11_audit_mode.store(Dl2Dx11AuditMode::NONE, std::memory_order_release);
     return;
   }
 
@@ -426,7 +482,7 @@ void AuditDl2Dx11ColorPath(uint32_t shader_hash, reshade::api::command_list* cmd
   const auto output = DescribeDl2Dx11Rtv(rtv);
 
   std::stringstream stream;
-  stream << "[RenoDX] DL2 DX11 color path audit #" << (sequence + 1)
+  stream << "[RenoDX] DL2 DX11 " << Dl2Dx11AuditModeName(mode) << " audit #" << (sequence + 1)
          << " shader=" << PRINT_CRC32(shader_hash)
          << " cmd=" << PRINT_PTR(cmd_list->get_native());
   LogDl2Dx11AuditBinding(&stream, "t0", t0);
@@ -434,11 +490,14 @@ void AuditDl2Dx11ColorPath(uint32_t shader_hash, reshade::api::command_list* cmd
   LogDl2Dx11AuditBinding(&stream, "rtv0", output);
   reshade::log::message(reshade::log::level::info, stream.str().c_str());
 
-  if (sequence + 1u >= DL2_DX11_AUDIT_LIMIT) {
-    dl2_dx11_audit_armed.store(false, std::memory_order_release);
+  if (sequence + 1u >= limit) {
+    dl2_dx11_audit_mode.store(Dl2Dx11AuditMode::NONE, std::memory_order_release);
+    std::stringstream disarm_message;
+    disarm_message << "[RenoDX] DL2 DX11 " << Dl2Dx11AuditModeName(mode)
+                   << " audit disarmed after reaching its " << limit << "-draw budget.";
     reshade::log::message(
         reshade::log::level::info,
-        "[RenoDX] DL2 DX11 color path audit disarmed after reaching its 256-draw budget.");
+        disarm_message.str().c_str());
   }
 
   if (srvs[0] != nullptr) srvs[0]->Release();
@@ -447,7 +506,7 @@ void AuditDl2Dx11ColorPath(uint32_t shader_hash, reshade::api::command_list* cmd
 }
 
 void InstallDl2Dx11ColorPathAudit() {
-  constexpr uint32_t audit_shader_hashes[] = {0x3E36DA5B, 0x268BAB6D, 0xAD085E81};
+  constexpr uint32_t audit_shader_hashes[] = {0x3E36DA5B, 0x268BAB6D, 0xAD085E81, 0xBFFC45AC};
   for (const auto shader_hash : audit_shader_hashes) {
     if (auto shader = custom_shaders.find(shader_hash); shader != custom_shaders.end()) {
       const auto prior_on_draw = shader->second.on_draw;
@@ -462,10 +521,31 @@ void InstallDl2Dx11ColorPathAudit() {
 
 void ArmDl2Dx11ColorPathAudit() {
   dl2_dx11_audit_count.store(0, std::memory_order_release);
-  dl2_dx11_audit_armed.store(true, std::memory_order_release);
+  dl2_dx11_audit_mode.store(Dl2Dx11AuditMode::COLOR_PATH, std::memory_order_release);
   reshade::log::message(
       reshade::log::level::info,
-      "[RenoDX] DL2 DX11 color path audit armed by user (0x3E36DA5B, 0x268BAB6D, 0xAD085E81; budget=256 draws).");
+      "[RenoDX] DL2 DX11 color-path audit armed by user (0x3E36DA5B, 0x268BAB6D, 0xAD085E81; budget=256 draws).");
+}
+
+void ArmDl2Dx11AdPathAudit() {
+  dl2_dx11_audit_count.store(0, std::memory_order_release);
+  dl2_dx11_audit_mode.store(Dl2Dx11AuditMode::AD_PATH, std::memory_order_release);
+  reshade::log::message(
+      reshade::log::level::info,
+      "[RenoDX] DL2 DX11 ad-path audit armed by user (0xAD085E81; budget=64 draws).");
+}
+
+void ArmDl2Dx11BffcPathAudit() {
+  dl2_dx11_audit_count.store(0, std::memory_order_release);
+  dl2_dx11_audit_mode.store(Dl2Dx11AuditMode::BFFC_PATH, std::memory_order_release);
+  reshade::log::message(
+      reshade::log::level::info,
+      "[RenoDX] DL2 DX11 bffc-path audit armed by user (0xBFFC45AC; budget=64 draws).");
+}
+
+void OnDestroyDl2Dx11AuditSwapchain(reshade::api::swapchain* /*swapchain*/, bool /*resize*/) {
+  dl2_dx11_audit_mode.store(Dl2Dx11AuditMode::NONE, std::memory_order_release);
+  dl2_dx11_audit_count.store(0, std::memory_order_release);
 }
 
 bool AllowD3D12Replacement(reshade::api::device* device, uint32_t shader_hash) {
@@ -579,14 +659,16 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
   if (fdw_reason == DLL_PROCESS_DETACH) {
-    dl2_dx11_audit_armed.store(false, std::memory_order_release);
+    dl2_dx11_audit_mode.store(Dl2Dx11AuditMode::NONE, std::memory_order_release);
     reshade::unregister_event<reshade::addon_event::init_device>(ConfigureDl2Dx11ResourceUpgrades);
+    reshade::unregister_event<reshade::addon_event::destroy_swapchain>(OnDestroyDl2Dx11AuditSwapchain);
   }
     renodx::mods::swapchain::v2::Use(fdw_reason, &shader_injection);
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     // Register after swapchain_v2 so its per-device upgrade list is overridden
     // only for the DX11 scene target and only after the baseline is installed.
     reshade::register_event<reshade::addon_event::init_device>(ConfigureDl2Dx11ResourceUpgrades);
+    reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroyDl2Dx11AuditSwapchain);
   }
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     // TGH UI replacements are validated on DX11 only; isolate all of them on DX12.
@@ -628,8 +710,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     }
   }
   if (fdw_reason == DLL_PROCESS_ATTACH) {
-    // Keep the DX11 resource-chain audit scoped to the three proven color-path
-    // shaders. The callback is copied into the shader runtime below.
+    // Keep the DX11 resource-chain diagnostics scoped to the proven color-path
+    // shaders plus the separately armed BFFC investigation target.
     InstallDl2Dx11ColorPathAudit();
   }
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
