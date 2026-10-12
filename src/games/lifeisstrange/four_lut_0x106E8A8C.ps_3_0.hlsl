@@ -179,7 +179,11 @@ half4 main(PS_IN i) : COLOR
 	r1 = half4(tex2D(DNEImageGrainTexture, r1.xy));
 	r0.w = r1.x * 2 + -1;
 	r0.w = r0.w * ImageAdjustments1.w;
-	o.xyz = half3(saturate(r2.xyz * r0.xyz + r0.www));
+ if (LIFEISSTRANGE_HDR_PIPELINE > 0.f) {
+   o.xyz = half3(r2.xyz * r0.xyz + r0.www);
+ } else {
+   o.xyz = half3(saturate(r2.xyz * r0.xyz + r0.www));
+ }
 	o.w = half(r2.w);
 
 	return o;
