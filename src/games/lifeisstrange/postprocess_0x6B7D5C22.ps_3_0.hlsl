@@ -266,5 +266,6 @@ float4 main(PS_IN i) : COLOR {
     // Preserve the native final mad_sat in SDR mode; the HDR path writes to FP16.
     output_color = half3(saturate(output_color));
   }
+  output_color = LifeIsStrangeApplyShaderMarker(output_color, i.texcoord2.zw, 2.f);
   return float4(output_color, half(r1.w));
 }

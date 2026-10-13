@@ -229,6 +229,7 @@ half4 main(PS_IN i) : COLOR {
     // Preserve the native final mad_sat in SDR mode; HDR writes to the upgraded FP16 target.
     output_color = saturate(output_color);
   }
+  output_color = LifeIsStrangeApplyShaderMarker(output_color, i.texcoord2.zw, 1.f);
   o.xyz = half3(output_color);
   o.w = half(r1.w);
 

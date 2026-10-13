@@ -76,7 +76,7 @@ struct ShaderInjectData {
   float lifeisstrange_force_proxy_white;
   float lifeisstrange_force_fc2a_white;
   float lifeisstrange_bypass_06a2_lut;
-  // c9.x: bit 0 forces 512 white; bit 1 selects the raw 4FA5 scene probe.
+  // c9.x: bit 0 forces 512 white; bit 1 selects the raw 4FA5 scene probe; bit 2 enables shader markers.
   float lifeisstrange_probe_flags;
   // Reuse the unused SceneExposure slot to stay within the SM3 injection buffer.
   float lifeisstrange_hdr_curve_method;
@@ -182,6 +182,27 @@ cbuffer shader_injection : register(b13) {
 #define LIFEISSTRANGE_HDR_PIPELINE              shader_injection.lifeisstrange_hdr_pipeline
 #define LIFEISSTRANGE_HDR_CURVE_PIVOT           shader_injection.lifeisstrange_hdr_curve_pivot
 #endif
+
+#define LIFEISSTRANGE_FORCE_512_WHITE_ENABLED \
+  step(0.25f, frac(LIFEISSTRANGE_FORCE_512_WHITE * 0.5f))
+#define LIFEISSTRANGE_RAW_4FA5_SCENE_PROBE_ENABLED \
+  step(0.5f, frac(LIFEISSTRANGE_RAW_4FA5_SCENE_PROBE * 0.25f))
+#define LIFEISSTRANGE_SHADER_MARKERS_ENABLED \
+  step(0.5f, frac(LIFEISSTRANGE_FORCE_512_WHITE * 0.125f))
+
+float3 LifeIsStrangeApplyShaderMarker(float3 color, float2 screen_uv, float marker_index) {
+  float row = floor(marker_index / 5.f);
+  float column = marker_index - row * 5.f;
+  float2 marker_min = float2(0.008f, 0.008f) + float2(column * 0.014f, row * 0.024f);
+  float2 marker_max = marker_min + float2(0.010f, 0.018f);
+  float inside = step(marker_min.x, screen_uv.x)
+               * step(screen_uv.x, marker_max.x)
+               * step(marker_min.y, screen_uv.y)
+               * step(screen_uv.y, marker_max.y);
+
+  // Position is the authoritative hash mapping; keep the marker payload cheap for SM3.
+  return lerp(color, float3(1.f, 1.f, 1.f), inside * LIFEISSTRANGE_SHADER_MARKERS_ENABLED);
+}
 
 #define RENODX_RENO_DRT_TONE_MAP_METHOD        renodx::tonemap::renodrt::config::tone_map_method::REINHARD
 

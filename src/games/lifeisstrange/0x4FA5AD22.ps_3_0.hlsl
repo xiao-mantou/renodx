@@ -102,7 +102,8 @@ half4 main(PS_IN i) : COLOR {
   r0 = half4(r2 * r1.y + r0);
 
   float3 scene_color = float3(r0.z, r0.w, r0.y);
-  if (LIFEISSTRANGE_RAW_4FA5_SCENE_PROBE > 1.5f) {
+  if (LIFEISSTRANGE_RAW_4FA5_SCENE_PROBE_ENABLED > 0.5f) {
+    scene_color = LifeIsStrangeApplyShaderMarker(scene_color, i.texcoord2.zw, 3.f);
     o.xyz = half3(scene_color);
     o.w = 1.f;
     return o;
@@ -185,6 +186,7 @@ half4 main(PS_IN i) : COLOR {
   if (!use_hdr_lut_bridge) {
     output_color = saturate(output_color);
   }
+  output_color = LifeIsStrangeApplyShaderMarker(output_color, i.texcoord2.zw, 3.f);
   o.xyz = half3(output_color);
   o.w = half(r1.w);
   return o;

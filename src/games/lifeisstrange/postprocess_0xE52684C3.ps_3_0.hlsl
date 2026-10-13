@@ -215,6 +215,7 @@ half4 main(PS_IN i) : COLOR
     // Preserve the native final mad_sat clamp in SDR mode only.
     output_color = saturate(output_color);
   }
+  output_color = LifeIsStrangeApplyShaderMarker(output_color, i.texcoord2.zw, 8.f);
   o.xyz = half3(output_color);
 	o.w = half(r1.w);
 

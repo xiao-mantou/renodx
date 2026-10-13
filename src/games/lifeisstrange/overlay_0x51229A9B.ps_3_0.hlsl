@@ -14,7 +14,7 @@ float4 main(PS_IN i) : COLOR {
   float4 color = tex2D(InputTexture, i.texcoord);
   color.w = dot(color, TextureComponentReplicateAlpha);
   float4 output_color = color * i.modulation;
-  // c9.x also carries the 4FA5 raw-probe flag; bit 0 alone enables this white test.
-  output_color = lerp(output_color, 4.f, step(0.25f, frac(LIFEISSTRANGE_FORCE_512_WHITE * 0.5f)));
+  // c9.x also carries the 4FA5 raw-probe and marker flags; bit 0 enables this white test.
+  output_color = lerp(output_color, 4.f, LIFEISSTRANGE_FORCE_512_WHITE_ENABLED);
   return output_color;
 }

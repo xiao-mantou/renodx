@@ -177,6 +177,7 @@ half4 main(PS_IN i) : COLOR {
     // Preserve native mad_sat only in the SDR/native branch.
     output_color = saturate(output_color);
   }
+  output_color = LifeIsStrangeApplyShaderMarker(output_color, i.texcoord2.zw, 9.f);
   o.xyz = half3(output_color);
   o.w = half(r1.w);
   return o;

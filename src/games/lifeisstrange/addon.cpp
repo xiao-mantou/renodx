@@ -59,6 +59,14 @@ constexpr std::array<std::uint32_t, 22> four_lut_candidate_shader_hashes = {
     0xD4931728u, 0xD899BE56u, 0xDE0D9169u, 0xF5D9036Eu,
 };
 bool force_512_white_validation = false;
+bool shader_marker_validation = false;
+
+void UpdateLifeIsStrangeProbeFlags() {
+  shader_injection.lifeisstrange_probe_flags =
+      (force_512_white_validation ? 1.f : 0.f)
+      + (fourfa5_output_mode >= 1.5f ? 2.f : 0.f)
+      + (shader_marker_validation ? 4.f : 0.f);
+}
 
 renodx::utils::settings::Settings settings = {
     new renodx::utils::settings::Setting{
@@ -415,9 +423,8 @@ renodx::utils::settings::Settings settings = {
         .style = renodx::utils::settings::SettingStyle::SEGMENTED,
         .on_change_value = [](float, float current) {
           const bool raw_scene_probe = current >= 1.5f;
-          // c9.x packs Force512White in bit 0 and the 4FA5 raw probe in bit 1.
-          shader_injection.lifeisstrange_probe_flags = (force_512_white_validation ? 1.f : 0.f)
-                                                       + (raw_scene_probe ? 2.f : 0.f);
+          fourfa5_output_mode = current;
+          UpdateLifeIsStrangeProbeFlags();
           const std::string mode = raw_scene_probe
                                        ? "raw pre-ImageAdjustments2 scene probe"
                                        : (current >= 0.5f ? "original game bytecode" : "RenoDX replacement");
@@ -1063,6 +1070,14 @@ void LoadDX11ProxySetting() {
       enabled);
   force_512_white_validation = enabled != 0;
 
+  enabled = 0;
+  reshade::get_config_value(
+      nullptr,
+      renodx::utils::settings::global_name.c_str(),
+      "LifeIsStrange_EnableShaderMarkers",
+      enabled);
+  shader_marker_validation = enabled != 0;
+
 
   enabled = 0;
   reshade::get_config_value(
@@ -1168,7 +1183,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       shader_injection.lifeisstrange_force_proxy_white = force_proxy_white_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_force_fc2a_white = force_fc2a_white_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_bypass_06a2_lut = bypass_06a2_lut_validation ? 1.f : 0.f;
-      shader_injection.lifeisstrange_probe_flags = force_512_white_validation ? 1.f : 0.f;
+      UpdateLifeIsStrangeProbeFlags();
       shader_injection.lifeisstrange_hdr_curve_method = 0.f;
       shader_injection.lifeisstrange_hdr_pipeline = hdr_pipeline_enabled ? 1.f : 0.f;
       shader_injection.swap_chain_output_preset = dx11_proxy_validation ? 1.f : 0.f;
@@ -1380,6 +1395,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += force_fc2a_white_validation ? "1" : "0";
         build_log += ", force_512_white=";
         build_log += force_512_white_validation ? "1" : "0";
+        build_log += ", shader_markers=";
+        build_log += shader_marker_validation ? "1" : "0";
         build_log += ", bypass_06A2_lut=";
         build_log += bypass_06a2_lut_validation ? "1" : "0";
         build_log += ", ab_disable_intermediate_upgrade=";
@@ -1582,8 +1599,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     const bool raw_4fa5_scene_probe = fourfa5_output_mode >= 1.5f;
     // Reapply the packed c9.x flags after the settings loader reads the persisted mode.
-    shader_injection.lifeisstrange_probe_flags = (force_512_white_validation ? 1.f : 0.f)
-                                                 + (raw_4fa5_scene_probe ? 2.f : 0.f);
+    UpdateLifeIsStrangeProbeFlags();
     std::string tone_map_log = "LifeIsStrange active ToneMapType=";
     tone_map_log += std::to_string(shader_injection.tone_map_type);
     reshade::log::message(reshade::log::level::info, tone_map_log.c_str());

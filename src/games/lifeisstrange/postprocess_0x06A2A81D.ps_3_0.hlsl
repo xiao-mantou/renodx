@@ -261,6 +261,7 @@ float4 main(PS_IN i) : COLOR {
     // Preserve the original DX9 mad_sat in Vanilla/SDR output.
     output_color = saturate(output_color);
   }
+  output_color = LifeIsStrangeApplyShaderMarker(output_color, i.texcoord2.zw, 0.f);
 
   return float4(output_color, r1.w);
 }
