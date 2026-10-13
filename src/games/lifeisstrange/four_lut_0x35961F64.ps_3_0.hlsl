@@ -219,5 +219,6 @@ half4 main(PS_IN i) : COLOR
 	  o.xyz = LifeIsStrangeRestoreAfterColorGradingLut(o.xyz, lis_hdr_scale);
 	}
 
+	o.xyz = LifeIsStrangeApplyShaderMarker(o.xyz, i.texcoord2.zw, 16.f);
 	return o;
 }

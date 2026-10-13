@@ -191,8 +191,9 @@ cbuffer shader_injection : register(b13) {
   step(0.5f, frac(LIFEISSTRANGE_FORCE_512_WHITE * 0.125f))
 
 float3 LifeIsStrangeApplyShaderMarker(float3 color, float2 screen_uv, float marker_index) {
-  float row = floor(marker_index / 5.f);
-  float column = marker_index - row * 5.f;
+  // Known shader markers use slots 0-9; static-only candidates follow in hash order.
+  float row = floor(marker_index / 10.f);
+  float column = marker_index - row * 10.f;
   float2 marker_min = float2(0.008f, 0.008f) + float2(column * 0.014f, row * 0.024f);
   float2 marker_max = marker_min + float2(0.010f, 0.018f);
   float inside = step(marker_min.x, screen_uv.x)

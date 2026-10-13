@@ -180,5 +180,6 @@ half4 main(PS_IN i) : COLOR
  }
 	o.w = half(r1.w);
 
+	o.xyz = LifeIsStrangeApplyShaderMarker(o.xyz, i.texcoord2.zw, 23.f);
 	return o;
 }

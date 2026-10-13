@@ -52,6 +52,7 @@ float native_d478bd88_shader = 0.f;
 float native_e52684c3_shader = 0.f;
 float native_5da670ee_shader = 0.f;
 float four_lut_candidate_shader_source = 0.f;
+// The marker slots for these static-only candidates follow this hash-sorted order.
 constexpr std::array<std::uint32_t, 22> four_lut_candidate_shader_hashes = {
     0x0AA3918Cu, 0x106E8A8Cu, 0x17AB8B48u, 0x1E0648CDu, 0x28460D7Du, 0x359192D9u,
     0x35961F64u, 0x50B959B9u, 0x5F69A999u, 0x66A1AC08u, 0x6C9CDFA8u, 0x6D3FB0A7u,
