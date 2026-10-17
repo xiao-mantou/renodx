@@ -237,17 +237,15 @@ void OnInitDevice(reshade::api::device* device) {
 void ConfigureDl2Dx11ResourceUpgrades(reshade::api::device* device) {
   if (device == nullptr || device->get_api() != reshade::api::device_api::d3d11) return;
 
-  // DLSS Off and non-native quality modes render the 0x3E scene target at an
-  // internal resolution that does not match the swapchain. Keep DX12's exact
-  // TGH matching, but let this DX11 scene target receive its size-preserving
-  // FP16 clone so the 0x3E -> 0x268 chain does not fall back to an 8-bit view.
+  // A/B isolation: restore the RAR/TGH size-dependent matching on DX11 while
+  // leaving the rest of the current resource-upgrade path unchanged.
   auto dx11_resource_upgrade_infos = renodx::mods::swapchain::v2::resource_upgrade_infos;
   if (dx11_resource_upgrade_infos.empty()) return;
-  dx11_resource_upgrade_infos[0].ignore_size = true;
+  dx11_resource_upgrade_infos[0].ignore_size = false;
   renodx::utils::resource::upgrade::SetUpgradeInfos(device, dx11_resource_upgrade_infos);
   reshade::log::message(
       reshade::log::level::info,
-      "[RenoDX] DL2 DX11 resource upgrades: enabled size-independent typeless scene target matching.");
+      "[RenoDX] DL2 DX11 resource upgrades: using RAR/TGH size-dependent scene target matching.");
 }
 
 struct Dl2Dx11AuditBinding {
