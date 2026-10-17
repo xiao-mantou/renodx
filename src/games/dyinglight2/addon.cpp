@@ -6,8 +6,13 @@
 #define ImTextureID ImU64
 #define DEBUG_LEVEL_0
 
+#include <algorithm>
+#include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <mutex>
 #include <sstream>
 
 #include <embed/shaders.h>
@@ -277,8 +282,183 @@ enum class Dl2Dx11AuditMode : uint32_t {
 
 static std::atomic<Dl2Dx11AuditMode> dl2_dx11_audit_mode = Dl2Dx11AuditMode::NONE;
 static std::atomic<uint32_t> dl2_dx11_audit_count = 0;
+static std::atomic<uint32_t> dl2_dx11_audit_generation = 0;
+static std::atomic_bool dl2_dx11_constant_observers_registered = false;
 static constexpr uint32_t DL2_DX11_COLOR_PATH_AUDIT_LIMIT = 256;
 static constexpr uint32_t DL2_DX11_TARGETED_AUDIT_LIMIT = 64;
+static constexpr std::size_t DL2_DX11_CONSTANT_SAMPLE_LIMIT = 128;
+
+// D3D11 DEFAULT constant buffers are not directly readable, so arm-time CPU updates
+// are cached only to correlate the AD draw's b0 binding with cb0[0].x.
+struct Dl2Dx11ConstantSample {
+  uint64_t resource = 0;
+  uint32_t generation = 0;
+  uint32_t size = 0;
+  std::array<uint8_t, 16> bytes = {};
+  bool valid = false;
+};
+
+struct Dl2Dx11MappedConstantBuffer {
+  uint64_t resource = 0;
+  uint32_t generation = 0;
+  uint64_t offset = 0;
+  uint64_t size = 0;
+  uint8_t* data = nullptr;
+  bool valid = false;
+};
+
+static std::array<Dl2Dx11ConstantSample, DL2_DX11_CONSTANT_SAMPLE_LIMIT> dl2_dx11_constant_samples = {};
+static std::array<Dl2Dx11MappedConstantBuffer, DL2_DX11_CONSTANT_SAMPLE_LIMIT> dl2_dx11_mapped_constant_buffers = {};
+static std::size_t dl2_dx11_next_constant_sample = 0;
+static std::size_t dl2_dx11_next_mapped_constant_buffer = 0;
+static std::mutex dl2_dx11_constant_observer_mutex;
+
+void ClearDl2Dx11ConstantSamples() {
+  const std::scoped_lock lock(dl2_dx11_constant_observer_mutex);
+  for (auto& sample : dl2_dx11_constant_samples) sample = {};
+  for (auto& mapping : dl2_dx11_mapped_constant_buffers) mapping = {};
+  dl2_dx11_next_constant_sample = 0;
+  dl2_dx11_next_mapped_constant_buffer = 0;
+}
+
+void CaptureDl2Dx11ConstantSample(
+    reshade::api::resource resource,
+    const void* buffer_data,
+    uint64_t offset,
+    uint64_t size) {
+  if (resource.handle == 0u || buffer_data == nullptr || offset != 0u || size < sizeof(float) || size == UINT64_MAX) return;
+
+  const auto generation = dl2_dx11_audit_generation.load(std::memory_order_acquire);
+  const auto copy_size = static_cast<std::size_t>(std::min<uint64_t>(size, 16u));
+  const auto* source = static_cast<const uint8_t*>(buffer_data);
+  const std::scoped_lock lock(dl2_dx11_constant_observer_mutex);
+
+  Dl2Dx11ConstantSample* sample = nullptr;
+  for (auto& candidate : dl2_dx11_constant_samples) {
+    if (candidate.valid && candidate.resource == resource.handle) {
+      sample = &candidate;
+      break;
+    }
+  }
+  if (sample == nullptr) {
+    sample = &dl2_dx11_constant_samples[dl2_dx11_next_constant_sample++ % DL2_DX11_CONSTANT_SAMPLE_LIMIT];
+  }
+
+  sample->resource = resource.handle;
+  sample->generation = generation;
+  sample->size = static_cast<uint32_t>(size);
+  sample->bytes.fill(0u);
+  std::memcpy(sample->bytes.data(), source, copy_size);
+  sample->valid = true;
+}
+
+bool OnDl2Dx11UpdateBufferRegion(
+    reshade::api::device* device,
+    const void* buffer_data,
+    reshade::api::resource resource,
+    uint64_t offset,
+    uint64_t size) {
+  if (device == nullptr || device->get_api() != reshade::api::device_api::d3d11) return false;
+  const auto mode = dl2_dx11_audit_mode.load(std::memory_order_acquire);
+  if (mode != Dl2Dx11AuditMode::COLOR_PATH && mode != Dl2Dx11AuditMode::AD_PATH) return false;
+  CaptureDl2Dx11ConstantSample(resource, buffer_data, offset, size);
+  return false;
+}
+
+void OnDl2Dx11MapBufferRegion(
+    reshade::api::device* device,
+    reshade::api::resource resource,
+    uint64_t offset,
+    uint64_t size,
+    reshade::api::map_access /*access*/,
+    void** mapped_data) {
+  if (device == nullptr || device->get_api() != reshade::api::device_api::d3d11) return;
+  const auto mode = dl2_dx11_audit_mode.load(std::memory_order_acquire);
+  if ((mode != Dl2Dx11AuditMode::COLOR_PATH && mode != Dl2Dx11AuditMode::AD_PATH)
+      || resource.handle == 0u || mapped_data == nullptr || *mapped_data == nullptr) {
+    return;
+  }
+
+  const std::scoped_lock lock(dl2_dx11_constant_observer_mutex);
+  Dl2Dx11MappedConstantBuffer* mapping = nullptr;
+  for (auto& candidate : dl2_dx11_mapped_constant_buffers) {
+    if (candidate.valid && candidate.resource == resource.handle) {
+      mapping = &candidate;
+      break;
+    }
+  }
+  if (mapping == nullptr) {
+    mapping = &dl2_dx11_mapped_constant_buffers[dl2_dx11_next_mapped_constant_buffer++ % DL2_DX11_CONSTANT_SAMPLE_LIMIT];
+  }
+  *mapping = {
+      .resource = resource.handle,
+      .generation = dl2_dx11_audit_generation.load(std::memory_order_relaxed),
+      .offset = offset,
+      .size = size,
+      .data = static_cast<uint8_t*>(*mapped_data),
+      .valid = true,
+  };
+}
+
+void OnDl2Dx11UnmapBufferRegion(reshade::api::device* device, reshade::api::resource resource) {
+  if (device == nullptr || device->get_api() != reshade::api::device_api::d3d11) return;
+  const auto mode = dl2_dx11_audit_mode.load(std::memory_order_acquire);
+  if ((mode != Dl2Dx11AuditMode::COLOR_PATH && mode != Dl2Dx11AuditMode::AD_PATH) || resource.handle == 0u) return;
+
+  const auto generation = dl2_dx11_audit_generation.load(std::memory_order_acquire);
+  const std::scoped_lock lock(dl2_dx11_constant_observer_mutex);
+  for (auto& mapping : dl2_dx11_mapped_constant_buffers) {
+    if (!mapping.valid || mapping.resource != resource.handle) continue;
+    if (mapping.generation == generation && mapping.offset == 0u && mapping.data != nullptr) {
+      uint64_t mapped_size = mapping.size;
+      if (mapped_size == UINT64_MAX) {
+        const auto desc = device->get_resource_desc(resource);
+        mapped_size = desc.type == reshade::api::resource_type::buffer ? desc.buffer.size : 0u;
+      }
+      const auto copy_size = static_cast<std::size_t>(std::min<uint64_t>(mapped_size, 16u));
+      if (copy_size >= sizeof(float)) {
+        Dl2Dx11ConstantSample* sample = nullptr;
+        for (auto& candidate : dl2_dx11_constant_samples) {
+          if (candidate.valid && candidate.resource == mapping.resource) {
+            sample = &candidate;
+            break;
+          }
+        }
+        if (sample == nullptr) {
+          sample = &dl2_dx11_constant_samples[dl2_dx11_next_constant_sample++ % DL2_DX11_CONSTANT_SAMPLE_LIMIT];
+        }
+        sample->resource = mapping.resource;
+        sample->generation = generation;
+        sample->size = static_cast<uint32_t>(mapped_size);
+        sample->bytes.fill(0u);
+        std::memcpy(sample->bytes.data(), mapping.data, copy_size);
+        sample->valid = true;
+      }
+    }
+    mapping = {};
+    return;
+  }
+}
+
+void RegisterDl2Dx11ConstantObservers() {
+  if (dl2_dx11_constant_observers_registered.exchange(true, std::memory_order_acq_rel)) return;
+  reshade::register_event<reshade::addon_event::update_buffer_region>(OnDl2Dx11UpdateBufferRegion);
+  reshade::register_event<reshade::addon_event::map_buffer_region>(OnDl2Dx11MapBufferRegion);
+  reshade::register_event<reshade::addon_event::unmap_buffer_region>(OnDl2Dx11UnmapBufferRegion);
+}
+
+void UnregisterDl2Dx11ConstantObservers() {
+  if (!dl2_dx11_constant_observers_registered.exchange(false, std::memory_order_acq_rel)) return;
+  reshade::unregister_event<reshade::addon_event::update_buffer_region>(OnDl2Dx11UpdateBufferRegion);
+  reshade::unregister_event<reshade::addon_event::map_buffer_region>(OnDl2Dx11MapBufferRegion);
+  reshade::unregister_event<reshade::addon_event::unmap_buffer_region>(OnDl2Dx11UnmapBufferRegion);
+}
+
+void DisarmDl2Dx11Audit() {
+  dl2_dx11_audit_mode.store(Dl2Dx11AuditMode::NONE, std::memory_order_release);
+  UnregisterDl2Dx11ConstantObservers();
+  ClearDl2Dx11ConstantSamples();
+}
 
 const char* Dl2Dx11AuditModeName(Dl2Dx11AuditMode mode) {
   switch (mode) {
@@ -465,7 +645,7 @@ void AuditDl2Dx11ColorPath(uint32_t shader_hash, reshade::api::command_list* cmd
   const uint32_t sequence = dl2_dx11_audit_count.fetch_add(1, std::memory_order_relaxed);
   const uint32_t limit = Dl2Dx11AuditLimit(mode);
   if (sequence >= limit) {
-    dl2_dx11_audit_mode.store(Dl2Dx11AuditMode::NONE, std::memory_order_release);
+    DisarmDl2Dx11Audit();
     return;
   }
 
@@ -474,24 +654,127 @@ void AuditDl2Dx11ColorPath(uint32_t shader_hash, reshade::api::command_list* cmd
 
   ID3D11ShaderResourceView* srvs[2] = {};
   ID3D11RenderTargetView* rtv = nullptr;
+  ID3D11Buffer* cb0 = nullptr;
   context->PSGetShaderResources(0, 2, srvs);
   context->OMGetRenderTargets(1, &rtv, nullptr);
+  if (shader_hash == 0xAD085E81) context->PSGetConstantBuffers(0, 1, &cb0);
 
   const auto t0 = DescribeDl2Dx11Srv(srvs[0]);
   const auto t1 = DescribeDl2Dx11Srv(srvs[1]);
   const auto output = DescribeDl2Dx11Rtv(rtv);
 
+  UINT viewport_count = 0;
+  context->RSGetViewports(&viewport_count, nullptr);
+  const UINT viewport_capacity = std::min<UINT>(
+      viewport_count,
+      D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE);
+  std::array<D3D11_VIEWPORT, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE> viewports = {};
+  if (viewport_capacity > 0u) {
+    UINT requested_viewports = viewport_capacity;
+    context->RSGetViewports(&requested_viewports, viewports.data());
+    viewport_count = requested_viewports;
+  }
+
+  UINT scissor_count = 0;
+  context->RSGetScissorRects(&scissor_count, nullptr);
+  const UINT scissor_capacity = std::min<UINT>(
+      scissor_count,
+      D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE);
+  std::array<D3D11_RECT, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE> scissors = {};
+  if (scissor_capacity > 0u) {
+    UINT requested_scissors = scissor_capacity;
+    context->RSGetScissorRects(&requested_scissors, scissors.data());
+    scissor_count = requested_scissors;
+  }
+
+  D3D11_BUFFER_DESC cb0_desc = {};
+  bool cb0_x_valid = false;
+  float cb0_x = 0.f;
+  uint32_t cb0_sample_size = 0u;
+  uint32_t cb0_sample_generation = 0u;
+  if (cb0 != nullptr) {
+    cb0->GetDesc(&cb0_desc);
+    const auto cb0_handle = reinterpret_cast<uint64_t>(cb0);
+    const auto generation = dl2_dx11_audit_generation.load(std::memory_order_acquire);
+    const std::scoped_lock lock(dl2_dx11_constant_observer_mutex);
+    for (const auto& sample : dl2_dx11_constant_samples) {
+      if (!sample.valid || sample.resource != cb0_handle || sample.generation != generation) continue;
+      std::memcpy(&cb0_x, sample.bytes.data(), sizeof(cb0_x));
+      cb0_sample_size = sample.size;
+      cb0_sample_generation = sample.generation;
+      cb0_x_valid = true;
+      break;
+    }
+  }
+
+  uint64_t last_pipeline = 0u;
+  uint64_t pixel_pipeline = 0u;
+  uint64_t replacement_pipeline = 0u;
+  uint32_t replacement_stages = 0u;
+  bool pipeline_is_replacement = false;
+  bool pipeline_details_found = false;
+  if (auto* shader_state = renodx::utils::shader::GetCurrentState(cmd_list); shader_state != nullptr) {
+    last_pipeline = shader_state->last_pipeline.handle;
+    if (auto* pixel_state = renodx::utils::shader::GetCurrentPixelState(shader_state); pixel_state != nullptr) {
+      pixel_pipeline = pixel_state->pipeline.handle;
+    }
+    const auto pipeline_for_details = pixel_pipeline != 0u ? pixel_pipeline : last_pipeline;
+    if (pipeline_for_details != 0u) {
+      pipeline_details_found = renodx::utils::shader::GetPipelineShaderDetails(
+          reshade::api::pipeline{pipeline_for_details},
+          [&](const auto& details) {
+            replacement_pipeline = details.replacement_pipeline.handle;
+            replacement_stages = static_cast<uint32_t>(details.replacement_stages);
+            pipeline_is_replacement = details.is_replacement;
+          });
+    }
+  }
+
   std::stringstream stream;
   stream << "[RenoDX] DL2 DX11 " << Dl2Dx11AuditModeName(mode) << " audit #" << (sequence + 1)
          << " shader=" << PRINT_CRC32(shader_hash)
-         << " cmd=" << PRINT_PTR(cmd_list->get_native());
+         << " cmd=" << PRINT_PTR(cmd_list->get_native())
+         << " generation=" << dl2_dx11_audit_generation.load(std::memory_order_relaxed);
   LogDl2Dx11AuditBinding(&stream, "t0", t0);
   LogDl2Dx11AuditBinding(&stream, "t1", t1);
   LogDl2Dx11AuditBinding(&stream, "rtv0", output);
+  stream << " cb0=" << PRINT_PTR(cb0)
+         << " cb0_bytes=" << cb0_desc.ByteWidth
+         << " cb0_usage=" << static_cast<uint32_t>(cb0_desc.Usage)
+         << " cb0_cpu=0x" << std::hex << cb0_desc.CPUAccessFlags << std::dec
+         << " cb0_x_valid=" << (cb0_x_valid ? 1 : 0);
+  if (cb0_x_valid) {
+    stream << " cb0_x=" << cb0_x
+           << " cb0_sample_size=" << cb0_sample_size
+           << " cb0_sample_generation=" << cb0_sample_generation;
+  }
+  stream << " viewport_count=" << viewport_count;
+  for (UINT i = 0; i < viewport_count && i < viewport_capacity; ++i) {
+    const auto& viewport = viewports[i];
+    stream << " vp" << i << "=(" << viewport.TopLeftX << "," << viewport.TopLeftY
+           << "," << viewport.Width << "x" << viewport.Height
+           << ",z=" << viewport.MinDepth << ".." << viewport.MaxDepth << ")";
+  }
+  stream << " scissor_count=" << scissor_count;
+  for (UINT i = 0; i < scissor_count && i < scissor_capacity; ++i) {
+    const auto& scissor = scissors[i];
+    stream << " sc" << i << "=(" << scissor.left << "," << scissor.top
+           << ".." << scissor.right << "," << scissor.bottom << ")";
+  }
+  stream << " last_pipeline=" << PRINT_PTR(last_pipeline)
+         << " pixel_pipeline=" << PRINT_PTR(pixel_pipeline)
+         << " pipeline_details=" << (pipeline_details_found ? 1 : 0)
+         << " pipeline_is_replacement=" << (pipeline_is_replacement ? 1 : 0)
+         << " replacement_pipeline=" << PRINT_PTR(replacement_pipeline)
+         << " replacement_stages=0x" << std::hex << replacement_stages << std::dec
+         << " replacement_bound=" << ((pipeline_is_replacement
+                                             || (pixel_pipeline != 0u && pixel_pipeline == replacement_pipeline))
+                                            ? 1
+                                            : 0);
   reshade::log::message(reshade::log::level::info, stream.str().c_str());
 
   if (sequence + 1u >= limit) {
-    dl2_dx11_audit_mode.store(Dl2Dx11AuditMode::NONE, std::memory_order_release);
+    DisarmDl2Dx11Audit();
     std::stringstream disarm_message;
     disarm_message << "[RenoDX] DL2 DX11 " << Dl2Dx11AuditModeName(mode)
                    << " audit disarmed after reaching its " << limit << "-draw budget.";
@@ -503,6 +786,7 @@ void AuditDl2Dx11ColorPath(uint32_t shader_hash, reshade::api::command_list* cmd
   if (srvs[0] != nullptr) srvs[0]->Release();
   if (srvs[1] != nullptr) srvs[1]->Release();
   if (rtv != nullptr) rtv->Release();
+  if (cb0 != nullptr) cb0->Release();
 }
 
 void InstallDl2Dx11ColorPathAudit() {
@@ -520,6 +804,9 @@ void InstallDl2Dx11ColorPathAudit() {
 }
 
 void ArmDl2Dx11ColorPathAudit() {
+  ClearDl2Dx11ConstantSamples();
+  dl2_dx11_audit_generation.fetch_add(1u, std::memory_order_acq_rel);
+  RegisterDl2Dx11ConstantObservers();
   dl2_dx11_audit_count.store(0, std::memory_order_release);
   dl2_dx11_audit_mode.store(Dl2Dx11AuditMode::COLOR_PATH, std::memory_order_release);
   reshade::log::message(
@@ -528,6 +815,9 @@ void ArmDl2Dx11ColorPathAudit() {
 }
 
 void ArmDl2Dx11AdPathAudit() {
+  ClearDl2Dx11ConstantSamples();
+  dl2_dx11_audit_generation.fetch_add(1u, std::memory_order_acq_rel);
+  RegisterDl2Dx11ConstantObservers();
   dl2_dx11_audit_count.store(0, std::memory_order_release);
   dl2_dx11_audit_mode.store(Dl2Dx11AuditMode::AD_PATH, std::memory_order_release);
   reshade::log::message(
@@ -536,6 +826,9 @@ void ArmDl2Dx11AdPathAudit() {
 }
 
 void ArmDl2Dx11BffcPathAudit() {
+  UnregisterDl2Dx11ConstantObservers();
+  ClearDl2Dx11ConstantSamples();
+  dl2_dx11_audit_generation.fetch_add(1u, std::memory_order_acq_rel);
   dl2_dx11_audit_count.store(0, std::memory_order_release);
   dl2_dx11_audit_mode.store(Dl2Dx11AuditMode::BFFC_PATH, std::memory_order_release);
   reshade::log::message(
@@ -544,7 +837,7 @@ void ArmDl2Dx11BffcPathAudit() {
 }
 
 void OnDestroyDl2Dx11AuditSwapchain(reshade::api::swapchain* /*swapchain*/, bool /*resize*/) {
-  dl2_dx11_audit_mode.store(Dl2Dx11AuditMode::NONE, std::memory_order_release);
+  DisarmDl2Dx11Audit();
   dl2_dx11_audit_count.store(0, std::memory_order_release);
 }
 
@@ -652,6 +945,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       break;
 
     case DLL_PROCESS_DETACH:
+      DisarmDl2Dx11Audit();
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
       reshade::unregister_addon(h_module);
       break;
@@ -659,7 +953,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
   if (fdw_reason == DLL_PROCESS_DETACH) {
-    dl2_dx11_audit_mode.store(Dl2Dx11AuditMode::NONE, std::memory_order_release);
     reshade::unregister_event<reshade::addon_event::init_device>(ConfigureDl2Dx11ResourceUpgrades);
     reshade::unregister_event<reshade::addon_event::destroy_swapchain>(OnDestroyDl2Dx11AuditSwapchain);
   }
