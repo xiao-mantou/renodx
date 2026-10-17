@@ -1,6 +1,17 @@
 #ifndef SRC_GAMES_LIFEISSTRANGE_HDR_LUT_BRIDGE_HLSLI
 #define SRC_GAMES_LIFEISSTRANGE_HDR_LUT_BRIDGE_HLSLI
 
+bool LifeIsStrangeUsesToneMapPass(float curve_method) {
+  return curve_method > 2.5f;
+}
+
+float3 LifeIsStrangeApplyToneMapPass(
+    float3 untonemapped,
+    float3 graded_sdr,
+    float3 neutral_sdr) {
+  return renodx::draw::ToneMapPass(untonemapped, graded_sdr, neutral_sdr);
+}
+
 // Shared ImageAdjustments2 tangent extension and bounded SDR-LUT transport.
 // The sRGB-shaped LUT domain is a working assumption retained from the
 // established 06A2 bridge; the LUT sampler and native packed addressing stay
@@ -17,7 +28,25 @@ float3 LifeIsStrangeExtendImageAdjustments2(
   float pivot_slope = image_adjustments.x / (pivot_denominator * pivot_denominator);
   float3 extended_curve = curve_base + pivot_slope * max(color - pivot.xxx, 0.f);
 
-  if (curve_method > 0.5f) {
+  if (curve_method > 1.5f) {
+    float max_channel_input = max(color.r, max(color.g, color.b));
+    if (max_channel_input > pivot) {
+      float3 vanilla_curve = color
+                             / (image_adjustments.x + image_adjustments.y * color);
+      float pivot_curve = pivot / pivot_denominator;
+      float max_channel_vanilla = max_channel_input
+                                  / (image_adjustments.x + image_adjustments.y * max_channel_input);
+      float max_channel_extended = pivot_curve
+                                   + pivot_slope * (max_channel_input - pivot);
+      float vanilla_highlight_delta = max_channel_vanilla - pivot_curve;
+      float extended_highlight_delta = max_channel_extended - pivot_curve;
+      float shared_highlight_scale = extended_highlight_delta
+                                     / max(vanilla_highlight_delta, 1e-6f);
+      float3 vanilla_highlight_delta_rgb = max(vanilla_curve - pivot_curve.xxx, 0.f);
+      extended_curve = vanilla_curve
+                       + vanilla_highlight_delta_rgb * (shared_highlight_scale - 1.f);
+    }
+  } else if (curve_method > 0.5f) {
     float max_channel_input = max(color.r, max(color.g, color.b));
     if (max_channel_input > pivot) {
       float max_channel_extended = pivot / pivot_denominator

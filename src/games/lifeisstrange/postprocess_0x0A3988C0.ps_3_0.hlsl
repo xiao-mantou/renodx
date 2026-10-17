@@ -144,9 +144,19 @@ half4 main(PS_IN i) : COLOR
   // Keep that exact path in SDR mode; HDR only replaces the destructive LUT-domain clamp.
   float3 untonemapped_color = float3(r0.z, r0.w, r0.y);
   bool use_hdr_lut_bridge = LIFEISSTRANGE_HDR_PIPELINE > 0.f;
+  bool use_tone_map_pass = use_hdr_lut_bridge
+                           && LifeIsStrangeUsesToneMapPass(LIFEISSTRANGE_HDR_CURVE_METHOD);
   float hdr_lut_scale = 1.f;
+  float3 neutral_sdr = 0.f;
 
-  if (use_hdr_lut_bridge) {
+  if (use_tone_map_pass) {
+    r1.xyz = half3(untonemapped_color * ImageAdjustments2.yyy + ImageAdjustments2.xxx);
+    r3.z = 1 / r1.x;
+    r3.w = 1 / r1.y;
+    r3.xy = 1 / r1.zz;
+    r0 = half4(saturate(r0 * r3));
+    neutral_sdr = renodx::color::srgb::DecodeSafe(float3(r0.z, r0.w, r0.x));
+  } else if (use_hdr_lut_bridge) {
     float3 extended_curve = LifeIsStrangeExtendImageAdjustments2(
         untonemapped_color,
         ImageAdjustments2.xy,
@@ -194,7 +204,14 @@ half4 main(PS_IN i) : COLOR
 	r4 = half4(lerp(r2, r1, r0.y));
 	r1 = half4(lerp(r4, r6, r0.x));
 
-  if (use_hdr_lut_bridge) {
+  if (use_tone_map_pass) {
+    float3 graded_sdr = renodx::color::srgb::DecodeSafe(r1.xyz);
+    float3 tone_mapped = LifeIsStrangeApplyToneMapPass(
+        untonemapped_color,
+        graded_sdr,
+        neutral_sdr);
+    r1.xyz = renodx::color::srgb::EncodeSafe(tone_mapped);
+  } else if (use_hdr_lut_bridge) {
     r1.xyz = LifeIsStrangeRestoreAfterColorGradingLut(r1.xyz, hdr_lut_scale);
   }
 	r0 = tex2D(DNEVignetTexture, i.texcoord2.zw);

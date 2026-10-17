@@ -76,7 +76,7 @@ struct ShaderInjectData {
   float lifeisstrange_force_proxy_white;
   float lifeisstrange_force_fc2a_white;
   float lifeisstrange_bypass_06a2_lut;
-  // c9.x: bit 0 forces 512 white; bit 1 selects the raw 4FA5 scene probe; bit 2 enables shader markers.
+  // c9.x: bit 0 Force512, bit 1 raw 4FA5 probe, bit 2 markers, bit 3 selects 100-nit markers.
   float lifeisstrange_probe_flags;
   // Reuse the unused SceneExposure slot to stay within the SM3 injection buffer.
   float lifeisstrange_hdr_curve_method;
@@ -189,6 +189,12 @@ cbuffer shader_injection : register(b13) {
   step(0.5f, frac(LIFEISSTRANGE_RAW_4FA5_SCENE_PROBE * 0.25f))
 #define LIFEISSTRANGE_SHADER_MARKERS_ENABLED \
   step(0.5f, frac(LIFEISSTRANGE_FORCE_512_WHITE * 0.125f))
+#define LIFEISSTRANGE_SHADER_MARKER_100_NITS_ENABLED \
+  step(0.5f, frac(LIFEISSTRANGE_FORCE_512_WHITE * 0.0625f))
+
+#define RENODX_RENO_DRT_TONE_MAP_METHOD        renodx::tonemap::renodrt::config::tone_map_method::REINHARD
+
+#include "../../shaders/renodx.hlsl"
 
 float3 LifeIsStrangeApplyShaderMarker(float3 color, float2 screen_uv, float marker_index) {
   // Known shader markers use slots 0-9; static-only candidates follow in hash order.
@@ -201,13 +207,15 @@ float3 LifeIsStrangeApplyShaderMarker(float3 color, float2 screen_uv, float mark
                * step(marker_min.y, screen_uv.y)
                * step(screen_uv.y, marker_max.y);
 
-  // Position is the authoritative hash mapping; keep the marker payload cheap for SM3.
-  return lerp(color, float3(1.f, 1.f, 1.f), inside * LIFEISSTRANGE_SHADER_MARKERS_ENABLED);
+  [branch]
+  if (inside * LIFEISSTRANGE_SHADER_MARKERS_ENABLED > 0.5f) {
+    float marker_nits = lerp(50.f, 100.f, LIFEISSTRANGE_SHADER_MARKER_100_NITS_ENABLED);
+    float marker_value = marker_nits / max(RENODX_GRAPHICS_WHITE_NITS, 1.f);
+    return renodx::draw::EncodeColor(marker_value.xxx, RENODX_SWAP_CHAIN_DECODING);
+  }
+
+  return color;
 }
-
-#define RENODX_RENO_DRT_TONE_MAP_METHOD        renodx::tonemap::renodrt::config::tone_map_method::REINHARD
-
-#include "../../shaders/renodx.hlsl"
 
 #endif
 

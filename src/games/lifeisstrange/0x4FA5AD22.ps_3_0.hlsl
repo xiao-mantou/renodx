@@ -110,8 +110,18 @@ half4 main(PS_IN i) : COLOR {
   }
 
   bool use_hdr_lut_bridge = LIFEISSTRANGE_HDR_PIPELINE > 0.f;
+  bool use_tone_map_pass = use_hdr_lut_bridge
+                           && LifeIsStrangeUsesToneMapPass(LIFEISSTRANGE_HDR_CURVE_METHOD);
   float hdr_lut_scale = 1.f;
-  if (use_hdr_lut_bridge) {
+  float3 neutral_sdr = 0.f;
+  if (use_tone_map_pass) {
+    r1.yzw = half3(r0.zwy * ImageAdjustments2.yyy + ImageAdjustments2.xxx);
+    r2.z = 1.f / r1.y;
+    r2.w = 1.f / r1.z;
+    r2.xy = 1.f / r1.ww;
+    r0 = half4(saturate(r0 * r2));
+    neutral_sdr = renodx::color::srgb::DecodeSafe(float3(r0.z, r0.w, r0.x));
+  } else if (use_hdr_lut_bridge) {
     float3 extended_curve = LifeIsStrangeExtendImageAdjustments2(
         scene_color,
         ImageAdjustments2.xy,
@@ -167,7 +177,14 @@ half4 main(PS_IN i) : COLOR {
   r3 = half4(lerp(r2, r1, r0.y));
   r1 = half4(lerp(r3, r6, r0.x));
 
-  if (use_hdr_lut_bridge) {
+  if (use_tone_map_pass) {
+    float3 graded_sdr = renodx::color::srgb::DecodeSafe(r1.xyz);
+    float3 tone_mapped = LifeIsStrangeApplyToneMapPass(
+        scene_color,
+        graded_sdr,
+        neutral_sdr);
+    r1.xyz = renodx::color::srgb::EncodeSafe(tone_mapped);
+  } else if (use_hdr_lut_bridge) {
     r1.xyz = LifeIsStrangeRestoreAfterColorGradingLut(r1.xyz, hdr_lut_scale);
   }
 

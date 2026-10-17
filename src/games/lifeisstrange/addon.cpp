@@ -61,12 +61,14 @@ constexpr std::array<std::uint32_t, 22> four_lut_candidate_shader_hashes = {
 };
 bool force_512_white_validation = false;
 bool shader_marker_validation = false;
+float shader_marker_brightness = 0.f;
 
 void UpdateLifeIsStrangeProbeFlags() {
   shader_injection.lifeisstrange_probe_flags =
       (force_512_white_validation ? 1.f : 0.f)
       + (fourfa5_output_mode >= 1.5f ? 2.f : 0.f)
-      + (shader_marker_validation ? 4.f : 0.f);
+      + (shader_marker_validation ? 4.f : 0.f)
+      + (shader_marker_brightness >= 0.5f ? 8.f : 0.f);
 }
 
 renodx::utils::settings::Settings settings = {
@@ -330,7 +332,10 @@ renodx::utils::settings::Settings settings = {
           const std::string message = "LifeIsStrange HDR curve pivot=" + std::to_string(current);
           reshade::log::message(reshade::log::level::info, message.c_str());
         },
-        .is_enabled = []() { return shader_injection.lifeisstrange_hdr_pipeline > 0.f; },
+        .is_enabled = []() {
+          return shader_injection.lifeisstrange_hdr_pipeline > 0.f
+                 && shader_injection.lifeisstrange_hdr_curve_method < 2.5f;
+        },
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
@@ -340,17 +345,40 @@ renodx::utils::settings::Settings settings = {
         .default_value = 0.f,
         .label = "HDR Curve Method",
         .section = "Color Grading",
-        .tooltip = "Temporary A/B for highlight hue. Per-channel keeps the current tangent extension; "
-                   "Max-channel shared scale derives one extension gain from the brightest input channel "
-                   "and applies it to RGB together. Shared by all Life Is Strange scene/LUT shader replacements.",
-        .labels = {"Per-channel tangent", "Max-channel shared scale"},
+        .tooltip = "Methods 0-2 extend ImageAdjustments2 and use N2 max-channel LUT transport. "
+                   "Method 3 keeps the native curve/LUT as the SDR grade and uses the three-input ToneMapPass; "
+                   "it does not use HDR Curve Pivot.",
+        .labels = {"Per-channel tangent", "Max-channel shared scale", "Pivot-anchored shared extension", "ToneMapPass graded LUT"},
         .on_change_value = [](float, float current) {
-          const std::string method = current >= 0.5f ? "max-channel shared scale" : "per-channel tangent";
+          const std::string method = current >= 2.5f
+                                         ? "ToneMapPass graded LUT"
+                                         : (current >= 1.5f
+                                                ? "pivot-anchored shared extension"
+                                                : (current >= 0.5f ? "max-channel shared scale" : "per-channel tangent"));
           const std::string message = "LifeIsStrange HDR curve method=" + method;
           reshade::log::message(reshade::log::level::info, message.c_str());
         },
         .is_enabled = []() { return shader_injection.lifeisstrange_hdr_pipeline > 0.f; },
         .is_visible = []() { return current_settings_mode >= 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "ShaderMarkerBrightness",
+        .binding = &shader_marker_brightness,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Shader Marker Brightness",
+        .section = "Shader Replacement",
+        .tooltip = "Sets the marker proxy-input target to 50 or 100 nits. Later game passes may still alter markers; enable them with LifeIsStrange_EnableShaderMarkers=1.",
+        .labels = {"50 nits", "100 nits"},
+        .style = renodx::utils::settings::SettingStyle::SEGMENTED,
+        .on_change_value = [](float, float current) {
+          shader_marker_brightness = current;
+          UpdateLifeIsStrangeProbeFlags();
+          const std::string message = "LifeIsStrange shader marker brightness="
+                                      + std::string(current >= 0.5f ? "100" : "50") + " nits";
+          reshade::log::message(reshade::log::level::info, message.c_str());
+        },
+        .is_visible = []() { return shader_marker_validation; },
     },
     new renodx::utils::settings::Setting{
         .key = "LifeIsStrange_06A2ShaderSource",
@@ -1601,15 +1629,25 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     const bool raw_4fa5_scene_probe = fourfa5_output_mode >= 1.5f;
     // Reapply the packed c9.x flags after the settings loader reads the persisted mode.
     UpdateLifeIsStrangeProbeFlags();
+    std::string shader_marker_log = "LifeIsStrange shader markers=";
+    shader_marker_log += shader_marker_validation ? "enabled" : "disabled";
+    shader_marker_log += ", brightness=";
+    shader_marker_log += shader_marker_brightness >= 0.5f ? "100" : "50";
+    shader_marker_log += " nits";
+    reshade::log::message(reshade::log::level::info, shader_marker_log.c_str());
     std::string tone_map_log = "LifeIsStrange active ToneMapType=";
     tone_map_log += std::to_string(shader_injection.tone_map_type);
     reshade::log::message(reshade::log::level::info, tone_map_log.c_str());
     std::string curve_pivot_log = "LifeIsStrange HDR curve pivot=";
     curve_pivot_log += std::to_string(shader_injection.lifeisstrange_hdr_curve_pivot);
     reshade::log::message(reshade::log::level::info, curve_pivot_log.c_str());
-    const std::string curve_method = shader_injection.lifeisstrange_hdr_curve_method >= 0.5f
-                                        ? "max-channel shared scale"
-                                        : "per-channel tangent";
+    const std::string curve_method = shader_injection.lifeisstrange_hdr_curve_method >= 2.5f
+                                        ? "ToneMapPass graded LUT"
+                                        : (shader_injection.lifeisstrange_hdr_curve_method >= 1.5f
+                                               ? "pivot-anchored shared extension"
+                                               : (shader_injection.lifeisstrange_hdr_curve_method >= 0.5f
+                                                      ? "max-channel shared scale"
+                                                      : "per-channel tangent"));
     const std::string curve_method_log = "LifeIsStrange HDR curve method=" + curve_method;
     reshade::log::message(reshade::log::level::info, curve_method_log.c_str());
     const std::string shader_source_log = "LifeIsStrange 06A2 shader source="

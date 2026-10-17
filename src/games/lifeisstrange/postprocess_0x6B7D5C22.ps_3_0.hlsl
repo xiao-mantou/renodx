@@ -1,4 +1,5 @@
 #include "./shared.h"
+#include "./hdr_lut_bridge.hlsli"
 
 float4 BloomTintAndScreenBlendThreshold : register(c0);
 float4 MinZ_MaxZRatio : register(c2);
@@ -166,7 +167,10 @@ float4 main(PS_IN i) : COLOR {
 
   float3 untonemapped_color = r0.zwy;
   bool use_hdr_lut_bridge = LIFEISSTRANGE_HDR_PIPELINE > 0.f;
+  bool use_tone_map_pass = use_hdr_lut_bridge
+                           && LifeIsStrangeUsesToneMapPass(LIFEISSTRANGE_HDR_CURVE_METHOD);
   float hdr_lut_scale = 1.f;
+  float3 neutral_sdr = 0.f;
 
   r1.xyz = half3(r0.zwy * ImageAdjustments2.yyy + ImageAdjustments2.xxx);
   r3.z = rcp(r1.x);
@@ -174,7 +178,10 @@ float4 main(PS_IN i) : COLOR {
   r3.xy = rcp(r1.zz);
   r0 *= r3;
 
-  if (use_hdr_lut_bridge) {
+  if (use_tone_map_pass) {
+    r0 = half4(saturate(r0));
+    neutral_sdr = renodx::color::srgb::DecodeSafe(float3(r0.z, r0.w, r0.x));
+  } else if (use_hdr_lut_bridge) {
     const float pivot = LIFEISSTRANGE_HDR_CURVE_PIVOT;
     float3 curve_base_input = min(untonemapped_color, pivot.xxx);
     float3 curve_base = curve_base_input
@@ -182,8 +189,8 @@ float4 main(PS_IN i) : COLOR {
     float pivot_denominator = ImageAdjustments2.x + ImageAdjustments2.y * pivot;
     float pivot_slope = ImageAdjustments2.x / (pivot_denominator * pivot_denominator);
     float3 extended_curve = curve_base + pivot_slope * max(untonemapped_color - pivot.xxx, 0.f);
-
     if (LIFEISSTRANGE_HDR_CURVE_METHOD > 0.5f) {
+      // Preserve the existing 6B7D5C22 max-channel A/B behavior for methods 1 and 2.
       float max_channel_input = max(
           untonemapped_color.r,
           max(untonemapped_color.g, untonemapped_color.b));
@@ -242,7 +249,14 @@ float4 main(PS_IN i) : COLOR {
   r3 = half4(lerp(r2, r1, r0.y));
   r1 = half4(lerp(r3, r6, r0.x));
 
-  if (use_hdr_lut_bridge) {
+  if (use_tone_map_pass) {
+    float3 graded_sdr = renodx::color::srgb::DecodeSafe(r1.xyz);
+    float3 tone_mapped = LifeIsStrangeApplyToneMapPass(
+        untonemapped_color,
+        graded_sdr,
+        neutral_sdr);
+    r1.xyz = renodx::color::srgb::EncodeSafe(tone_mapped);
+  } else if (use_hdr_lut_bridge) {
     float3 graded_sdr = renodx::color::srgb::DecodeSafe(r1.xyz);
     float3 reconstructed_hdr = renodx::math::DivideSafe(
         graded_sdr,
