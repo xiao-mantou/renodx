@@ -738,7 +738,7 @@ void AuditDl2Dx11ColorPath(uint32_t shader_hash, reshade::api::command_list* cmd
   LogDl2Dx11AuditBinding(&stream, "t0", t0);
   LogDl2Dx11AuditBinding(&stream, "t1", t1);
   LogDl2Dx11AuditBinding(&stream, "rtv0", output);
-  stream << " cb0=" << PRINT_PTR(cb0)
+  stream << " cb0=" << PRINT_PTR(reinterpret_cast<uint64_t>(cb0))
          << " cb0_bytes=" << cb0_desc.ByteWidth
          << " cb0_usage=" << static_cast<uint32_t>(cb0_desc.Usage)
          << " cb0_cpu=0x" << std::hex << cb0_desc.CPUAccessFlags << std::dec
