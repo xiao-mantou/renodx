@@ -346,12 +346,12 @@ renodx::utils::settings::Settings settings = {
         .label = "HDR Curve Method",
         .section = "Color Grading",
         .tooltip = "Methods 0-2 extend ImageAdjustments2 and use N2 max-channel LUT transport. "
-                   "Method 3 keeps the native curve/LUT as the SDR grade and uses the three-input ToneMapPass; "
-                   "it does not use HDR Curve Pivot.",
-        .labels = {"Per-channel tangent", "Max-channel shared scale", "Pivot-anchored shared extension", "ToneMapPass graded LUT"},
+                   "Method 3 is a fixed A/B diagnostic: it bypasses the game LUT and applies ToneMapPass "
+                   "directly to scene input; it does not use HDR Curve Pivot.",
+        .labels = {"Per-channel tangent", "Max-channel shared scale", "Pivot-anchored shared extension", "ToneMapPass no-LUT test"},
         .on_change_value = [](float, float current) {
           const std::string method = current >= 2.5f
-                                         ? "ToneMapPass graded LUT"
+                                         ? "ToneMapPass no-LUT test"
                                          : (current >= 1.5f
                                                 ? "pivot-anchored shared extension"
                                                 : (current >= 0.5f ? "max-channel shared scale" : "per-channel tangent"));
@@ -1642,7 +1642,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     curve_pivot_log += std::to_string(shader_injection.lifeisstrange_hdr_curve_pivot);
     reshade::log::message(reshade::log::level::info, curve_pivot_log.c_str());
     const std::string curve_method = shader_injection.lifeisstrange_hdr_curve_method >= 2.5f
-                                        ? "ToneMapPass graded LUT"
+                                        ? "ToneMapPass no-LUT test"
                                         : (shader_injection.lifeisstrange_hdr_curve_method >= 1.5f
                                                ? "pivot-anchored shared extension"
                                                : (shader_injection.lifeisstrange_hdr_curve_method >= 0.5f

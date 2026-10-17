@@ -239,12 +239,7 @@ float4 main(PS_IN i) : COLOR {
 
   float bypass_lut = step(0.5f, LIFEISSTRANGE_BYPASS_06A2_LUT);
   if (use_tone_map_pass) {
-    float3 graded_sdr = renodx::color::srgb::DecodeSafe(r1.xyz);
-    graded_sdr = lerp(graded_sdr, neutral_sdr, bypass_lut);
-    float3 tone_mapped = LifeIsStrangeApplyToneMapPass(
-        untonemapped_color,
-        graded_sdr,
-        neutral_sdr);
+    float3 tone_mapped = LifeIsStrangeApplyToneMapPass(untonemapped_color);
     r1.xyz = renodx::color::srgb::EncodeSafe(tone_mapped);
   } else if (use_hdr_lut_bridge) {
     float3 graded_sdr = renodx::color::srgb::DecodeSafe(r1.xyz);

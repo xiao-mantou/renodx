@@ -209,11 +209,7 @@ half4 main(PS_IN i) : COLOR
 	r4 = half4(lerp(r2, r1, r0.y));
 	r1 = half4(lerp(r4, r6, r0.x));
   if (use_tone_map_pass) {
-    float3 graded_sdr = renodx::color::srgb::DecodeSafe(r1.xyz);
-    float3 tone_mapped = LifeIsStrangeApplyToneMapPass(
-        untonemapped_color,
-        graded_sdr,
-        neutral_sdr);
+    float3 tone_mapped = LifeIsStrangeApplyToneMapPass(untonemapped_color);
     r1.xyz = renodx::color::srgb::EncodeSafe(tone_mapped);
   } else if (use_hdr_lut_bridge) {
     r1.xyz = LifeIsStrangeRestoreAfterColorGradingLut(r1.xyz, hdr_lut_scale);

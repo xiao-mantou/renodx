@@ -5,11 +5,9 @@ bool LifeIsStrangeUsesToneMapPass(float curve_method) {
   return curve_method > 2.5f;
 }
 
-float3 LifeIsStrangeApplyToneMapPass(
-    float3 untonemapped,
-    float3 graded_sdr,
-    float3 neutral_sdr) {
-  return renodx::draw::ToneMapPass(untonemapped, graded_sdr, neutral_sdr);
+float3 LifeIsStrangeApplyToneMapPass(float3 untonemapped) {
+  // Fixed A/B diagnostic: isolate RenoDRT from the game's LUT grade.
+  return renodx::draw::ToneMapPass(untonemapped);
 }
 
 // Shared ImageAdjustments2 tangent extension and bounded SDR-LUT transport.
