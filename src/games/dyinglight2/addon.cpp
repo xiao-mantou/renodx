@@ -845,30 +845,10 @@ bool AllowD3D12Replacement(reshade::api::device* device, uint32_t shader_hash) {
       || device->get_api() != reshade::api::device_api::d3d12) {
     return true;
   }
-  // Keep the two core HDR bridge stages together for the combined-path A/B.
+  // A/B isolation: keep only the two core HDR bridge stages. DX12 UI
+  // replacements are temporarily gated to identify menu/path instability.
   return shader_hash == renodx::mods::shader::d3d12_custom_replacement_allow_hash
-         || shader_hash == 0x268BAB6D
-         // First isolated DX12 UI candidate; keep the remaining UI stages gated.
-         || shader_hash == 0x93053DEF
-         // Second isolated UI pair from the prior DX11 coverage split.
-         || shader_hash == 0xC6ADA2E9
-         || shader_hash == 0x6C349427
-         // Third isolated UI pair from the prior DX11 coverage split.
-         || shader_hash == 0xEFC06591
-         || shader_hash == 0xE46618DA
-         // Isolate EDC independently because its historical pair includes
-         // the progress-bar candidate that is intentionally still gated.
-         || shader_hash == 0xEDC2563A
-         // First half of the original popup/UI compositor group.
-         || shader_hash == 0x54F3F767
-         || shader_hash == 0xF34DDC49
-         || shader_hash == 0x43B22618
-         // Second half of the original popup/UI compositor group.
-         || shader_hash == 0x2280559E
-         || shader_hash == 0x61DBDE91
-         || shader_hash == 0x7D1BA5D4
-         // Isolate the remaining radial-progress UI shader.
-         || shader_hash == 0x2BECAD9C;
+         || shader_hash == 0x268BAB6D;
 }
 
 }  // namespace
