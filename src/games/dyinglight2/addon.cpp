@@ -839,18 +839,6 @@ void OnDestroyDl2Dx11AuditSwapchain(reshade::api::swapchain* /*swapchain*/, bool
   dl2_dx11_audit_count.store(0, std::memory_order_release);
 }
 
-bool AllowD3D12Replacement(reshade::api::device* device, uint32_t shader_hash) {
-  if (!renodx::mods::shader::disable_custom_replacements_d3d12
-      || device == nullptr
-      || device->get_api() != reshade::api::device_api::d3d12) {
-    return true;
-  }
-  // A/B isolation: keep only the two core HDR bridge stages. DX12 UI
-  // replacements are temporarily gated to identify menu/path instability.
-  return shader_hash == renodx::mods::shader::d3d12_custom_replacement_allow_hash
-         || shader_hash == 0x268BAB6D;
-}
-
 }  // namespace
 
 extern "C" __declspec(dllexport) constexpr const char* NAME = "RenoDX";
@@ -863,15 +851,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
       renodx::mods::shader::allow_multiple_push_constants = true;
       renodx::mods::shader::force_pipeline_cloning = true;
-      renodx::mods::shader::disable_custom_replacements_d3d12 = true;
-      renodx::mods::shader::disable_shader_injection_d3d12 = false;
       // Match the register used by shared.h (b13, space50 for DX12). The old
       // DX12 path set this explicitly; leaving it at the auto-selected b0
       // causes replacement pipelines to be built against the wrong layout.
       renodx::mods::shader::expected_constant_buffer_index = 13;
-      renodx::mods::shader::d3d12_custom_replacement_allow_hash = 0x3E36DA5B;
-      renodx::utils::shader::SetReplacementFilter(&AllowD3D12Replacement);
-      renodx::utils::shader::use_replace_on_bind = false;
 
       renodx::mods::swapchain::v2::SetUseHDR10(true);
       renodx::mods::swapchain::v2::prevent_full_screen = false;
@@ -940,45 +923,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     // only for the DX11 scene target and only after the baseline is installed.
     reshade::register_event<reshade::addon_event::init_device>(ConfigureDl2Dx11ResourceUpgrades);
     reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroyDl2Dx11AuditSwapchain);
-  }
-  if (fdw_reason == DLL_PROCESS_ATTACH) {
-    // TGH UI replacements are validated on DX11 only; isolate all of them on DX12.
-    constexpr uint32_t dl2_ui_shader_hashes[] = {
-        0x1BF90CDB,
-        0x2280559E,
-        0x2BECAD9C,
-        0x43B22618,
-        0x54F3F767,
-        0x61DBDE91,
-        0x6C349427,
-        0x7D1BA5D4,
-        0x93053DEF,
-        0xC6ADA2E9,
-        0xE46618DA,
-        0xEDC2563A,
-        0xEFC06591,
-        0xF34DDC49,
-    };
-    for (const auto shader_hash : dl2_ui_shader_hashes) {
-      if (auto shader = custom_shaders.find(shader_hash); shader != custom_shaders.end()) {
-        shader->second.on_replace = [shader_hash](reshade::api::command_list* cmd_list) {
-          return cmd_list->get_device()->get_api() != reshade::api::device_api::d3d12
-                 || shader_hash == 0x93053DEF
-                 || shader_hash == 0xC6ADA2E9
-                 || shader_hash == 0x6C349427
-                 || shader_hash == 0xEFC06591
-                 || shader_hash == 0xE46618DA
-                 || shader_hash == 0xEDC2563A
-                 || shader_hash == 0x54F3F767
-                 || shader_hash == 0xF34DDC49
-                 || shader_hash == 0x43B22618
-                 || shader_hash == 0x2280559E
-                 || shader_hash == 0x61DBDE91
-                 || shader_hash == 0x7D1BA5D4
-                 || shader_hash == 0x2BECAD9C;
-        };
-      }
-    }
   }
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     // Keep the DX11 resource-chain diagnostics scoped to the proven color-path
