@@ -237,15 +237,15 @@ void OnInitDevice(reshade::api::device* device) {
 void ConfigureDl2Dx11ResourceUpgrades(reshade::api::device* device) {
   if (device == nullptr || device->get_api() != reshade::api::device_api::d3d11) return;
 
-  // A/B isolation: restore the RAR/TGH size-dependent matching on DX11 while
-  // leaving the rest of the current resource-upgrade path unchanged.
+  // Keep DX11 scene-target matching size-independent for the internal render
+  // target path; size-dependent matching caused visible menu instability.
   auto dx11_resource_upgrade_infos = renodx::mods::swapchain::v2::resource_upgrade_infos;
   if (dx11_resource_upgrade_infos.empty()) return;
-  dx11_resource_upgrade_infos[0].ignore_size = false;
+  dx11_resource_upgrade_infos[0].ignore_size = true;
   renodx::utils::resource::upgrade::SetUpgradeInfos(device, dx11_resource_upgrade_infos);
   reshade::log::message(
       reshade::log::level::info,
-      "[RenoDX] DL2 DX11 resource upgrades: using RAR/TGH size-dependent scene target matching.");
+      "[RenoDX] DL2 DX11 resource upgrades: using size-independent scene target matching.");
 }
 
 struct Dl2Dx11AuditBinding {
