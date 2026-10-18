@@ -345,15 +345,17 @@ renodx::utils::settings::Settings settings = {
         .default_value = 0.f,
         .label = "HDR Curve Method",
         .section = "Color Grading",
-        .tooltip = "Methods 0-2 extend ImageAdjustments2 and use N2 max-channel LUT transport. "
-                   "Method 3 is a fixed A/B diagnostic: it bypasses the game LUT and applies ToneMapPass "
-                   "directly to scene input; it does not use HDR Curve Pivot.",
-        .labels = {"Per-channel tangent", "Max-channel shared scale", "Pivot-anchored shared extension", "ToneMapPass no-LUT test"},
+        .tooltip = "Methods 0-2 preserve the game LUT through N2 max-channel transport. Method 2 uses fixed "
+                   "dual curve limits (LUT=1.25, HDR reference=8.0); 8.0 is not display nits and this method "
+                   "does not call ToneMapPass. Method 3 is a fixed A/B diagnostic: it bypasses the game LUT "
+                   "and applies ToneMapPass directly to scene input for confirmed shaders and experimental "
+                   "4-LUT candidates; it does not use HDR Curve Pivot.",
+        .labels = {"Per-channel tangent", "Max-channel shared scale", "Dual-limit LUT/HDR", "ToneMapPass no-LUT test"},
         .on_change_value = [](float, float current) {
           const std::string method = current >= 2.5f
                                          ? "ToneMapPass no-LUT test"
                                          : (current >= 1.5f
-                                                ? "pivot-anchored shared extension"
+                                                ? "dual-limit LUT/HDR"
                                                 : (current >= 0.5f ? "max-channel shared scale" : "per-channel tangent"));
           const std::string message = "LifeIsStrange HDR curve method=" + method;
           reshade::log::message(reshade::log::level::info, message.c_str());
@@ -1644,7 +1646,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     const std::string curve_method = shader_injection.lifeisstrange_hdr_curve_method >= 2.5f
                                         ? "ToneMapPass no-LUT test"
                                         : (shader_injection.lifeisstrange_hdr_curve_method >= 1.5f
-                                               ? "pivot-anchored shared extension"
+                                               ? "dual-limit LUT/HDR"
                                                : (shader_injection.lifeisstrange_hdr_curve_method >= 0.5f
                                                       ? "max-channel shared scale"
                                                       : "per-channel tangent"));

@@ -236,3 +236,15 @@
 - Added `postprocess_0x5DA670EE.ps_3_0.hlsl` from the retained `.asm`/HlslDecompiler output. HDR-off preserves the native curve, LUT clamp, vignette/grain, alpha, and final clamp. HDR-on uses the shared tangent/LUT bridge and removes only the LUT-domain and final RGB clamps; no spatial/depth/mask saturates were changed.
 - Added `LifeIsStrange_5DA670EEShaderSource` for isolated Native/RenoDX A/B. The shared `HDRCurvePivot`, `HDRCurveMethod`, and `LifeIsStrange_EnableHDRPipeline` controls are reused; resource upgrades, readback, and proxy logic are unchanged.
 - DevKit captures can extract every shader encountered by the current runtime path as `.original.cso`; repeated F8 batches are deduplicated by hash. They cannot guarantee every shader in the game in one run because D3D9 creates many shaders lazily by scene/material. The reliable workflow is multi-scene F8 capture, hash merge, pixel-shader filtering, then FP16/LUT/full-frame ranking before decompilation.
+
+## Experimental 4-LUT candidates: no-LUT ToneMapPass (2026-10-18)
+
+- Added the existing `HDRCurveMethod=3` direct `ToneMapPass` A/B to all 22 cache-derived candidates. It replaces the LUT-grade contribution at the same output point, preserving each shader's later vignette/grain; methods 0-2 still use the prior LUT bridge. The 22 remain experimental and are not confirmed runtime chain members.
+- With captured curve constants `a=0.21411191`, `b=0.97323596`, `f(0.18)=0.4624`, close to sRGB encoding of linear 0.18. The audited shader has no explicit gamma/pow conversion between this rational curve and LUT coordinate generation. This supports a gamma-shaped LUT domain, but does not prove the game's scene input uses calibrated 18% middle gray.
+- `ToneMapPass` method 3 consumes the pre-curve scene signal and ignores `HDRCurvePivot`; RenoDX's ToneMapPass/RenoDRT config already defaults to scene mid-gray 0.18. For methods 0-2, 0.18 is only a conventional A/B pivot, not a confirmed LiS pivot; user previously reported 0.7 as visually acceptable.
+
+## Dual-limit LUT bridge (2026-10-18)
+
+- `HDRCurveMethod=2` now uses two ImageAdjustments2 tangent-to-hyperbola curves: LUT/chroma limit `1.25`, and HDR reconstruction-reference limit `8.0`. N2 max-channel compression remains applied to the low-limit curve before the original packed LUT; after grading, a scalar ratio restores the high-limit curve's peak reference.
+- The `8.0` value is in the curve's sRGB-shaped domain, not nits or the monitor peak. Method 2 does not call `ToneMapPass`; final HDR encoding/output remains the existing proxy `SwapChainPass` path. Method 3 remains the separate direct ToneMapPass A/B.
+- The high-limit curve supplies a reconstruction scale only; it is not written directly to the display. Runtime image/color/peak validation is still required.

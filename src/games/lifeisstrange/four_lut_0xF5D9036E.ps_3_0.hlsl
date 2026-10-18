@@ -160,9 +160,14 @@ half4 main(PS_IN i) : COLOR
 	r3.xy = 1 / r1.zz;
 	r0 = half4(saturate(r0 * r3));
 	if (LIFEISSTRANGE_HDR_PIPELINE > 0.f) {
+	  float3 lis_hdr_reference;
 	  float3 lis_hdr_extended = LifeIsStrangeExtendImageAdjustments2(
-	      lis_hdr_untonemapped, ImageAdjustments2.xy, LIFEISSTRANGE_HDR_CURVE_PIVOT, LIFEISSTRANGE_HDR_CURVE_METHOD);
-	  float3 lis_hdr_lut_proxy = LifeIsStrangeCompressForColorGradingLut(lis_hdr_extended, lis_hdr_scale);
+	      lis_hdr_untonemapped, ImageAdjustments2.xy, LIFEISSTRANGE_HDR_CURVE_PIVOT, LIFEISSTRANGE_HDR_CURVE_METHOD,
+	      lis_hdr_reference);
+	  float3 lis_hdr_lut_proxy = LifeIsStrangeCompressForColorGradingLut(
+	      lis_hdr_extended,
+	      lis_hdr_reference,
+	      lis_hdr_scale);
 	  r0.z = lis_hdr_lut_proxy.r;
 	  r0.w = lis_hdr_lut_proxy.g;
 	  r0.x = lis_hdr_lut_proxy.b;
@@ -197,7 +202,7 @@ half4 main(PS_IN i) : COLOR
 	r1 = half4(-r3 + r5);
 	o = half4(r0.x * r1 + r3);
 	if (LIFEISSTRANGE_HDR_PIPELINE > 0.f) {
-	  o.xyz = LifeIsStrangeRestoreAfterColorGradingLut(o.xyz, lis_hdr_scale);
+	  o.xyz = LifeIsStrangeApplyToneMapOrRestoreColorGradingLut(o.xyz, lis_hdr_scale, lis_hdr_untonemapped);
 	}
 
 	o.xyz = LifeIsStrangeApplyShaderMarker(o.xyz, i.texcoord2.zw, 31.f);

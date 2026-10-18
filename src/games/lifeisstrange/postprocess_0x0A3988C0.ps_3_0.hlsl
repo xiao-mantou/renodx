@@ -157,16 +157,21 @@ half4 main(PS_IN i) : COLOR
     r0 = half4(saturate(r0 * r3));
     neutral_sdr = renodx::color::srgb::DecodeSafe(float3(r0.z, r0.w, r0.x));
   } else if (use_hdr_lut_bridge) {
+    float3 hdr_reference;
     float3 extended_curve = LifeIsStrangeExtendImageAdjustments2(
         untonemapped_color,
         ImageAdjustments2.xy,
         LIFEISSTRANGE_HDR_CURVE_PIVOT,
-        LIFEISSTRANGE_HDR_CURVE_METHOD);
+        LIFEISSTRANGE_HDR_CURVE_METHOD,
+        hdr_reference);
 
     // The LUT is sampled in the game's existing sRGB-shaped domain. Compress
     // the decoded signal only for that bounded sample, then restore the same
     // scale exactly once after the LUT.
-    float3 lut_proxy = LifeIsStrangeCompressForColorGradingLut(extended_curve, hdr_lut_scale);
+    float3 lut_proxy = LifeIsStrangeCompressForColorGradingLut(
+        extended_curve,
+        hdr_reference,
+        hdr_lut_scale);
 
     // All five variants use the SM3 packed order B, B, R, G in r0.xyzw.
     r0 = half4(lut_proxy.b, lut_proxy.b, lut_proxy.r, lut_proxy.g);

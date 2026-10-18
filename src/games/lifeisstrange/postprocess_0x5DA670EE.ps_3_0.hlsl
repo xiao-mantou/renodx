@@ -125,12 +125,17 @@ half4 main(PS_IN i) : COLOR {
     r0 = half4(saturate(r0 * r2));
     neutral_sdr = renodx::color::srgb::DecodeSafe(float3(r0.z, r0.w, r0.x));
   } else if (use_hdr_lut_bridge) {
+    float3 hdr_reference;
     float3 extended_curve = LifeIsStrangeExtendImageAdjustments2(
         untonemapped_color,
         ImageAdjustments2.xy,
         LIFEISSTRANGE_HDR_CURVE_PIVOT,
-        LIFEISSTRANGE_HDR_CURVE_METHOD);
-    float3 lut_proxy = LifeIsStrangeCompressForColorGradingLut(extended_curve, hdr_lut_scale);
+        LIFEISSTRANGE_HDR_CURVE_METHOD,
+        hdr_reference);
+    float3 lut_proxy = LifeIsStrangeCompressForColorGradingLut(
+        extended_curve,
+        hdr_reference,
+        hdr_lut_scale);
     r0 = half4(lut_proxy.b, lut_proxy.b, lut_proxy.r, lut_proxy.g);
   } else {
     // Native ImageAdjustments2 curve and LUT-domain mul_sat.

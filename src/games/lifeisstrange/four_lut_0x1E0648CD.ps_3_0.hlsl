@@ -126,9 +126,14 @@ half4 main(PS_IN i) : COLOR
 	r2.xy = 1 / r1.zz;
 	r0 = half4(saturate(r0 * r2));
 	if (LIFEISSTRANGE_HDR_PIPELINE > 0.f) {
+	  float3 lis_hdr_reference;
 	  float3 lis_hdr_extended = LifeIsStrangeExtendImageAdjustments2(
-	      lis_hdr_untonemapped, ImageAdjustments2.xy, LIFEISSTRANGE_HDR_CURVE_PIVOT, LIFEISSTRANGE_HDR_CURVE_METHOD);
-	  float3 lis_hdr_lut_proxy = LifeIsStrangeCompressForColorGradingLut(lis_hdr_extended, lis_hdr_scale);
+	      lis_hdr_untonemapped, ImageAdjustments2.xy, LIFEISSTRANGE_HDR_CURVE_PIVOT, LIFEISSTRANGE_HDR_CURVE_METHOD,
+	      lis_hdr_reference);
+	  float3 lis_hdr_lut_proxy = LifeIsStrangeCompressForColorGradingLut(
+	      lis_hdr_extended,
+	      lis_hdr_reference,
+	      lis_hdr_scale);
 	  r0.z = lis_hdr_lut_proxy.r;
 	  r0.w = lis_hdr_lut_proxy.g;
 	  r0.x = lis_hdr_lut_proxy.b;
@@ -161,7 +166,7 @@ half4 main(PS_IN i) : COLOR
 	r3 = half4(lerp(r2, r1, r0.y));
 	r1 = half4(lerp(r3, r6, r0.x));
 	if (LIFEISSTRANGE_HDR_PIPELINE > 0.f) {
-	  r1.xyz = LifeIsStrangeRestoreAfterColorGradingLut(r1.xyz, lis_hdr_scale);
+	  r1.xyz = LifeIsStrangeApplyToneMapOrRestoreColorGradingLut(r1.xyz, lis_hdr_scale, lis_hdr_untonemapped);
 	}
 	r0 = tex2D(DNEVignetTexture, i.texcoord2.zw);
 	r0.x = saturate(dot(r0, DNEVignetMaskFactors));

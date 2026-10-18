@@ -145,35 +145,17 @@ half4 main(PS_IN i) : COLOR {
     r0 = half4(saturate(r0));
     neutral_sdr = renodx::color::srgb::DecodeSafe(float3(r0.z, r0.w, r0.x));
   } else if (use_hdr_lut_bridge) {
-    const float pivot = LIFEISSTRANGE_HDR_CURVE_PIVOT;
-    float3 curve_base_input = min(untonemapped_color, pivot.xxx);
-    float3 curve_base = curve_base_input
-                        / (ImageAdjustments2.x + ImageAdjustments2.y * curve_base_input);
-    float pivot_denominator = ImageAdjustments2.x + ImageAdjustments2.y * pivot;
-    float pivot_slope = ImageAdjustments2.x / (pivot_denominator * pivot_denominator);
-    float3 extended_curve = curve_base + pivot_slope * max(untonemapped_color - pivot.xxx, 0.f);
-    if (LIFEISSTRANGE_HDR_CURVE_METHOD > 0.5f) {
-      // Preserve the existing 006B1C38 max-channel A/B behavior for methods 1 and 2.
-      float max_channel_input = max(
-          untonemapped_color.r,
-          max(untonemapped_color.g, untonemapped_color.b));
-      if (max_channel_input > pivot) {
-        float max_channel_extended = pivot / pivot_denominator
-                                     + pivot_slope * (max_channel_input - pivot);
-        float max_channel_vanilla = max_channel_input
-                                    / (ImageAdjustments2.x + ImageAdjustments2.y * max_channel_input);
-        float shared_scale = max_channel_extended / max(max_channel_vanilla, 1e-6f);
-        float3 vanilla_curve = untonemapped_color
-                               / (ImageAdjustments2.x + ImageAdjustments2.y * untonemapped_color);
-        extended_curve = vanilla_curve * shared_scale;
-      }
-    }
-
-    // Keep the current shared sRGB LUT-domain assumption and max-channel reconstruction.
-    float3 extended_curve_linear = renodx::color::srgb::DecodeSafe(extended_curve);
-    hdr_lut_scale = renodx::tonemap::neutwo::ComputeMaxChannelScale(extended_curve_linear);
-    float3 lut_proxy_linear = extended_curve_linear * hdr_lut_scale;
-    float3 lut_proxy = saturate(renodx::color::srgb::EncodeSafe(lut_proxy_linear));
+    float3 hdr_reference;
+    float3 extended_curve = LifeIsStrangeExtendImageAdjustments2(
+        untonemapped_color,
+        ImageAdjustments2.xy,
+        LIFEISSTRANGE_HDR_CURVE_PIVOT,
+        LIFEISSTRANGE_HDR_CURVE_METHOD,
+        hdr_reference);
+    float3 lut_proxy = LifeIsStrangeCompressForColorGradingLut(
+        extended_curve,
+        hdr_reference,
+        hdr_lut_scale);
 
     // The native packed-LUT input registers are B, B, R, G in r0.xyzw.
     r0 = half4(lut_proxy.b, lut_proxy.b, lut_proxy.r, lut_proxy.g);
