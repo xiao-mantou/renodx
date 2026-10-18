@@ -345,9 +345,10 @@ renodx::utils::settings::Settings settings = {
         .default_value = 0.f,
         .label = "HDR Curve Method",
         .section = "Color Grading",
-        .tooltip = "Methods 0-2 preserve the game LUT through N2 max-channel transport. Method 2 uses fixed "
-                   "dual curve limits (LUT=1.25, HDR reference=8.0); 8.0 is not display nits and this method "
-                   "does not call ToneMapPass. Method 3 is a fixed A/B diagnostic: it bypasses the game LUT "
+        .tooltip = "Methods 0-2 preserve the game LUT through N2 max-channel transport. Method 2 keeps "
+                   "the LUT/chroma limit at 1.25 and derives the HDR reconstruction limit from Peak Brightness, "
+                   "Game White, and Gamma Correction; SwapChainPass remains the final peak clamp. Method 2 does "
+                   "not call ToneMapPass. Method 3 is a fixed A/B diagnostic: it bypasses the game LUT "
                    "and applies ToneMapPass directly to scene input for confirmed shaders and experimental "
                    "4-LUT candidates; it does not use HDR Curve Pivot.",
         .labels = {"Per-channel tangent", "Max-channel shared scale", "Dual-limit LUT/HDR", "ToneMapPass no-LUT test"},
