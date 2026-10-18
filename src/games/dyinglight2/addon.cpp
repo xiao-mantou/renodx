@@ -234,20 +234,6 @@ void OnInitDevice(reshade::api::device* device) {
   }
 }
 
-void ConfigureDl2Dx11ResourceUpgrades(reshade::api::device* device) {
-  if (device == nullptr || device->get_api() != reshade::api::device_api::d3d11) return;
-
-  // Keep DX11 scene-target matching size-independent for the internal render
-  // target path; size-dependent matching caused visible menu instability.
-  auto dx11_resource_upgrade_infos = renodx::mods::swapchain::v2::resource_upgrade_infos;
-  if (dx11_resource_upgrade_infos.empty()) return;
-  dx11_resource_upgrade_infos[0].ignore_size = true;
-  renodx::utils::resource::upgrade::SetUpgradeInfos(device, dx11_resource_upgrade_infos);
-  reshade::log::message(
-      reshade::log::level::info,
-      "[RenoDX] DL2 DX11 resource upgrades: using size-independent scene target matching.");
-}
-
 struct Dl2Dx11AuditBinding {
   uint64_t view = 0;
   uint64_t resource = 0;
@@ -876,8 +862,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       renodx::mods::swapchain::v2::resource_upgrade_infos.push_back({
         .old_format = reshade::api::format::r8g8b8a8_typeless,
         .new_format = reshade::api::format::r16g16b16a16_float,
-        // Keep the RAR/TGH baseline's exact resource matching for the first
-        // DX12 validation pass. DLSS Off size compatibility is handled later.
+        // Match the RAR/TGH baseline: only the scene target at the expected
+        // dimensions receives the FP16 clone.
         .ignore_size = false,
         .use_resource_view_cloning = true,
         .use_resource_view_hot_swap = false,
@@ -914,14 +900,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
   if (fdw_reason == DLL_PROCESS_DETACH) {
-    reshade::unregister_event<reshade::addon_event::init_device>(ConfigureDl2Dx11ResourceUpgrades);
     reshade::unregister_event<reshade::addon_event::destroy_swapchain>(OnDestroyDl2Dx11AuditSwapchain);
   }
     renodx::mods::swapchain::v2::Use(fdw_reason, &shader_injection);
   if (fdw_reason == DLL_PROCESS_ATTACH) {
-    // Register after swapchain_v2 so its per-device upgrade list is overridden
-    // only for the DX11 scene target and only after the baseline is installed.
-    reshade::register_event<reshade::addon_event::init_device>(ConfigureDl2Dx11ResourceUpgrades);
     reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroyDl2Dx11AuditSwapchain);
   }
   if (fdw_reason == DLL_PROCESS_ATTACH) {
