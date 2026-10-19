@@ -24,6 +24,7 @@
 #include <string>
 #include <array>
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
@@ -41,6 +42,10 @@ renodx::mods::shader::CustomShaders custom_shaders = {
 ShaderInjectData shader_injection;
 
 float current_settings_mode = 0;
+float lifeisstrange_tonemapping_mode = 1.f;
+float peak_nits_mode = 0.f;
+float reported_display_peak_nits = 0.f;
+bool peak_detection_failure_logged = false;
 float native_06a2_shader = 0.f;
 float native_6b7d5c22_shader = 0.f;
 float native_006b1c38_shader = 0.f;
@@ -60,15 +65,35 @@ constexpr std::array<std::uint32_t, 22> four_lut_candidate_shader_hashes = {
     0xD4931728u, 0xD899BE56u, 0xDE0D9169u, 0xF5D9036Eu,
 };
 bool force_512_white_validation = false;
-bool shader_marker_validation = false;
 float shader_marker_brightness = 0.f;
+
+void ApplyReportedDisplayPeakNits(bool settings_lock_held = false) {
+  if (peak_nits_mode >= 0.5f || reported_display_peak_nits <= 0.f) return;
+
+  if (settings_lock_held) {
+    if (auto* setting = renodx::utils::settings::FindSetting("ToneMapPeakNits"); setting != nullptr) {
+      setting->Set(reported_display_peak_nits)->Write();
+      return;
+    }
+    shader_injection.peak_white_nits = reported_display_peak_nits;
+    return;
+  }
+
+  if (!renodx::utils::settings::UpdateSetting("ToneMapPeakNits", reported_display_peak_nits)) {
+    shader_injection.peak_white_nits = reported_display_peak_nits;
+  }
+}
+
+bool ShouldReplaceLifeIsStrangeShaders() {
+  return lifeisstrange_tonemapping_mode >= 0.5f;
+}
 
 void UpdateLifeIsStrangeProbeFlags() {
   shader_injection.lifeisstrange_probe_flags =
       (force_512_white_validation ? 1.f : 0.f)
       + (fourfa5_output_mode >= 1.5f ? 2.f : 0.f)
-      + (shader_marker_validation ? 4.f : 0.f)
-      + (shader_marker_brightness >= 0.5f ? 8.f : 0.f);
+      + (shader_marker_brightness >= 0.5f ? 4.f : 0.f)
+      + (shader_marker_brightness >= 1.5f ? 8.f : 0.f);
 }
 
 renodx::utils::settings::Settings settings = {
@@ -83,17 +108,57 @@ renodx::utils::settings::Settings settings = {
         .is_global = true,
     },
     new renodx::utils::settings::Setting{
+        .key = "LifeIsStrange_ToneMappingMode",
+        .binding = &lifeisstrange_tonemapping_mode,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 1.f,
+        .label = "Life Is Strange Tone Mapping",
+        .section = "Tone Mapping",
+        .tooltip = "Vanilla uses original game bytecode for every registered Life Is Strange shader replacement. "
+                   "Vanilla+ enables the RenoDX shader replacements; HDR Curve Method defaults to the dual-limit "
+                   "LUT/HDR curve. This only changes game shaders: FP16 intermediate upgrades and the DX11 HDR "
+                   "presentation proxy remain active.",
+        .labels = {"Vanilla", "Vanilla+"},
+        .style = renodx::utils::settings::SettingStyle::SEGMENTED,
+        .on_change_value = [](float, float current) {
+          const std::string mode = current >= 0.5f ? "Vanilla+" : "Vanilla";
+          const std::string message = "LifeIsStrange tone mapping mode=" + mode
+                                      + " (shader replacements only; FP16 upgrades and proxy unchanged)";
+          reshade::log::message(reshade::log::level::info, message.c_str());
+        },
+    },
+    new renodx::utils::settings::Setting{
         .key = "ToneMapType",
         .binding = &shader_injection.tone_map_type,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-        // Keep vanilla as the default; non-vanilla modes use the HDR LUT bridge.
+        // Keep the tone-map pass at its vanilla option for Method 3 A/B tests.
         .default_value = 0.f,
         .can_reset = true,
-        .label = "Tone Mapper",
+        .label = "ToneMapPass Type (Method 3)",
         .section = "Tone Mapping",
-        .tooltip = "Sets the tone mapper type",
+        .tooltip = "Used only by HDR Curve Method 3's no-LUT ToneMapPass test. It does not select Vanilla/Vanilla+ "
+                   "and does not affect the default dual-limit LUT/HDR method.",
         .labels = {"Vanilla", "None", "ACES", "RenoDRT"},
         .is_visible = []() { return current_settings_mode >= 1; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "ToneMapPeakNitsMode",
+        .binding = &peak_nits_mode,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Peak Brightness Source",
+        .section = "Tone Mapping",
+        .tooltip = "Auto uses the HDR display peak reported by DXGI through the D3D11 proxy. If unavailable, "
+                   "the configured Peak Brightness value is retained as the fallback.",
+        .labels = {"Auto (Display)", "Manual"},
+        .style = renodx::utils::settings::SettingStyle::SEGMENTED,
+        .on_change_value = [](float, float current) {
+          peak_nits_mode = current;
+          ApplyReportedDisplayPeakNits(true);
+          const std::string mode = current < 0.5f ? "Auto (Display)" : "Manual";
+          const std::string message = "LifeIsStrange peak brightness source=" + mode;
+          reshade::log::message(reshade::log::level::info, message.c_str());
+        },
     },
     new renodx::utils::settings::Setting{
         .key = "ToneMapPeakNits",
@@ -102,9 +167,10 @@ renodx::utils::settings::Settings settings = {
         .can_reset = false,
         .label = "Peak Brightness",
         .section = "Tone Mapping",
-        .tooltip = "Sets the value of peak white in nits",
+        .tooltip = "Manual peak value and fallback when the DXGI display does not report HDR peak luminance.",
         .min = 48.f,
-        .max = 4000.f,
+        .max = 10000.f,
+        .is_enabled = []() { return peak_nits_mode >= 0.5f; },
     },
     new renodx::utils::settings::Setting{
         .key = "ToneMapGameNits",
@@ -319,7 +385,7 @@ renodx::utils::settings::Settings settings = {
     new renodx::utils::settings::Setting{
         .key = "HDRCurvePivot",
         .binding = &shader_injection.lifeisstrange_hdr_curve_pivot,
-        .default_value = 0.18f,
+        .default_value = 0.70f,
         .label = "HDR Curve Pivot",
         .section = "Color Grading",
         .tooltip = "Controls the ImageAdjustments2 HDR tangent-extension pivot in the scene input domain "
@@ -342,7 +408,7 @@ renodx::utils::settings::Settings settings = {
         .key = "HDRCurveMethod",
         .binding = &shader_injection.lifeisstrange_hdr_curve_method,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-        .default_value = 0.f,
+        .default_value = 2.f,
         .label = "HDR Curve Method",
         .section = "Color Grading",
         .tooltip = "Methods 0-2 preserve the game LUT through N2 max-channel transport. Method 2 keeps "
@@ -365,23 +431,22 @@ renodx::utils::settings::Settings settings = {
         .is_visible = []() { return current_settings_mode >= 2; },
     },
     new renodx::utils::settings::Setting{
-        .key = "ShaderMarkerBrightness",
+        .key = "ShaderMarkerMode",
         .binding = &shader_marker_brightness,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
         .default_value = 0.f,
-        .label = "Shader Marker Brightness",
+        .label = "Shader Markers",
         .section = "Shader Replacement",
-        .tooltip = "Sets the marker proxy-input target to 50 or 100 nits. Later game passes may still alter markers; enable them with LifeIsStrange_EnableShaderMarkers=1.",
-        .labels = {"50 nits", "100 nits"},
+        .tooltip = "Draws shader-identification markers at the selected proxy-input level. Later game passes may still alter them.",
+        .labels = {"Off", "50 nits", "100 nits"},
         .style = renodx::utils::settings::SettingStyle::SEGMENTED,
         .on_change_value = [](float, float current) {
           shader_marker_brightness = current;
           UpdateLifeIsStrangeProbeFlags();
-          const std::string message = "LifeIsStrange shader marker brightness="
-                                      + std::string(current >= 0.5f ? "100" : "50") + " nits";
+          const std::string marker_mode = current >= 1.5f ? "100 nits" : (current >= 0.5f ? "50 nits" : "off");
+          const std::string message = "LifeIsStrange shader markers=" + marker_mode;
           reshade::log::message(reshade::log::level::info, message.c_str());
         },
-        .is_visible = []() { return shader_marker_validation; },
     },
     new renodx::utils::settings::Setting{
         .key = "LifeIsStrange_06A2ShaderSource",
@@ -1016,6 +1081,34 @@ bool TraceIntermediateDrawBindings(
   return allow_replacement;
 }
 
+void OnInitSwapchainPeakNits(reshade::api::swapchain* swapchain, bool) {
+  if (!dx11_proxy_validation || swapchain == nullptr) return;
+  if (!renodx::utils::device_proxy::IsProxyDevice(swapchain->get_device())) return;
+
+  const auto reported_peak = renodx::utils::swapchain::GetPeakNits(swapchain);
+  if (!reported_peak.has_value() || !std::isfinite(*reported_peak) || *reported_peak <= 0.f) {
+    if (peak_nits_mode < 0.5f && !peak_detection_failure_logged) {
+      peak_detection_failure_logged = true;
+      std::string message = "LifeIsStrange display peak auto unavailable; retaining configured fallback=";
+      message += std::to_string(shader_injection.peak_white_nits);
+      message += " nits";
+      reshade::log::message(reshade::log::level::warning, message.c_str());
+    }
+    return;
+  }
+
+  const float peak_nits = std::clamp(std::round(*reported_peak), 48.f, 10000.f);
+  if (peak_nits == reported_display_peak_nits) return;
+
+  reported_display_peak_nits = peak_nits;
+  ApplyReportedDisplayPeakNits();
+  if (peak_nits_mode < 0.5f) {
+    std::string message = "LifeIsStrange display peak auto=" + std::to_string(peak_nits);
+    message += " nits (DXGI output MaxLuminance)";
+    reshade::log::message(reshade::log::level::info, message.c_str());
+  }
+}
+
 void LoadDX11ProxySetting() {
   int enabled = 1;
   reshade::get_config_value(
@@ -1101,15 +1194,6 @@ void LoadDX11ProxySetting() {
       "LifeIsStrange_Force512White",
       enabled);
   force_512_white_validation = enabled != 0;
-
-  enabled = 0;
-  reshade::get_config_value(
-      nullptr,
-      renodx::utils::settings::global_name.c_str(),
-      "LifeIsStrange_EnableShaderMarkers",
-      enabled);
-  shader_marker_validation = enabled != 0;
-
 
   enabled = 0;
   reshade::get_config_value(
@@ -1216,9 +1300,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       shader_injection.lifeisstrange_force_fc2a_white = force_fc2a_white_validation ? 1.f : 0.f;
       shader_injection.lifeisstrange_bypass_06a2_lut = bypass_06a2_lut_validation ? 1.f : 0.f;
       UpdateLifeIsStrangeProbeFlags();
-      shader_injection.lifeisstrange_hdr_curve_method = 0.f;
+      shader_injection.lifeisstrange_hdr_curve_method = 2.f;
       shader_injection.lifeisstrange_hdr_pipeline = hdr_pipeline_enabled ? 1.f : 0.f;
       shader_injection.swap_chain_output_preset = dx11_proxy_validation ? 1.f : 0.f;
+      reshade::register_event<reshade::addon_event::init_swapchain>(OnInitSwapchainPeakNits);
       if (readback_validation) {
         reshade::register_event<reshade::addon_event::init_command_queue>(lifeisstrange::readback::OnInitCommandQueue);
         reshade::register_event<reshade::addon_event::destroy_command_queue>(lifeisstrange::readback::OnDestroyCommandQueue);
@@ -1346,6 +1431,17 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
               });
         }
 
+        // Keep per-shader selectors intact while giving Vanilla one master gate
+        // over every game shader in this addon's replacement table.
+        for (auto& [shader_hash, shader] : custom_shaders) {
+          (void)shader_hash;
+          const auto shader_on_replace = shader.on_replace;
+          shader.on_replace = [shader_on_replace](reshade::api::command_list* cmd_list) {
+            const bool callback_allows_replacement = shader_on_replace == nullptr || shader_on_replace(cmd_list);
+            return ShouldReplaceLifeIsStrangeShaders() && callback_allows_replacement;
+          };
+        }
+
         // Life Is Strange must own the shared resource-upgrade event stream.
         renodx::utils::resource::upgrade::force_event_handler = true;
         if (dx11_proxy_validation && intermediate_upgrade_validation && !ab_disable_intermediate_upgrade) {
@@ -1427,8 +1523,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         build_log += force_fc2a_white_validation ? "1" : "0";
         build_log += ", force_512_white=";
         build_log += force_512_white_validation ? "1" : "0";
-        build_log += ", shader_markers=";
-        build_log += shader_marker_validation ? "1" : "0";
         build_log += ", bypass_06A2_lut=";
         build_log += bypass_06a2_lut_validation ? "1" : "0";
         build_log += ", ab_disable_intermediate_upgrade=";
@@ -1613,6 +1707,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
       break;
     case DLL_PROCESS_DETACH:
+      reshade::unregister_event<reshade::addon_event::init_swapchain>(OnInitSwapchainPeakNits);
       reshade::unregister_event<reshade::addon_event::push_descriptors>(TraceIntermediatePushDescriptors);
       reshade::unregister_event<reshade::addon_event::destroy_command_list>(ClearIntermediateSrvTrace);
       {
@@ -1630,14 +1725,26 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     const bool raw_4fa5_scene_probe = fourfa5_output_mode >= 1.5f;
-    // Reapply the packed c9.x flags after the settings loader reads the persisted mode.
+    // Reapply probe flags after the settings loader reads the preset values.
     UpdateLifeIsStrangeProbeFlags();
     std::string shader_marker_log = "LifeIsStrange shader markers=";
-    shader_marker_log += shader_marker_validation ? "enabled" : "disabled";
-    shader_marker_log += ", brightness=";
-    shader_marker_log += shader_marker_brightness >= 0.5f ? "100" : "50";
-    shader_marker_log += " nits";
+    shader_marker_log += shader_marker_brightness >= 1.5f ? "100 nits" : (shader_marker_brightness >= 0.5f ? "50 nits" : "off");
     reshade::log::message(reshade::log::level::info, shader_marker_log.c_str());
+    std::string tone_mapping_mode_log = "LifeIsStrange tone mapping mode=";
+    tone_mapping_mode_log += lifeisstrange_tonemapping_mode >= 0.5f ? "Vanilla+" : "Vanilla";
+    tone_mapping_mode_log += " (shader replacements only; FP16 upgrades and DX11 proxy unchanged)";
+    reshade::log::message(reshade::log::level::info, tone_mapping_mode_log.c_str());
+    std::string peak_source_log = "LifeIsStrange peak brightness source=";
+    peak_source_log += peak_nits_mode < 0.5f ? "Auto (Display)" : "Manual";
+    if (peak_nits_mode < 0.5f && !dx11_proxy_validation) {
+      peak_source_log += "; DX11 proxy disabled, retaining configured fallback=";
+      peak_source_log += std::to_string(shader_injection.peak_white_nits);
+      peak_source_log += " nits";
+      peak_detection_failure_logged = true;
+    } else if (peak_nits_mode < 0.5f) {
+      peak_source_log += "; waiting for DXGI output report";
+    }
+    reshade::log::message(reshade::log::level::info, peak_source_log.c_str());
     std::string tone_map_log = "LifeIsStrange active ToneMapType=";
     tone_map_log += std::to_string(shader_injection.tone_map_type);
     reshade::log::message(reshade::log::level::info, tone_map_log.c_str());
