@@ -19,7 +19,16 @@ float4 main(float4 vpos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
   renodx::draw::Config config = renodx::draw::BuildConfig();
   config.swap_chain_decoding = RENODX_SWAP_CHAIN_DECODING;
   config.swap_chain_decoding_color_space = renodx::color::convert::COLOR_SPACE_BT709;
-  config.swap_chain_scaling_nits = RENODX_GRAPHICS_WHITE_NITS;
+  // Paper white. This is the single knob that decides how bright 100% SDR
+  // white comes out: scaling_nits is the nits value that the composite's 1.0
+  // maps to, so at the 203 default a full white pixel encodes to 203 nits no
+  // matter what the Windows "SDR content brightness" slider is set to. That is
+  // why the mod looks darker than the game without it whenever the slider sits
+  // above 203. Use Tone Mapping -> Game Brightness to raise it until the image
+  // matches the no-addon output.
+  config.swap_chain_scaling_nits = RENODX_DIFFUSE_WHITE_NITS;
+  // Leave the clamp open: the tone mapper upstream already handled the user
+  // peak, and compressing here would apply the rolloff twice.
   config.swap_chain_clamp_nits = 10000.f;
   config.swap_chain_encoding = renodx::draw::ENCODING_PQ;
   config.swap_chain_output_preset = renodx::draw::SWAP_CHAIN_OUTPUT_PRESET_HDR10;
