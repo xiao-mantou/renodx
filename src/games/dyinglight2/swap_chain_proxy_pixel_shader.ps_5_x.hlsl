@@ -3,23 +3,21 @@
 Texture2D t0 : register(t0);
 SamplerState s0 : register(s0);
 
-// Ported from codex/dl2-hdr-next, where this exact configuration was verified
-// against vanilla with a six-way proxy grid.
+// The transfer function of the composite arriving here is not obvious from the
+// code alone: 0x268BAB6D ends with srgb::EncodeSafe, the ui_* writers decode,
+// scale and encode again, and 0xAD085E81 then applies exp2(cb0[0].x * log2).
+// Whether that lands linear or still sRGB-encoded depends on cb0[0].x, so it
+// is exposed as a setting instead of being hardcoded. Getting it wrong shows
+// up as a uniform brightness shift: treating an sRGB-encoded composite as
+// linear over-brightens everything and blows out white UI, decoding a linear
+// composite crushes mid grey (0.18 -> 0.0233).
 //
-// The previous version decoded gamma 2.2 before the PQ encode. The composite
-// arriving here is already linear BT.709: the view upgrade maps the game's
-// r8g8b8a8_unorm_srgb views onto plain FP16 views, so no sRGB transfer is
-// applied on the write, and 0xAD085E81 already ran its exp2(cb0[0].x * log2).
-// Decoding a second time turned mid grey 0.18 into 0.0233, which is why the
-// whole image came out far too dark.
-//
-// Scaling uses DL2's fixed 203-nit reference white, which is a unit conversion
-// and not the runtime Game/UI brightness setting. The clamp is left open
-// because the tone mapper upstream already handled the user peak; clamping
-// again here would compress the finished image twice.
+// Scaling uses DL2's fixed 203-nit reference white, a unit conversion and not
+// the runtime Game/UI brightness setting. The clamp is left open because the
+// tone mapper upstream already handled the user peak.
 float4 main(float4 vpos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
   renodx::draw::Config config = renodx::draw::BuildConfig();
-  config.swap_chain_decoding = renodx::draw::ENCODING_NONE;
+  config.swap_chain_decoding = RENODX_SWAP_CHAIN_DECODING;
   config.swap_chain_decoding_color_space = renodx::color::convert::COLOR_SPACE_BT709;
   config.swap_chain_scaling_nits = RENODX_GRAPHICS_WHITE_NITS;
   config.swap_chain_clamp_nits = 10000.f;
