@@ -14,6 +14,7 @@
 #include <cstring>
 #include <mutex>
 #include <sstream>
+#include <unordered_set>
 
 #include <embed/shaders.h>
 
@@ -773,6 +774,34 @@ void AuditDl2Dx11ColorPath(uint32_t shader_hash, reshade::api::command_list* cmd
   if (cb0 != nullptr) cb0->Release();
 }
 
+// One-shot "is this hash actually present in the running build" probe.
+// Logs the first draw that uses each registered hash together with the active
+// API, so a DX11-only hash list can be separated from a DX12 one without a dump.
+void InstallReplacementHitLogging() {
+  for (auto& [shader_hash, shader] : custom_shaders) {
+    const auto prior_on_draw = shader.on_draw;
+    shader.on_draw = [shader_hash, prior_on_draw](reshade::api::command_list* cmd_list) {
+      if (prior_on_draw != nullptr && !prior_on_draw(cmd_list)) return false;
+
+      static std::mutex hit_mutex;
+      static std::unordered_set<uint32_t> logged_hashes;
+      bool first_hit = false;
+      {
+        const std::scoped_lock lock(hit_mutex);
+        first_hit = logged_hashes.insert(shader_hash).second;
+      }
+      if (!first_hit || cmd_list == nullptr || cmd_list->get_device() == nullptr) return true;
+
+      const auto api = cmd_list->get_device()->get_api();
+      std::stringstream stream;
+      stream << "[RenoDX] DL2 replacement hit: " << PRINT_CRC32(shader_hash)
+             << " api=" << (api == reshade::api::device_api::d3d11 ? "d3d11" : "d3d12");
+      reshade::log::message(reshade::log::level::info, stream.str().c_str());
+      return true;
+    };
+  }
+}
+
 void InstallDl2Dx11ColorPathAudit() {
   constexpr uint32_t audit_shader_hashes[] = {0x3E36DA5B, 0x268BAB6D, 0xAD085E81, 0xBFFC45AC};
   for (const auto shader_hash : audit_shader_hashes) {
@@ -910,6 +939,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     // Keep the DX11 resource-chain diagnostics scoped to the proven color-path
     // shaders plus the separately armed BFFC investigation target.
     InstallDl2Dx11ColorPathAudit();
+    InstallReplacementHitLogging();
   }
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
 
