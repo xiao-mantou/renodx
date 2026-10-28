@@ -41,6 +41,19 @@ void ArmDl2Dx11BffcPathAudit();
 // init, so it needs a game restart to take effect.
 float dl2_enable_resource_upgrades = 1.f;
 
+// Diagnostic switch: 0 loads no custom shaders at all. It is the only way to
+// tell a shader-replacement artifact apart from a swapchain / resource
+// upgrade artifact without rebuilding. Read at attach, needs a restart.
+float dl2_enable_custom_shaders = 1.f;
+
+// Diagnostic switch: logs the first large render targets a device creates, so
+// the real scene-target format is readable from ReShade.log instead of being
+// inferred from the swapchain format.
+float dl2_log_render_targets = 1.f;
+
+std::atomic<uint32_t> dl2_render_target_probe_count = 0;
+constexpr uint32_t DL2_RENDER_TARGET_PROBE_LIMIT = 24;
+
 renodx::utils::settings::Settings settings = {
     new renodx::utils::settings::Setting{
         .key = "ToneMapType",
@@ -178,6 +191,26 @@ renodx::utils::settings::Settings settings = {
         .labels = {"Off", "On"},
     },
     new renodx::utils::settings::Setting{
+        .key = "Dx11CustomShaders",
+        .binding = &dl2_enable_custom_shaders,
+        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+        .default_value = 1.f,
+        .label = "Custom Shaders",
+        .section = "Diagnostics",
+        .tooltip = "Needs a restart. Off loads zero shader replacements, so the image is the game's own output through the RenoDX swapchain. Use it to prove whether a visual artifact comes from a replaced shader or from the swapchain / resource upgrade path.",
+        .labels = {"Off", "On"},
+    },
+    new renodx::utils::settings::Setting{
+        .key = "Dx11LogRenderTargets",
+        .binding = &dl2_log_render_targets,
+        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+        .default_value = 1.f,
+        .label = "Log Render Targets",
+        .section = "Diagnostics",
+        .tooltip = "Logs the first 24 large DX11 render targets with their real format, so the scene-target format can be verified against the resource upgrade list.",
+        .labels = {"Off", "On"},
+    },
+    new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture DX11 Color Path",
         .section = "Diagnostics",
@@ -233,6 +266,10 @@ void OnInitDevice(reshade::api::device* device) {
 void ConfigureDl2Dx11ResourceUpgrades(reshade::api::device* device) {
   if (device == nullptr || device->get_api() != reshade::api::device_api::d3d11) return;
 
+  // Fresh budget per device: DL2 creates and destroys a dummy-window device
+  // before the real one, and that one must not eat the probe's log budget.
+  dl2_render_target_probe_count.store(0, std::memory_order_relaxed);
+
   if (dl2_enable_resource_upgrades < 0.5f) {
     std::vector<renodx::utils::resource::ResourceUpgradeInfo> no_upgrades;
     renodx::utils::resource::upgrade::SetUpgradeInfos(device, no_upgrades);
@@ -259,6 +296,37 @@ void ConfigureDl2Dx11ResourceUpgrades(reshade::api::device* device) {
   std::stringstream stream;
   stream << "[RenoDX] DL2 DX11 resource upgrades: size-independent matching for "
          << relaxed_entries << "/" << dx11_resource_upgrade_infos.size() << " RGBA8 targets.";
+  reshade::log::message(reshade::log::level::info, stream.str().c_str());
+}
+
+// One-shot probe. The upgrade list is written against r8g8b8a8_* but nothing
+// ever matched it (ReShade.log has zero "OnCreateResource(Upgrading" lines),
+// so the scene target is created with some other format. Log the real ones
+// instead of guessing.
+void OnInitDl2RenderTargetProbe(
+    reshade::api::device* device,
+    const reshade::api::resource_desc& desc,
+    const reshade::api::subresource_data* /*initial_data*/,
+    reshade::api::resource_usage /*initial_state*/,
+    reshade::api::resource resource) {
+  if (dl2_log_render_targets < 0.5f) return;
+  if (device == nullptr || device->get_api() != reshade::api::device_api::d3d11) return;
+  if (desc.type != reshade::api::resource_type::texture_2d) return;
+  if (!renodx::utils::bitwise::HasAnyFlag(desc.usage, reshade::api::resource_usage::render_target)) return;
+  if (desc.texture.width < 1024 || desc.texture.height < 512) return;
+
+  const auto index = dl2_render_target_probe_count.fetch_add(1);
+  if (index >= DL2_RENDER_TARGET_PROBE_LIMIT) return;
+
+  std::stringstream stream;
+  stream << "[RenoDX] DL2 render target #" << index
+         << ": format=" << desc.texture.format
+         << ", " << desc.texture.width << "x" << desc.texture.height
+         << ", levels=" << desc.texture.levels
+         << ", samples=" << desc.texture.samples
+         << ", usage=0x" << std::hex << static_cast<uint32_t>(desc.usage) << std::dec
+         << ", flags=0x" << std::hex << static_cast<uint32_t>(desc.flags) << std::dec
+         << ", resource=0x" << std::hex << resource.handle << std::dec;
   reshade::log::message(reshade::log::level::info, stream.str().c_str());
 }
 
@@ -961,6 +1029,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
   if (fdw_reason == DLL_PROCESS_DETACH) {
     reshade::unregister_event<reshade::addon_event::init_device>(ConfigureDl2Dx11ResourceUpgrades);
+    reshade::unregister_event<reshade::addon_event::init_resource>(OnInitDl2RenderTargetProbe);
     reshade::unregister_event<reshade::addon_event::destroy_swapchain>(OnDestroyDl2Dx11AuditSwapchain);
   }
     renodx::mods::swapchain::v2::Use(fdw_reason, &shader_injection);
@@ -968,6 +1037,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     // Register after swapchain_v2 so its per-device upgrade list is installed
     // first and this DX11-only override runs afterwards.
     reshade::register_event<reshade::addon_event::init_device>(ConfigureDl2Dx11ResourceUpgrades);
+    reshade::register_event<reshade::addon_event::init_resource>(OnInitDl2RenderTargetProbe);
     reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroyDl2Dx11AuditSwapchain);
   }
   if (fdw_reason == DLL_PROCESS_ATTACH) {
@@ -976,7 +1046,20 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     InstallDl2Dx11ColorPathAudit();
     InstallReplacementHitLogging();
   }
-  renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
+
+  static renodx::mods::shader::CustomShaders no_custom_shaders = {};
+  const bool use_custom_shaders = dl2_enable_custom_shaders >= 0.5f;
+  if (fdw_reason == DLL_PROCESS_ATTACH) {
+    reshade::log::message(
+        reshade::log::level::info,
+        use_custom_shaders
+            ? "[RenoDX] DL2 custom shader replacements: enabled."
+            : "[RenoDX] DL2 custom shader replacements: disabled by setting.");
+  }
+  renodx::mods::shader::Use(
+      fdw_reason,
+      use_custom_shaders ? custom_shaders : no_custom_shaders,
+      &shader_injection);
 
   return TRUE;
 }
