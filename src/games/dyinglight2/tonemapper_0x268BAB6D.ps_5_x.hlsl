@@ -89,5 +89,10 @@ void main(
   // letterbox / pillarbox mask
   bool outside = (abs(v1.w) > LetterboxHalfHeight) || (abs(v1.z) > LetterboxHalfWidth);
   o0.xyz = (LetterboxEnable > 0.0) ? (outside ? 0.0 : col.xyz) : col.xyz;
-  o0.xyz = renodx::color::srgb::EncodeSafe(o0.xyz);
+  // No encode here. The swapchain upgrade rewrites this view from
+  // r8g8b8a8_unorm_srgb to r10g10b10a2_unorm, which is not an sRGB format, so
+  // the hardware no longer performs the encode vanilla relied on. Writing
+  // linear keeps this pass consistent with the vanilla shader it replaces,
+  // which also writes linear, and lets the swapchain proxy use one decoding
+  // setting regardless of whether the replacements are enabled.
 }

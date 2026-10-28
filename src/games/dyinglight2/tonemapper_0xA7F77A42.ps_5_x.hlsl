@@ -106,6 +106,8 @@ void main(
   // letterbox / pillarbox mask
   bool outside = (abs(v2.w) > LetterboxHalfHeight) || (abs(v2.z) > LetterboxHalfWidth);
   o0.xyz = (LetterboxEnable > 0.0) ? (outside ? 0.0 : col.xyz) : col.xyz;
-  o0.xyz = renodx::color::srgb::EncodeSafe(o0.xyz);
+  // Linear out, matching tonemapper_0x268BAB6D: the swapchain upgrade turns
+  // this view into r10g10b10a2_unorm, which is not an sRGB format, so nothing
+  // downstream will undo an encode performed here.
   o0.w = 1;
 }

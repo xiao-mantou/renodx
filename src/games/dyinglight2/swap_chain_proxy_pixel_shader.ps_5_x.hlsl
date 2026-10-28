@@ -3,14 +3,14 @@
 Texture2D t0 : register(t0);
 SamplerState s0 : register(s0);
 
-// The transfer function of the composite arriving here is not obvious from the
-// code alone: 0x268BAB6D ends with srgb::EncodeSafe, the ui_* writers decode,
-// scale and encode again, and 0xAD085E81 then applies exp2(cb0[0].x * log2).
-// With cb0[0].x == 1 that pow is identity, so the composite stays sRGB-encoded,
-// which is why the default is sRGB and not Linear. Getting it wrong shows up as
-// a uniform brightness shift: treating an sRGB-encoded composite as linear
-// lifts shadows about 4x and washes the image out, decoding a linear composite
-// crushes mid grey (0.18 -> 0.0233).
+// The composite arriving here is LINEAR. That is not what the vanilla chain
+// produced on its own: the back buffer view is requested as
+// r8g8b8a8_unorm_srgb, and the swapchain upgrade rewrites it to
+// r10g10b10a2_unorm, which is not an sRGB format, so the hardware encode the
+// game relied on no longer happens. Every custom shader in this folder
+// therefore writes linear too, so one decoding setting covers both the vanilla
+// shaders and the replacements. Decoding sRGB here decodes a second time and
+// crushes mid grey from 0.18 to 0.023, which reads as a near black image.
 //
 // Paper white. swap_chain_scaling_nits is the nits value that the composite's
 // 1.0 maps to, so at the 203 default a full white pixel encodes to exactly 203
