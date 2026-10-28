@@ -51,6 +51,11 @@ float dl2_enable_custom_shaders = 1.f;
 // inferred from the swapchain format.
 float dl2_log_render_targets = 1.f;
 
+// Diagnostic switch: 0 keeps every replacement, 1..4 loads everything except
+// one of the four core color-path shaders, so a broken step can be isolated
+// without reverting files. Read at attach, needs a restart.
+float dl2_disable_core_shader = 0.f;
+
 std::atomic<uint32_t> dl2_render_target_probe_count = 0;
 constexpr uint32_t DL2_RENDER_TARGET_PROBE_LIMIT = 24;
 
@@ -219,6 +224,16 @@ renodx::utils::settings::Settings settings = {
         .section = "Diagnostics",
         .tooltip = "Logs the first 24 large DX11 render targets with their real format, so the scene-target format can be verified against the resource upgrade list.",
         .labels = {"Off", "On"},
+    },
+    new renodx::utils::settings::Setting{
+        .key = "Dx11DisableCoreShader",
+        .binding = &dl2_disable_core_shader,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Disable Core Shader",
+        .section = "Diagnostics",
+        .tooltip = "Needs a restart. Loads every replacement except the selected one. Use it to find which step of the color chain breaks brightness instead of reverting files.",
+        .labels = {"None", "0x3E36DA5B ToneMap", "0x268BAB6D LUT", "0xAD085E81 Gamma", "0xBFFC45AC Blit"},
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
@@ -1057,19 +1072,43 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     InstallReplacementHitLogging();
   }
 
+  static constexpr uint32_t dl2_core_shader_hashes[] = {
+      0x3E36DA5B,  // scene tone mapper
+      0x268BAB6D,  // LUT / grade
+      0xAD085E81,  // gamma (pow)
+      0xBFFC45AC,  // blit
+  };
   static renodx::mods::shader::CustomShaders no_custom_shaders = {};
+  static renodx::mods::shader::CustomShaders filtered_custom_shaders = {};
+
   const bool use_custom_shaders = dl2_enable_custom_shaders >= 0.5f;
-  if (fdw_reason == DLL_PROCESS_ATTACH) {
-    reshade::log::message(
-        reshade::log::level::info,
-        use_custom_shaders
-            ? "[RenoDX] DL2 custom shader replacements: enabled."
-            : "[RenoDX] DL2 custom shader replacements: disabled by setting.");
+  const auto disabled_index = static_cast<std::size_t>(dl2_disable_core_shader + 0.5f);
+  const bool has_disabled_shader = disabled_index > 0
+                                   && disabled_index <= (sizeof(dl2_core_shader_hashes) / sizeof(dl2_core_shader_hashes[0]));
+  if (has_disabled_shader) {
+    filtered_custom_shaders = custom_shaders;
+    filtered_custom_shaders.erase(dl2_core_shader_hashes[disabled_index - 1]);
   }
-  renodx::mods::shader::Use(
-      fdw_reason,
-      use_custom_shaders ? custom_shaders : no_custom_shaders,
-      &shader_injection);
+
+  if (fdw_reason == DLL_PROCESS_ATTACH) {
+    std::stringstream stream;
+    stream << "[RenoDX] DL2 custom shader replacements: ";
+    if (!use_custom_shaders) {
+      stream << "disabled by setting.";
+    } else if (has_disabled_shader) {
+      stream << "all except 0x" << std::hex << dl2_core_shader_hashes[disabled_index - 1] << std::dec << ".";
+    } else {
+      stream << "enabled.";
+    }
+    reshade::log::message(reshade::log::level::info, stream.str().c_str());
+  }
+
+  const auto& active_custom_shaders = !use_custom_shaders
+                                          ? no_custom_shaders
+                                      : has_disabled_shader
+                                          ? filtered_custom_shaders
+                                          : custom_shaders;
+  renodx::mods::shader::Use(fdw_reason, active_custom_shaders, &shader_injection);
 
   return TRUE;
 }
