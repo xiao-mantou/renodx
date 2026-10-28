@@ -88,7 +88,7 @@ renodx::utils::settings::Settings settings = {
         .default_value = 203.f,
         .label = "Game Brightness",
         .section = "Tone Mapping",
-        .tooltip = "Sets the value of 100% white in nits",
+        .tooltip = "Paper white: the nits that the composite's 1.0 maps to on the HDR10 swapchain, and the anchor of the tone map shoulder. Vanilla looks brighter than this mod because vanilla writes SDR and Windows scales it by the 'SDR content brightness' slider, while this writes PQ directly. To match vanilla, set this near that slider's nits. Raising it also lowers the peak/game ratio, so highlights get flatter: 203 keeps ~4.9x headroom to a 1000 nit peak, 500 only keeps 2x.",
         .min = 48.f,
         .max = 500.f,
     },
@@ -106,10 +106,10 @@ renodx::utils::settings::Settings settings = {
         .key = "SwapChainDecoding",
         .binding = &shader_injection.swap_chain_decoding,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-        .default_value = 0.f,
+        .default_value = 1.f,
         .label = "Final Decode",
         .section = "Tone Mapping",
-        .tooltip = "Transfer function of the composite handed to the swapchain proxy. Linear is correct when 0xAD085E81 already linearised it; pick sRGB or Gamma 2.2 if the whole image looks washed out or the UI blows out. Live, no restart.",
+        .tooltip = "Transfer function of the composite handed to the swapchain proxy. sRGB is the correct default: the game's back buffer is r8g8b8a8_srgb and 0x268BAB6D ends with srgb::EncodeSafe, so the composite arrives encoded. Linear treats those encoded values as light, which lifts shadows about 4x and looks washed out; Gamma 2.2/2.4 only if you replaced the chain with something else. Live, no restart.",
         .labels = {"Linear", "sRGB", "Gamma 2.2", "Gamma 2.4"},
     },
     new renodx::utils::settings::Setting{
@@ -264,7 +264,7 @@ void OnPresetOff() {
       {"ToneMapPeakNits", 203.f},
       {"ToneMapGameNits", 203.f},
       {"ToneMapUINits", 203.f},
-      {"SwapChainDecoding", 0.f},
+      {"SwapChainDecoding", 1.f},
       {"ColorGradeExposure", 1.f},
       {"ColorGradeHighlights", 50.f},
       {"ColorGradeShadows", 50.f},
@@ -1100,6 +1100,24 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     } else {
       stream << "enabled.";
     }
+    reshade::log::message(reshade::log::level::info, stream.str().c_str());
+  }
+
+  if (fdw_reason == DLL_PROCESS_ATTACH) {
+    // Paper white is the single most confusing thing about this port: the mod
+    // writes PQ directly while vanilla writes SDR and lets Windows scale it,
+    // so a fixed 203 nit white is legitimately dimmer than the game looks
+    // without the addon. Spell the relationship out in the log instead of
+    // letting it read as a brightness regression.
+    std::stringstream stream;
+    const float paper_white = shader_injection.diffuse_white_nits > 0.f ? shader_injection.diffuse_white_nits : 203.f;
+    stream << "[RenoDX] DL2 paper white: composite 1.0 -> "
+           << paper_white
+           << " nits, peak -> " << shader_injection.peak_white_nits
+           << " nits (headroom " << (shader_injection.peak_white_nits / paper_white)
+           << "x). Vanilla is SDR and Windows multiplies it by the 'SDR content brightness' slider, so it is not a 203 nit reference. "
+              "If the image reads darker than vanilla, raise Tone Mapping -> Game Brightness toward that slider's nits; "
+              "Windows HDR must be enabled or the PQ output will look washed out.";
     reshade::log::message(reshade::log::level::info, stream.str().c_str());
   }
 
