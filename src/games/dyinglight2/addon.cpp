@@ -279,15 +279,14 @@ void ConfigureDl2Dx11ResourceUpgrades(reshade::api::device* device) {
     return;
   }
 
-  // The swapchain ends up at the native 2560x1440 after the game's ResizeBuffers
-  // call, so exact-size matching can work, but any non-native internal
-  // resolution (DLSS, resolution scale) misses it and the scene target stays
-  // 8-bit. 3d2dd59b removed this override while matching the RAR baseline,
-  // which took that path with it. Relax the size check for the two RGBA8
-  // render-target entries on DX11 only; DX12 keeps the exact TGH matching.
+  // cf8c37ce relaxed ONLY the first entry (r8g8b8a8_typeless). Relaxing the
+  // second one (r8g8b8a8_unorm) as well made it match every RGBA8 UNORM render
+  // target at any size, including the deferred albedo/normal targets, which
+  // then got an FP16 clone whose contents the lighting resolve never saw. That
+  // is the "white untextured model" regression. Keep it to entry 0.
   auto dx11_resource_upgrade_infos = renodx::mods::swapchain::v2::resource_upgrade_infos;
   if (dx11_resource_upgrade_infos.empty()) return;
-  const auto relaxed_entries = std::min<size_t>(dx11_resource_upgrade_infos.size(), 2);
+  const auto relaxed_entries = std::min<size_t>(dx11_resource_upgrade_infos.size(), 1);
   for (size_t i = 0; i < relaxed_entries; ++i) {
     dx11_resource_upgrade_infos[i].ignore_size = true;
   }
@@ -1007,11 +1006,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         .new_format = reshade::api::format::r16g16b16a16_float,
         .ignore_size = false,
         .use_resource_view_cloning = true,
-        // Was true (RAR baseline). Hot swap redirects the game's own view to
-        // the FP16 clone instead of cloning it, which lets a pass that reads
-        // and writes the same target see alternating contents. Clone instead,
-        // matching the two entries above.
-        .use_resource_view_hot_swap = false,
+        // Back to the cf8c37ce value. Hot swap is what keeps the game's own
+        // sRGB view pointing at the FP16 clone; with cloning instead, the final
+        // composite the swapchain proxy samples came out as a white, untextured
+        // image.
+        .use_resource_view_hot_swap = true,
                 .aspect_ratio = renodx::mods::swapchain::v2::ResourceUpgradeInfo::ANY,
         .usage_include = reshade::api::resource_usage::render_target,
             });
