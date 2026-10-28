@@ -163,24 +163,6 @@ renodx::utils::settings::Settings settings = {
         .parse = [](float value) { return value * 0.02f; },
     },
     new renodx::utils::settings::Setting{
-        .key = "FxAutoExposure",
-        .binding = &shader_injection.custom_auto_exposure,
-        .default_value = 0.f,
-        .label = "Auto Exposure",
-        .section = "Effects",
-        .max = 100.f,
-        .parse = [](float value) { return value * 0.01f; },
-    },
-    new renodx::utils::settings::Setting{
-        .key = "FxLensFlare",
-        .binding = &shader_injection.custom_lens_flare,
-        .default_value = 100.f,
-        .label = "Lens Flare",
-        .section = "Effects",
-        .max = 100.f,
-        .parse = [](float value) { return value * 0.01f; },
-    },
-    new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Capture DX11 Color Path",
         .section = "Diagnostics",
@@ -217,8 +199,6 @@ void OnPresetOff() {
       {"ColorGradeHighlightSaturation", 50.f},
       {"ColorGradeBlowout", 0.f},
       {"ColorGradeFlare", 0.f},
-      {"FxAutoExposure", 100.f},
-      {"FxLensFlare", 100.f},
   });
 }
 
@@ -233,6 +213,31 @@ void OnInitDevice(reshade::api::device* device) {
     renodx::mods::shader::expected_constant_buffer_space = 50;
     renodx::mods::swapchain::v2::expected_constant_buffer_space = 50;
   }
+}
+
+void ConfigureDl2Dx11ResourceUpgrades(reshade::api::device* device) {
+  if (device == nullptr || device->get_api() != reshade::api::device_api::d3d11) return;
+
+  // ReShade.log shows the swapchain is 1920x1080 while the game renders the
+  // scene at 2560x1440 and downsamples on present. With the RAR/TGH exact-size
+  // matching the scene target therefore never matched the back buffer, no
+  // create-time upgrade was applied at all (0 hits on
+  // "OnInitResource(applied create-time upgrade"), and the
+  // 0x3E36DA5B -> 0x268BAB6D chain ran through an 8-bit view.
+  // Relax the size check for the two RGBA8 render-target entries on DX11 only;
+  // the sRGB entry keeps its exact-size matching and DX12 is untouched.
+  auto dx11_resource_upgrade_infos = renodx::mods::swapchain::v2::resource_upgrade_infos;
+  if (dx11_resource_upgrade_infos.empty()) return;
+  const auto relaxed_entries = std::min<size_t>(dx11_resource_upgrade_infos.size(), 2);
+  for (size_t i = 0; i < relaxed_entries; ++i) {
+    dx11_resource_upgrade_infos[i].ignore_size = true;
+  }
+  renodx::utils::resource::upgrade::SetUpgradeInfos(device, dx11_resource_upgrade_infos);
+
+  std::stringstream stream;
+  stream << "[RenoDX] DL2 DX11 resource upgrades: size-independent matching for "
+         << relaxed_entries << "/" << dx11_resource_upgrade_infos.size() << " RGBA8 targets.";
+  reshade::log::message(reshade::log::level::info, stream.str().c_str());
 }
 
 struct Dl2Dx11AuditBinding {
@@ -929,10 +934,14 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
   if (fdw_reason == DLL_PROCESS_DETACH) {
+    reshade::unregister_event<reshade::addon_event::init_device>(ConfigureDl2Dx11ResourceUpgrades);
     reshade::unregister_event<reshade::addon_event::destroy_swapchain>(OnDestroyDl2Dx11AuditSwapchain);
   }
     renodx::mods::swapchain::v2::Use(fdw_reason, &shader_injection);
   if (fdw_reason == DLL_PROCESS_ATTACH) {
+    // Register after swapchain_v2 so its per-device upgrade list is installed
+    // first and this DX11-only override runs afterwards.
+    reshade::register_event<reshade::addon_event::init_device>(ConfigureDl2Dx11ResourceUpgrades);
     reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroyDl2Dx11AuditSwapchain);
   }
   if (fdw_reason == DLL_PROCESS_ATTACH) {

@@ -16,9 +16,6 @@ struct ShaderInjectData {
   float tone_map_highlight_saturation;
   float tone_map_blowout;
   float tone_map_flare;
-
-  float custom_auto_exposure;
-  float custom_lens_flare;
 };
 
 #ifndef __cplusplus
@@ -42,9 +39,6 @@ cbuffer shader_injection : register(b13) {
 #define RENODX_TONE_MAP_HIGHLIGHT_SATURATION   shader_injection.tone_map_highlight_saturation
 #define RENODX_TONE_MAP_BLOWOUT                shader_injection.tone_map_blowout
 #define RENODX_TONE_MAP_FLARE                  shader_injection.tone_map_flare
-
-#define CUSTOM_AUTO_EXPOSURE                   shader_injection.custom_auto_exposure
-#define CUSTOM_LENS_FLARE                      shader_injection.custom_lens_flare
 
 #include "../../shaders/renodx.hlsl"
 
