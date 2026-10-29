@@ -57,7 +57,12 @@ void main(
   o0.w = source.w;
 
   if (RENODX_TONE_MAP_TYPE == 0.f) {
-    o0.xyz = VanillaToneMap(exposed);
+    // Vanilla ends with saturate(r1 / r0). Keeping the clamp matters: the fit
+    // asymptotes to cb0[0].x / cb0[0].z (~1.34 with the shipped constants), so
+    // without it this pass hands values above 1.0 to the LUT below, which
+    // samples outside its 0..1 domain and produces a different grade than
+    // vanilla for exactly the brightest pixels.
+    o0.xyz = saturate(VanillaToneMap(exposed));
   } else {
     o0.xyz = VanillaToneMapExtended(exposed);
   }

@@ -22,9 +22,15 @@ void main(
   const float alpha = v1.w * dot(texture_mask.yx, cb0[0].zw);
   const float mask = t1.Sample(s1_s, v2.zw).x;
   o0.rgb = v1.rgb;
-  o0.xyz = renodx::color::gamma::DecodeSafe(o0.xyz, 2.2f);
+  // The composite is linear at this point (0x268BAB6D ends linear), and the
+  // swapchain upgrade to r10g10b10a2_unorm stops the hardware from encoding on
+  // write, so the buffer the UI blends into holds linear light. A gamma round
+  // trip is therefore both unnecessary and wrong: decode -> scale -> encode
+  // collapses to a gain of (ui/game)^2.2, which over-drives the UI slider by a
+  // power of 2.2 and is only identity when the two nits values are equal.
+  // A plain linear gain makes the slider mean what it says and keeps the UI
+  // and the scene sharing a single decode at the swapchain.
   o0.xyz *= RENODX_GRAPHICS_WHITE_NITS / RENODX_DIFFUSE_WHITE_NITS;
-  o0.xyz = renodx::color::gamma::EncodeSafe(o0.xyz, 2.2f);
 
   o0.a = alpha * mask;
 }

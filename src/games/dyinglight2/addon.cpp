@@ -64,12 +64,12 @@ renodx::utils::settings::Settings settings = {
         .key = "ToneMapType",
         .binding = &shader_injection.tone_map_type,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-        .default_value = 1.f,
+        .default_value = 0.f,
         .can_reset = true,
         .label = "Tone Mapper",
         .section = "Tone Mapping",
-        .tooltip = "Sets the tone mapper type",
-        .labels = {"Vanilla", "Vanilla+"},
+        .tooltip = "Vanilla keeps the game's own curve, including its saturate. Vanilla+ replaces it with an unbounded extended curve and expands to Peak/Game (4.9x at 203/1000), which needs a float container to survive. This DX11 chain writes every pass after 0x3E into a 10-bit UNORM target, so anything above 1.0 is clipped on write and Vanilla+ shows up as flat white highlights. Leave this on Vanilla until the 0x268 intermediate and the back buffer are upgraded to FP16.",
+        .labels = {"Vanilla", "Vanilla+ (needs FP16)"},
     },
     new renodx::utils::settings::Setting{
         .key = "ToneMapPeakNits",
@@ -98,7 +98,7 @@ renodx::utils::settings::Settings settings = {
         .default_value = 203.f,
         .label = "UI Brightness",
         .section = "Tone Mapping",
-        .tooltip = "Sets the brightness of UI and HUD elements in nits",
+        .tooltip = "Nits that 100% UI white should reach. The ui_* shaders apply it as a plain linear gain of UI/Game, because the UI is blended into the same linear buffer the scene uses, so there is no separate decode to apply. Keep it equal to Game Brightness unless the HUD reads too dim next to the scene.",
         .min = 48.f,
         .max = 500.f,
     },
@@ -894,6 +894,58 @@ void AuditDl2Dx11ColorPath(uint32_t shader_hash, reshade::api::command_list* cmd
   if (cb0 != nullptr) cb0->Release();
 }
 
+// The final 0xAD085E81 draw is pow(color, cb0[0].x). Everything the swapchain
+// proxy sees has been through that exponent, so if the game's own gamma control
+// moves it away from 1.0 the container holds pow(linear, e) and no fixed decode
+// setting can be right. D3D11 DEFAULT constant buffers are not readable from the
+// addon, so the value is taken from the CPU-side upload the game already does.
+// Observers stay registered only until one value has been logged.
+// Returns true while the lookup should still be retried on a later frame.
+bool TryAppendDl2Dx11AdConstant(ID3D11DeviceContext* context, std::stringstream* stream) {
+  if (context == nullptr || stream == nullptr) return false;
+
+  constexpr uint32_t AD_CONSTANT_ATTEMPT_LIMIT = 30;
+  static std::atomic_bool ad_constant_logged = false;
+  static std::atomic<uint32_t> ad_constant_attempts = 0;
+  if (ad_constant_logged.load(std::memory_order_acquire)) return false;
+  if (ad_constant_attempts.fetch_add(1, std::memory_order_acq_rel) >= AD_CONSTANT_ATTEMPT_LIMIT) {
+    UnregisterDl2Dx11ConstantObservers();
+    return false;
+  }
+
+  RegisterDl2Dx11ConstantObservers();
+
+  ID3D11Buffer* cb0 = nullptr;
+  context->PSGetConstantBuffers(0, 1, &cb0);
+  if (cb0 == nullptr) return true;
+
+  D3D11_BUFFER_DESC cb0_desc = {};
+  cb0->GetDesc(&cb0_desc);
+  const auto cb0_handle = reinterpret_cast<uint64_t>(cb0);
+  cb0->Release();
+
+  float cb0_x = 0.f;
+  bool found = false;
+  {
+    const auto generation = dl2_dx11_audit_generation.load(std::memory_order_acquire);
+    const std::scoped_lock lock(dl2_dx11_constant_observer_mutex);
+    for (const auto& sample : dl2_dx11_constant_samples) {
+      if (!sample.valid || sample.resource != cb0_handle || sample.generation != generation) continue;
+      std::memcpy(&cb0_x, sample.bytes.data(), sizeof(cb0_x));
+      found = true;
+      break;
+    }
+  }
+  if (!found) return true;  // Retried on the next frame; the upload may not be cached yet.
+
+  *stream << " cb0_bytes=" << cb0_desc.ByteWidth
+          << " cb0_x=" << cb0_x
+          << " ad_is_passthrough=" << ((cb0_x > 0.9999f && cb0_x < 1.0001f) ? 1 : 0);
+  ad_constant_logged.store(true, std::memory_order_release);
+  UnregisterDl2Dx11ConstantObservers();
+  return false;
+}
+
 // One-shot "is this hash actually present in the running build" probe.
 // Logs the first draw that uses each registered hash together with the active
 // API, so a DX11-only hash list can be separated from a DX12 one without a dump.
@@ -916,7 +968,40 @@ void InstallReplacementHitLogging() {
       std::stringstream stream;
       stream << "[RenoDX] DL2 replacement hit: " << PRINT_CRC32(shader_hash)
              << " api=" << (api == reshade::api::device_api::d3d11 ? "d3d11" : "d3d12");
+
+      // Record the formats each replaced pass actually binds. An _SRGB render
+      // target encodes on write and an _SRGB shader resource decodes on sample,
+      // so these four lines say whether a pass adds an encode the shader did not
+      // ask for, and whether 0xAD is a real pass-through into the back buffer.
+      // Guessing this from the decompiled source is what cost the last few
+      // builds, and it is free to capture once per hash.
+      bool ad_constant_pending = false;
+      if (api == reshade::api::device_api::d3d11) {
+        auto* context = reinterpret_cast<ID3D11DeviceContext*>(cmd_list->get_native());
+        if (context != nullptr) {
+          ID3D11ShaderResourceView* srvs[2] = {};
+          ID3D11RenderTargetView* rtv = nullptr;
+          context->PSGetShaderResources(0, 2, srvs);
+          context->OMGetRenderTargets(1, &rtv, nullptr);
+          LogDl2Dx11AuditBinding(&stream, "t0", DescribeDl2Dx11Srv(srvs[0]));
+          LogDl2Dx11AuditBinding(&stream, "t1", DescribeDl2Dx11Srv(srvs[1]));
+          LogDl2Dx11AuditBinding(&stream, "rtv0", DescribeDl2Dx11Rtv(rtv));
+          if (srvs[0] != nullptr) srvs[0]->Release();
+          if (srvs[1] != nullptr) srvs[1]->Release();
+          if (rtv != nullptr) rtv->Release();
+
+          if (shader_hash == 0xAD085E81) {
+            ad_constant_pending = TryAppendDl2Dx11AdConstant(context, &stream);
+          }
+        }
+      }
+
       reshade::log::message(reshade::log::level::info, stream.str().c_str());
+      if (ad_constant_pending) {
+        // Let the next frame retry the constant lookup instead of losing it.
+        const std::scoped_lock lock(hit_mutex);
+        logged_hashes.erase(shader_hash);
+      }
       return true;
     };
   }
