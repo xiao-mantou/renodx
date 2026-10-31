@@ -44,9 +44,10 @@ renodx::utils::settings::Settings settings = {
         .default_value = 1.f,
         .label = "Shadow Desaturation",
         .section = "HDR",
-        .tooltip = "Neutralises the green cast the LUT adds below ~10 nits\n"
-                   "(R/G = B/G = 0.79 at 1 nit). Luminance is preserved exactly.\n"
-                   "0 = keep the original shadow tint.",
+        .tooltip = "Pulls the shadow band towards neutral at constant luminance.\n"
+                   "Only acts below the range below, so midtones and highlights\n"
+                   "keep the original grading (the LUT tints 1 nit green,\n"
+                   "R/G = B/G = 0.79). 0 = keep the original shadow tint.",
         .min = 0.f,
         .max = 1.f,
         .format = "%.2f",
@@ -58,7 +59,8 @@ renodx::utils::settings::Settings settings = {
         .default_value = 10.f,
         .label = "Desaturation Range",
         .section = "HDR",
-        .tooltip = "Nits at which the shadow desaturation has fully faded out.",
+        .tooltip = "Nits at which the shadow desaturation has fully faded out.\n"
+                   "Everything above this is bit-exact.",
         .min = 1.f,
         .max = 100.f,
         .format = "%.0f",
@@ -76,43 +78,6 @@ renodx::utils::settings::Settings settings = {
         .min = 0.f,
         .max = 5.f,
         .format = "%.2f",
-    },
-    new renodx::utils::settings::Setting{
-        .key = "ShadowGain",
-        .binding = &shader_injection.shadow_gain,
-        .value_type = renodx::utils::settings::SettingValueType::FLOAT,
-        .default_value = 1.f,
-        .label = "Shadow Gain",
-        .section = "HDR",
-        .tooltip = "Lifts the shadows after the black point is removed.\n"
-                   "1 = keep the LUT's own shadow gain.",
-        .min = 1.f,
-        .max = 3.f,
-        .format = "%.2f",
-        .is_enabled = []() { return shader_injection.black_fix > 0.f; },
-    },
-    new renodx::utils::settings::Setting{
-        .key = "ShadowKneeNits",
-        .binding = &shader_injection.shadow_knee_nits,
-        .value_type = renodx::utils::settings::SettingValueType::FLOAT,
-        .default_value = 5.f,
-        .label = "Shadow Gain Range",
-        .section = "HDR",
-        .tooltip = "Nits at which the shadow gain has fully faded out.",
-        .min = 1.f,
-        .max = 50.f,
-        .format = "%.0f",
-        .is_enabled = []() { return shader_injection.black_fix > 0.f && shader_injection.shadow_gain > 1.f; },
-    },
-    new renodx::utils::settings::Setting{
-        .key = "KeepGrain",
-        .binding = &shader_injection.keep_grain,
-        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
-        .default_value = 1.f,
-        .label = "Film Grain",
-        .section = "HDR",
-        .tooltip = "The grain is added in PQ code space and lifts the black floor.",
-        .labels = {"Off", "On"},
     },
 
     new renodx::utils::settings::Setting{

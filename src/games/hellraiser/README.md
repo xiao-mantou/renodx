@@ -26,10 +26,13 @@ preserved.
 | Setting | Effect |
 | --- | --- |
 | Black Point Removal | Subtracts `LUT(0)`. Exactly zero at the floor, curve shape untouched. |
-| Shadow Desaturation | Blends the shadow band toward neutral **at constant luminance**. Only the cast is removed. |
+| Shadow Desaturation | Blends the shadow band toward neutral **at constant luminance**. Only acts below *Desaturation Range*, so midtones and highlights are bit-exact. |
+| Desaturation Range | Nits at which the desaturation has faded out (default 10). |
 | Black Crush | Optional extra nits. Above ~0.05 this starts clipping real shadow detail. |
-| Shadow Gain | Optional lift of the shadows after the black point is removed. |
-| Film Grain | The grain is added in PQ code space and lifts the floor, so it can be muted. |
+
+Film grain is left untouched: it is added in PQ code space and is worth about
+one 10-bit PQ code (measured: on/off moves the frame mean by 0.08%), i.e.
+invisible, so it does not warrant a slider.
 
 HDR only. The SDR path (`cb0_008w <= 2`) is untouched.
 

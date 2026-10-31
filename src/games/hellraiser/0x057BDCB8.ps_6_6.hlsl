@@ -699,26 +699,26 @@ float4 main(
   //
   // Measured on a 450 nit peak: LUT(0) = 0.2533 nits, and the neutral axis
   // is tinted green below ~10 nits (R/G = B/G = 0.79 at 1 nit).
+  //
+  // UNIT WARNING: renodx::color::pq::Decode() defaults to scaling = 10000,
+  // which returns NORMALISED values (1.0 == 10000 nits). Every threshold here
+  // is in nits, so pass scaling = 1.f. (Shipping with the default scaling made
+  // the shadow mask evaluate to ~1.0 over the whole image and desaturated
+  // everything to greyscale.)
   // ---------------------------------------------------------------------
   if (cb0_008w > 2 && (RENODX_HDR_BLACK_FIX > 0.f || RENODX_HDR_SHADOW_NEUTRAL > 0.f)) {
     static const float3 LUT_SAMPLE_GAIN = 1.0499999523162842f;
 
     float3 lut_black = renodx::color::pq::Decode(
-        t7.SampleLevel(s5, float3(cb0_062w, cb0_062w, cb0_062w), 0).rgb * LUT_SAMPLE_GAIN);
+        t7.SampleLevel(s5, float3(cb0_062w, cb0_062w, cb0_062w), 0).rgb * LUT_SAMPLE_GAIN, 1.f);
     float3 lut_white = renodx::color::pq::Decode(
-        t7.SampleLevel(s5, float3(cb0_062z + cb0_062w, cb0_062z + cb0_062w, cb0_062z + cb0_062w), 0).rgb * LUT_SAMPLE_GAIN);
+        t7.SampleLevel(s5, float3(cb0_062z + cb0_062w, cb0_062z + cb0_062w, cb0_062z + cb0_062w), 0).rgb * LUT_SAMPLE_GAIN, 1.f);
 
-    float3 nits = renodx::color::pq::Decode(float3(_330, _331, _332));
+    float3 nits = renodx::color::pq::Decode(float3(_330, _331, _332), 1.f);
 
     if (RENODX_HDR_BLACK_FIX > 0.f) {
       float3 span = max(lut_white - lut_black, 1e-6f);
       float3 corrected = max(nits - lut_black, 0.f);
-
-      // Restore the shadow gain the LUT applies below ~5 nits, otherwise the
-      // subtraction flattens the very bottom of the curve.
-      float3 low = saturate(corrected / RENODX_HDR_SHADOW_KNEE_NITS);
-      float3 weight = (1.f - low) * (1.f - low);
-      corrected *= 1.f + (RENODX_HDR_SHADOW_GAIN - 1.f) * weight;
 
       corrected *= lut_white / span;
       corrected = max(corrected - RENODX_HDR_CRUSH_NITS, 0.f)
@@ -736,7 +736,7 @@ float4 main(
       nits = lerp(nits, float3(luminance, luminance, luminance), weight * RENODX_HDR_SHADOW_NEUTRAL);
     }
 
-    float3 encoded = renodx::color::pq::Encode(max(nits, 0.f));
+    float3 encoded = renodx::color::pq::Encode(max(nits, 0.f), 1.f);
     _330 = encoded.x;
     _331 = encoded.y;
     _332 = encoded.z;
@@ -756,11 +756,7 @@ float4 main(
   }
   float _383 = (frac(sin((TEXCOORD_2.w * 543.3099975585938f) + TEXCOORD_2.z) * 493013.0f) * 2.0f) + -1.0f;
   float _386 = min(max((_383 * 3.402823466e+38f), -1.0f), 1.0f);
-  // RenoDX: the grain is added in PQ code space and lifts the black floor,
-  // so it can be muted while the black point correction is active.
-  float _395 = RENODX_HDR_KEEP_GRAIN > 0.f
-                   ? ((_386 - (sqrt(saturate(1.0f - abs(_383))) * _386)) * cb0_063y)
-                   : 0.0f;
+  float _395 = (_386 - (sqrt(saturate(1.0f - abs(_383))) * _386)) * cb0_063y;
   SV_Target.x = (_395 + _374);
   SV_Target.y = (_395 + _375);
   SV_Target.z = (_395 + _376);
