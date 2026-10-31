@@ -1,0 +1,72 @@
+name: hellraiser
+
+# Builds only the Hellraiser addon, and only when its own sources change.
+# Upstream builds (nightly / snapshot) are left untouched.
+on:
+  push:
+    branches: [hellraiser-hdr]
+    paths:
+      - "src/games/hellraiser/**"
+      - "src/mods/**"
+      - "src/utils/**"
+      - "src/shaders/**"
+      - "external/reshade/**"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - ".github/workflows/hellraiser.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_CACHE_SIZE: "2G"
+      SCCACHE_C_CUSTOM_CACHE_BUSTER: "${{ github.workflow }}"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          lfs: true
+
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Set up shader tools
+        shell: pwsh
+        run: .\scripts\setup-dev-env.ps1 -Update -Tools dxc,slang,glslang
+
+      - name: Set up Clang
+        uses: egor-tensin/setup-clang@v1
+        with:
+          version: latest
+          platform: x64
+
+      - name: Install ninja-build tool
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Configure build for amd64
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Configure CMake (x64)
+        run: cmake --preset clang-x64 -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+
+      - name: Build hellraiser (x64)
+        run: cmake --build --preset clang-x64-release --target hellraiser --verbose
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats
+
+      - name: Upload addon
+        uses: actions/upload-artifact@v4
+        with:
+          name: renodx-hellraiser-addon64
+          path: build/release/renodx-hellraiser.addon64
+          if-no-files-found: error

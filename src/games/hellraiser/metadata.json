@@ -1,0 +1,9 @@
+{
+  "$schema": "https://cdn.jsdelivr.net/gh/clshortfuse/renodx/renodx-metadata-schema.json",
+  "id": "hellraiser",
+  "title": "Clive Barker's Hellraiser: Revival",
+  "maintainers": [
+    "xiao-mantou"
+  ],
+  "status": "experimental"
+}
