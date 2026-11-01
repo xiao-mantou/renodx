@@ -25,8 +25,13 @@ preserved.
 
 | Setting | Effect |
 | --- | --- |
-| Black Point Removal | Subtracts `LUT(0)`. Exactly zero at the floor, curve shape untouched. |
-| Black Crush | Optional extra nits. Above ~0.05 this starts clipping real shadow detail. |
+| Black Level Fix (On/Off) | Subtracts `LUT(0)`, measured from the LUT itself. Exactly zero at the floor, curve shape untouched. |
+| Extra Black Level | Manual black level in nits, applied after the fix. Above ~0.05 this starts clipping real shadow detail. |
+
+Both are the same affine operator, `out = (in - k) * W / (W - k)`: a constant
+subtraction followed by a rescale that keeps the white point bit-exact. The
+only difference is where `k` comes from - the LUT for the fix, the slider for
+the extra level.
 
 There is deliberately no chroma control. The shadow cast is a level-dependent
 split-tone (`R/G = B/G = 0.79` at 1 nit, `B/G = 1.33` at 92 nits, neutral above

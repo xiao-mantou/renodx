@@ -25,30 +25,31 @@ ShaderInjectData shader_injection;
 
 renodx::utils::settings::Settings settings = {
     new renodx::utils::settings::Setting{
-        .key = "BlackFix",
+        .key = "BlackLevelFix",
         .binding = &shader_injection.black_fix,
-        .value_type = renodx::utils::settings::SettingValueType::FLOAT,
+        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
         .default_value = 1.f,
-        .label = "Black Point Removal",
+        .label = "Black Level Fix",
         .section = "HDR",
-        .tooltip = "Removes the LUT's black point (0.2533 nits at a 450 nit peak).\n"
-                   "0 = untouched game output.",
-        .min = 0.f,
-        .max = 1.f,
-        .format = "%.2f",
+        .tooltip = "Removes the black point the game bakes into its LUT.\n"
+                   "Measured at 0.2533 nits on a 450 nit peak, neutral\n"
+                   "(R = G = B). Absolute, so it reads as a grey veil on OLED.\n"
+                   "Off = untouched game output.",
+        .labels = {"Off", "On"},
     },
     new renodx::utils::settings::Setting{
-        .key = "CrushNits",
+        .key = "ExtraBlackLevel",
         .binding = &shader_injection.crush_nits,
         .value_type = renodx::utils::settings::SettingValueType::FLOAT,
         .default_value = 0.f,
-        .label = "Black Crush",
+        .label = "Extra Black Level",
         .section = "HDR",
-        .tooltip = "Additional nits removed on top of the black point.\n"
+        .tooltip = "Manual black level, in nits, removed on top of the fix.\n"
+                   "Applied after it, then rescaled so the peak never moves.\n"
                    "0.05+ starts clipping real shadow detail.",
         .min = 0.f,
         .max = 5.f,
-        .format = "%.2f",
+        .format = "%.3f",
     },
 
     new renodx::utils::settings::Setting{
