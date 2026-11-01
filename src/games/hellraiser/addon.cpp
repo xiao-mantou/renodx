@@ -38,35 +38,6 @@ renodx::utils::settings::Settings settings = {
         .format = "%.2f",
     },
     new renodx::utils::settings::Setting{
-        .key = "ShadowNeutral",
-        .binding = &shader_injection.shadow_neutral,
-        .value_type = renodx::utils::settings::SettingValueType::FLOAT,
-        .default_value = 1.f,
-        .label = "Shadow Desaturation",
-        .section = "HDR",
-        .tooltip = "Pulls the shadow band towards neutral at constant luminance.\n"
-                   "Only acts below the range below, so midtones and highlights\n"
-                   "keep the original grading (the LUT tints 1 nit green,\n"
-                   "R/G = B/G = 0.79). 0 = keep the original shadow tint.",
-        .min = 0.f,
-        .max = 1.f,
-        .format = "%.2f",
-    },
-    new renodx::utils::settings::Setting{
-        .key = "NeutralHiNits",
-        .binding = &shader_injection.neutral_hi_nits,
-        .value_type = renodx::utils::settings::SettingValueType::FLOAT,
-        .default_value = 10.f,
-        .label = "Desaturation Range",
-        .section = "HDR",
-        .tooltip = "Nits at which the shadow desaturation has fully faded out.\n"
-                   "Everything above this is bit-exact.",
-        .min = 1.f,
-        .max = 100.f,
-        .format = "%.0f",
-        .is_enabled = []() { return shader_injection.shadow_neutral > 0.f; },
-    },
-    new renodx::utils::settings::Setting{
         .key = "CrushNits",
         .binding = &shader_injection.crush_nits,
         .value_type = renodx::utils::settings::SettingValueType::FLOAT,
@@ -87,7 +58,13 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
-        .label = "HDR only. The game's tonemap curve and grading are untouched.",
+        .label = "HDR only. Tonemap curve and grading are untouched.",
+        .section = "About",
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "No chroma stage: the LUT's shadow cast is the creator's\n"
+                 "split-tone, not an artifact.",
         .section = "About",
     },
 };

@@ -691,22 +691,26 @@ float4 main(
   float _332 = _326.z * 1.0499999523162842f;
 
   // ---------------------------------------------------------------------
-  // RenoDX: HDR black point + shadow chroma correction.
+  // RenoDX: HDR black point removal.
   //
   // Runs on the game's own tonemapped LUT output, before the PQ encode, so
   // the tonemap curve and the creator's grading are preserved. cb0_008w > 2
   // selects the HDR (PQ) output path; the SDR path is left untouched.
   //
-  // Measured on a 450 nit peak: LUT(0) = 0.2533 nits, and the neutral axis
-  // is tinted green below ~10 nits (R/G = B/G = 0.79 at 1 nit).
+  // Measured on a 450 nit peak: LUT(0) = 0.2533 nits, neutral (R = G = B).
+  // It is an absolute value, so it reads as a grey veil on an OLED.
   //
   // UNIT WARNING: renodx::color::pq::Decode() defaults to scaling = 10000,
   // which returns NORMALISED values (1.0 == 10000 nits). Every threshold here
-  // is in nits, so pass scaling = 1.f. (Shipping with the default scaling made
-  // the shadow mask evaluate to ~1.0 over the whole image and desaturated
-  // everything to greyscale.)
+  // is in nits, so pass scaling = 1.f.
+  //
+  // There is deliberately no chroma stage: the LUT's shadow cast is a
+  // level-dependent split-tone (R/G = B/G = 0.79 at 1 nit, B/G = 1.33 at
+  // 92 nits, neutral above 250), i.e. it *is* the grading, and the frame mean
+  // of this game is ~2 nits, so any "shadow band" threshold also covers the
+  // whole image. Neutralising it is a look change, not a fix.
   // ---------------------------------------------------------------------
-  if (cb0_008w > 2 && (RENODX_HDR_BLACK_FIX > 0.f || RENODX_HDR_SHADOW_NEUTRAL > 0.f)) {
+  if (cb0_008w > 2 && (RENODX_HDR_BLACK_FIX > 0.f || RENODX_HDR_CRUSH_NITS > 0.f)) {
     static const float3 LUT_SAMPLE_GAIN = 1.0499999523162842f;
 
     float3 lut_black = renodx::color::pq::Decode(
@@ -716,25 +720,14 @@ float4 main(
 
     float3 nits = renodx::color::pq::Decode(float3(_330, _331, _332), 1.f);
 
-    if (RENODX_HDR_BLACK_FIX > 0.f) {
-      float3 span = max(lut_white - lut_black, 1e-6f);
-      float3 corrected = max(nits - lut_black, 0.f);
+    float3 span = max(lut_white - lut_black, 1e-6f);
+    float3 corrected = max(nits - lut_black, 0.f);
 
-      corrected *= lut_white / span;
-      corrected = max(corrected - RENODX_HDR_CRUSH_NITS, 0.f)
-                  * (lut_white / max(lut_white - RENODX_HDR_CRUSH_NITS, 1e-6f));
+    corrected *= lut_white / span;
+    corrected = max(corrected - RENODX_HDR_CRUSH_NITS, 0.f)
+                * (lut_white / max(lut_white - RENODX_HDR_CRUSH_NITS, 1e-6f));
 
-      nits = lerp(nits, corrected, RENODX_HDR_BLACK_FIX);
-    }
-
-    // Blend the shadow band towards neutral AT CONSTANT LUMINANCE, so the
-    // tonemap's luminance response is untouched and only the cast is removed.
-    if (RENODX_HDR_SHADOW_NEUTRAL > 0.f) {
-      float3 positive = max(nits, 0.f);
-      float luminance = dot(positive, float3(0.2627f, 0.6780f, 0.0593f));
-      float weight = 1.f - saturate(luminance / max(RENODX_HDR_NEUTRAL_HI_NITS, 1e-6f));
-      nits = lerp(nits, float3(luminance, luminance, luminance), weight * RENODX_HDR_SHADOW_NEUTRAL);
-    }
+    nits = lerp(nits, corrected, RENODX_HDR_BLACK_FIX);
 
     float3 encoded = renodx::color::pq::Encode(max(nits, 0.f), 1.f);
     _330 = encoded.x;

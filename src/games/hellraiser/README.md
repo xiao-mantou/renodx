@@ -26,9 +26,13 @@ preserved.
 | Setting | Effect |
 | --- | --- |
 | Black Point Removal | Subtracts `LUT(0)`. Exactly zero at the floor, curve shape untouched. |
-| Shadow Desaturation | Blends the shadow band toward neutral **at constant luminance**. Only acts below *Desaturation Range*, so midtones and highlights are bit-exact. |
-| Desaturation Range | Nits at which the desaturation has faded out (default 10). |
 | Black Crush | Optional extra nits. Above ~0.05 this starts clipping real shadow detail. |
+
+There is deliberately no chroma control. The shadow cast is a level-dependent
+split-tone (`R/G = B/G = 0.79` at 1 nit, `B/G = 1.33` at 92 nits, neutral above
+250 nits), i.e. it *is* the grading rather than an artifact, and this game's
+frame mean is only ~2 nits, so any luminance threshold that covers the cast
+also covers most of the frame. Neutralising it is a look change, not a fix.
 
 Film grain is left untouched: it is added in PQ code space and is worth about
 one 10-bit PQ code (measured: on/off moves the frame mean by 0.08%), i.e.
