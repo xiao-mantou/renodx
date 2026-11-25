@@ -39,7 +39,13 @@ std::span<const uint8_t> SelectedVariant() {
       case 1:  return __0x22222150;  // 450 nits
       default: return __0x11111150;  // 400 nits
     }
-  } else {  // 203 nits (default)
+  } else if (pw == 3) {  // 250 nits (matches typical SDR monitor / Windows SDR brightness)
+    switch (peak) {
+      case 2:  return __0x33333250;  // 1000 nits
+      case 1:  return __0x22222250;  // 450 nits
+      default: return __0x11111250;  // 400 nits
+    }
+  } else {  // 203 nits (default BT.2408)
     switch (peak) {
       case 2:  return __0x33333333;  // 1000 nits
       case 1:  return __0x22222222;  // 450 nits
@@ -88,8 +94,8 @@ renodx::utils::settings::Settings settings = {
         .default_value = 2.f,
         .label = "Game Brightness (Paper White)",
         .section = "Tone Mapping",
-        .tooltip = "Paper/diffuse white in nits. 203 is standard HDR reference white. Applies immediately.",
-        .labels = {"100", "150", "203"},
+        .tooltip = "Paper/diffuse white in nits. 203 is standard HDR reference white, 250 matches SDR monitors. Applies immediately.",
+        .labels = {"100", "150", "203", "250"},
         .on_change = []() { applied_paper_white_preset = -1.f; },
     },
 };

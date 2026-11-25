@@ -22,33 +22,28 @@ float3 F1ColorXFormLUT(float3 color, float4 color_xform_lut[4]) {
   return renodx::color::srgb::DecodeSafe(transformed);
 }
 
-// Canonical N2 Max-Channel SDR LUT Bridge (per RenoDX skill handle-sdr-tonemap-lut):
-// - For diffuse colors (max channel <= 1.0), passes through 100% bit-for-bit to vanilla LUT.
-// - For HDR colors (max channel > 1.0), proportionally scales along the chromaticity ray into [0, 1],
-//   samples the color transform at the SDR boundary, and reconstructs the HDR signal preserving ratios.
-float3 F1ApplySdrLutBridge(float3 color_hdr, float4 color_xform_lut[4]) {
-  float max_channel = max(1.0f, max(color_hdr.r, max(color_hdr.g, color_hdr.b)));
-  float3 color_proxy = color_hdr / max_channel;
-  float3 graded_proxy = F1ColorXFormLUT(color_proxy, color_xform_lut);
-  return graded_proxy * max_channel;
+// Exponential shoulder with finite highlight clip (Frostbite / RenoDX standard).
+// - For x <= 1.0 (at or below paper white): 100% uncompressed linear (f(x) = x).
+// - For x > 1.0: smoothly rolls off highlights to reach peak_ratio at input = clip.
+float F1ExponentialShoulder(float x, float peak_ratio, float clip = 5.5f) {
+  if (x <= 1.0f) return x;
+  float rolloff_size = peak_ratio - 1.0f;
+  float overage = -(x - 1.0f);
+  float clip_size = 1.0f - clip;
+  float rolloff_val = 1.0f - exp(overage / rolloff_size);
+  float clip_val = 1.0f - exp(clip_size / rolloff_size);
+  return 1.0f + rolloff_size * (rolloff_val / clip_val);
 }
 
-// Continuous C1 rational soft shoulder above paper white (1.0) to peak_ratio.
-// Exactly continuous in value (1.0) and first derivative (1.0) at the paper white boundary,
-// smoothly rolling off highlights to the display peak without hard clipping or kinks.
-float F1SoftShoulder(float y, float peak_ratio) {
-  if (y <= 1.0f) return y;
-  float z = y - 1.0f;
-  float m = peak_ratio - 1.0f;
-  return 1.0f + (m * z) / (z + m);
-}
-
-// Applies the soft shoulder based on BT.709 luminance to preserve exact hue and saturation ratios.
+// Applies the shoulder to HDR color.
+// Per-channel compression naturally desaturates highlights towards white
+// (matching vanilla SDR blowout and preventing oversaturated / unnatural highlight casts).
 float3 F1ApplyHdrSoftShoulder(float3 color, float peak_ratio) {
-  float y = renodx::color::y::from::BT709(color);
-  if (y <= 0.0f) return color;
-  float y_mapped = F1SoftShoulder(y, peak_ratio);
-  return color * (y_mapped / y);
+  float3 tonemapped;
+  tonemapped.r = F1ExponentialShoulder(color.r, peak_ratio, 5.5f);
+  tonemapped.g = F1ExponentialShoulder(color.g, peak_ratio, 5.5f);
+  tonemapped.b = F1ExponentialShoulder(color.b, peak_ratio, 5.5f);
+  return tonemapped;
 }
 
 #endif  // SRC_GAMES_F12022_COMMON_HLSL_

@@ -151,10 +151,10 @@ float4 main(
 
   float3 output;
   if (hdr.hdr != 0 && display_scale > 0.0f) {
-    // 3. Range-compressed SDR LUT bridge: preserves original color grade across SDR & HDR
-    float3 graded_hdr = (lutLateInPhotomode == 0) ? F1ApplySdrLutBridge(neutral_hdr, colorXFormLUT) : neutral_hdr;
+    // 3. Vanilla color transform (3x4 matrix in sRGB domain)
+    float3 graded_hdr = (lutLateInPhotomode == 0) ? F1ColorXFormLUT(neutral_hdr, colorXFormLUT) : neutral_hdr;
 
-    // 4. Rational C1 soft shoulder from paper white (1.0) to peak_ratio
+    // 4. Exponential soft shoulder with finite clip from paper white (1.0) to peak_ratio
     float peak_ratio = RENODX_PEAK_WHITE_NITS / RENODX_DIFFUSE_WHITE_NITS;
     float3 tonemapped_hdr = F1ApplyHdrSoftShoulder(graded_hdr, peak_ratio);
 
