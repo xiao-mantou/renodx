@@ -141,24 +141,33 @@ float4 main(
   float3 scene = inputRT.Load(int3(int(SV_Position.x), int(SV_Position.y), 0)).rgb;
   float3 untonemapped = (scene + godRays) * exposure;
 
-  // Vanilla EGO tonemap: filmic curve + bloom/streaks + color transform.
-  float3 vanilla_curve = F1FilmicCurve(untonemapped);
-  float3 neutral_sdr = vanilla_curve + tonemapBloomScale * bloom + tonemapLensStreaksScale * streaks;
-  float3 graded_sdr = (lutLateInPhotomode == 0) ? F1ColorXFormLUT(neutral_sdr, colorXFormLUT) : neutral_sdr;
+  // 1. Vanilla EGO filmic curve on scene radiance + god rays
+  float3 filmic = F1FilmicCurve(untonemapped);
+
+  // 2. Add bloom and lens streaks
+  float3 neutral_hdr = filmic + tonemapBloomScale * bloom + tonemapLensStreaksScale * streaks;
 
   float display_scale = 0.012500000186264515f * hdr.maxBrightnessOfTV * hdr.hdrScale;
 
-  float3 output = graded_sdr;  // Vanilla for SDR output.
+  float3 output;
   if (hdr.hdr != 0 && display_scale > 0.0f) {
-    // Normalize the scene so the game's paper white (F1FilmicCurve(F1_PAPER_WHITE) == 1.0)
-    // becomes 1.0, matching the Hable output reference used by UpgradeToneMap and RenoDRT.
-    float3 normalized_untonemapped = untonemapped / F1_PAPER_WHITE;
-    float3 tonemapped = renodx::draw::ToneMapPass(normalized_untonemapped, graded_sdr, neutral_sdr);
-    // The game's final copy pass scales this buffer by 0.0125 * maxBrightnessOfTV * hdrScale
-    // into scRGB, so scale for the requested paper white and let peaks go above 1.0.
-    output = tonemapped * (RENODX_DIFFUSE_WHITE_NITS / (80.0f * display_scale));
+    // 3. Range-compressed SDR LUT bridge: preserves original color grade across SDR & HDR
+    float3 graded_hdr = (lutLateInPhotomode == 0) ? F1ApplySdrLutBridge(neutral_hdr, colorXFormLUT) : neutral_hdr;
+
+    // 4. Rational C1 soft shoulder from paper white (1.0) to peak_ratio
+    float peak_ratio = RENODX_PEAK_WHITE_NITS / RENODX_DIFFUSE_WHITE_NITS;
+    float3 tonemapped_hdr = F1ApplyHdrSoftShoulder(graded_hdr, peak_ratio);
+
+    // 5. Apply vignette in normalized paper white space
+    tonemapped_hdr = F1Vignette(tonemapped_hdr, TEXCOORD);
+
+    // 6. Scale for the game's final scRGB copy pass (which multiplies by display_scale into 80 nits)
+    output = tonemapped_hdr * (RENODX_DIFFUSE_WHITE_NITS / (80.0f * display_scale));
+  } else {
+    // SDR fallback: 100% vanilla path
+    float3 graded_sdr = (lutLateInPhotomode == 0) ? F1ColorXFormLUT(neutral_hdr, colorXFormLUT) : neutral_hdr;
+    output = F1Vignette(graded_sdr, TEXCOORD);
   }
 
-  output = F1Vignette(output, TEXCOORD);
   return float4(output, 1.0f);
 }
